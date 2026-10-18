@@ -25,35 +25,55 @@
       <button class="btn ghost sm" @click="clearAll()" x-show="total">清空</button>
     </div>
 
-    <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr><th>时间</th><th>模组</th><th>方向</th><th>号码</th><th>内容</th><th></th></tr>
-        </thead>
-        <tbody>
-          <template x-for="msg in messages" :key="msg.id">
-            <tr @click="showDetail(msg)" style="cursor:pointer">
-              <td x-text="fmtTs(msg.ts)"></td>
-              <td x-text="modemLabelOf(msg.modem)"></td>
-              <td>
-                <span class="badge" :class="msg.dir === 'in' ? 'ok' : 'warn'"
-                      x-text="msg.dir === 'in' ? '收' : '发'"></span>
-              </td>
-              <td x-text="msg.phone"></td>
-              <td x-text="preview(msg.content)" style="max-width:320px"></td>
-              <td><button class="btn ghost sm" @click.stop="del(msg.id)">删除</button></td>
-            </tr>
-          </template>
-          <tr x-show="!loading && !messages.length"><td colspan="6" class="hint" style="text-align:center;padding:24px">暂无记录</td></tr>
-          <tr x-show="loading"><td colspan="6" class="hint" style="text-align:center;padding:24px">加载中…</td></tr>
-        </tbody>
-      </table>
+    <!-- 短信记录：类手机短信列表（点击查看详情） -->
+    <div class="msg-list" x-show="!loading && messages.length">
+      <template x-for="msg in messages" :key="msg.id">
+        <div class="msg-item" :class="msg.dir === 'in' ? 'is-in' : 'is-out'" @click="showDetail(msg)">
+          <div class="msg-ava" x-text="(msg.phone || '#').charAt(0).toUpperCase()"></div>
+          <div class="msg-body">
+            <div class="msg-top">
+              <span class="badge" :class="msg.dir === 'in' ? 'ok' : 'warn'"
+                    x-text="msg.dir === 'in' ? '收到' : '发送'"></span>
+              <span class="msg-phone" x-text="msg.phone"></span>
+              <span class="msg-meta">
+                <span class="msg-port" x-text="modemLabelOf(msg.modem)"></span>
+                <span class="msg-time" x-text="fmtShort(msg.ts)"></span>
+              </span>
+            </div>
+            <div class="msg-text" x-text="preview(msg.content)"></div>
+          </div>
+          <button class="msg-del" @click.stop="del(msg.id)" title="删除">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>
+          </button>
+        </div>
+      </template>
     </div>
+    <div class="empty" x-show="!loading && !messages.length">
+      <div class="icon">✉</div>
+      <h3>暂无短信记录</h3>
+      <p x-text="(q || portFilter > 0) ? '当前筛选条件下没有记录' : '收到或发出的短信会显示在这里'"></p>
+    </div>
+    <div class="loading" x-show="loading">加载中…</div>
 
-    <div class="pager" x-show="pageCount > 1">
-      <button class="btn ghost sm" :disabled="page <= 1" @click="gotoPage(page - 1)">上一页</button>
-      <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
-      <button class="btn ghost sm" :disabled="page >= pageCount" @click="gotoPage(page + 1)">下一页</button>
+    <!-- 分页 -->
+    <div class="pager" x-show="total > 0">
+      <div class="pager-info">
+        <span x-text="'共 ' + total + ' 条'"></span>
+        <span class="pager-sep">·</span>
+        <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
+      </div>
+      <div class="pager-ctrl">
+        <button class="btn ghost sm" :disabled="page <= 1" @click="gotoPage(page - 1)">上一页</button>
+        <template x-for="p in pages" :key="p">
+          <button class="btn ghost sm pager-num" :class="{ on: p === page }" x-text="p" @click="gotoPage(p)"></button>
+        </template>
+        <button class="btn ghost sm" :disabled="page >= pageCount" @click="gotoPage(page + 1)">下一页</button>
+      </div>
+      <select class="inp sm" x-model.number="pageSize" @change="changePageSize()" title="每页条数">
+        <option value="10">10 条/页</option>
+        <option value="20">20 条/页</option>
+        <option value="50">50 条/页</option>
+      </select>
     </div>
   </div>
 

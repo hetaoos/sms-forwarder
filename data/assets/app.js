@@ -906,7 +906,7 @@ function pageSms() {
     modems: [],               // [{port,enabled}]
     sendPort: 1, phone: '', content: '', sending: false,
     sendHint: '', sendErr: false, sendOpen: false,
-    q: '', portFilter: -1, page: 1, pageSize: 20,
+    q: '', portFilter: -1, page: 1, pageSize: 10,
     total: 0, messages: [], stats: {}, loading: false,
     storeErr: '',
     detail: null,
@@ -1010,6 +1010,9 @@ function pageSms() {
           const j = await r.json();
           this.messages = j.messages || [];
           this.total = j.total || 0;
+          // 删除/清空后当前页越界：自动回到最后一页并重新拉取
+          const pc = Math.max(1, Math.ceil(this.total / this.pageSize));
+          if (this.page > pc) { this.page = pc; this.loading = false; return this.reload(); }
         }
       } catch (e) {}
       this.loading = false;
@@ -1028,6 +1031,7 @@ function pageSms() {
       } catch (e) {}
     },
     search() { this.page = 1; this.reload(); },
+    changePageSize() { this.page = 1; this.reload(); },
     gotoPage(p) { if (p < 1 || p > this.pageCount) return; this.page = p; this.reload(); },
     get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
     get pages() {
@@ -1054,7 +1058,14 @@ function pageSms() {
       return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
                               : '开机 ' + fmtUptime(ts);
     },
-    preview(s) { return s.length > 40 ? s.slice(0, 40) + '…' : s; },
+    // 列表用短时间：MM-DD HH:mm（跨年也看不出，详情里有完整时间）
+    fmtShort(ts) {
+      if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
+      const d = new Date(ts * 1000);
+      const p = n => (n < 10 ? '0' : '') + n;
+      return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    },
+    preview(s) { return s.length > 80 ? s.slice(0, 80) + '…' : s; },
     // 按模组号取显示名（含别名）：记录 / 详情里模组号字段为 modem，需回查别名
     modemLabelOf(port) {
       const m = this.modems.find(x => x.port === port);
