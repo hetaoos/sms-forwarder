@@ -17,7 +17,7 @@ bool App::begin() {
   // 与模组就绪（SIM NITZ）事件驱动校准
   _time.begin(_bridge, _sms);
 
-  _led.begin(1);                       // RGB 灯默认点亮索引 1（RED）
+  _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 屏幕 + 静态框架
   _bridge.begin();                     // 启动串口抽数任务
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等模组自发数据前交给短信服务

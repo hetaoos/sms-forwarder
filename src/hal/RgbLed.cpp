@@ -11,7 +11,7 @@ const RgbLed::Color RgbLed::kPalette[RgbLed::kCount] = {
 // 自定义颜色的显示名（setRaw 后 color().name 指向它）
 static const char kCustomName[] = "CUSTOM";
 
-// index：默认点亮的颜色索引
+// index：默认颜色索引（0 = OFF 即默认关闭）
 void RgbLed::begin(uint8_t index) { set(index); }
 
 // index：目标颜色索引，超出范围按 kCount 回绕

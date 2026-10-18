@@ -11,8 +11,8 @@ class RgbLed {
     uint8_t r, g, b;
   };
 
-  // 初始化：index 为默认点亮的颜色索引（对 kCount 取模）
-  void begin(uint8_t index = 1);
+  // 初始化：index 为默认颜色索引（对 kCount 取模，0 = OFF 即默认关闭）
+  void begin(uint8_t index = 0);
 
   // 切换到下一个预设颜色
   void next();
@@ -44,7 +44,7 @@ class RgbLed {
 
   static const uint8_t kCount = 5;      // 预设颜色数量
   static const Color kPalette[kCount];  // 预设颜色表
-  uint8_t _index = 1;                   // 当前颜色索引
+  uint8_t _index = 0;                   // 当前颜色索引（0 = OFF）
   Color _cur = kPalette[0];             // 当前颜色（预设或自定义）
   uint8_t _bright = 100;                // 亮度百分比（100 = 原色）
 };
