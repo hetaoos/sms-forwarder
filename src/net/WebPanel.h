@@ -5,6 +5,7 @@
 #include "app/Config.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
+#include "log/LogStore.h"
 #include "net/AdminStore.h"
 #include "net/EmailService.h"
 #include "net/StatusBus.h"
@@ -13,6 +14,7 @@
 #include "sms/SmsService.h"
 
 // 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
+// + 运行日志查询（PSRAM 环形缓冲分页拉取）
 // 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
 // URL 划分：页面与静态资源在根路径（公开，不含敏感数据），
 // 全部 API 统一在 /api/ 前缀下（除登录/登出/会话探测外均需认证）。
@@ -34,10 +36,11 @@ class WebPanel {
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
   // time：时间同步（状态 JSON 输出当前时间/来源）；
-  // email：SMTP 邮件通知（配置读写 + 测试发送）
+  // email：SMTP 邮件通知（配置读写 + 测试发送）；
+  // log：设备日志环形存储（PSRAM，分页查询 / 清空）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
            AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time,
-           EmailService &email);
+           EmailService &email, LogStore &log);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -85,4 +88,5 @@ class WebPanel {
   SmsService &_sms;        // 短信服务引用
   TimeSync &_time;         // 时间同步引用
   EmailService &_email;    // SMTP 邮件通知引用
+  LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
 };

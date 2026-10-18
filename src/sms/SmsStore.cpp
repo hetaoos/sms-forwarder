@@ -91,7 +91,7 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
 // 仅对命中且进入当前页的记录按需补读正文。全程不持锁读取上千个文件正文，
 // 避免阻塞抽数任务（短信写入）与并发删除。
 void SmsStore::list(int page, int pageSize, const String &q, int8_t modem,
-                    std::vector<SmsMessage> &out, int &total) {
+                    SmsList &out, int &total) {
   out.clear();
   total = 0;
   if (!_enabled) return;

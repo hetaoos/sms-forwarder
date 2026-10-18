@@ -17,6 +17,11 @@ bool App::begin() {
   // 与模组就绪（SIM NITZ）事件驱动校准
   _time.begin(_bridge, _sms);
 
+  // 设备日志：PSRAM 环形缓冲，先于其余模块就绪，后续启动日志均可入库。
+  // 时间戳供给与短信记录一致（已同步=纪元秒，未同步=开机秒数）
+  _log.begin(cfg::kLogRingSize);
+  _log.setTimeProvider([this] { return _time.epochOrUptime(); });
+
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 屏幕 + 静态框架
   _bridge.begin();                     // 启动串口抽数任务
@@ -27,32 +32,46 @@ bool App::begin() {
 
   _display.render(collectStatus());    // 先出一帧，避免开机黑屏
   // WiFi 连上（含重连）即启动 NTP 同步；须在 _wifi.begin() 前注册
-  _wifi.setOnConnectCb([this] { _time.syncNTP(); });
+  _wifi.setOnConnectCb([this] {
+    _log.addf(LogLevel::kInfo, "wifi", "已连接 %s，IP %s", _wifi.ssid().c_str(),
+              _wifi.ip().c_str());
+    _time.syncNTP();
+  });
   _wifi.begin();                       // 读 NVS 配置并启动连接状态机（非阻塞）
   _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
   _email.begin(_wifi, _sms, _time);    // 邮件：载入 SMTP 配置（NVS）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
-  _sms.setOnModemReadyCb([this](uint8_t port) { _time.requestSimSync(port); });
+  _sms.setOnModemReadyCb([this](uint8_t port) {
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 初始化完成", (unsigned)port);
+    _time.requestSimSync(port);
+  });
   // 短信时间戳供给：已同步返回纪元秒，未同步返回开机秒数
   // （前端按 >=1.6e9 区分「真实时间 / 开机时长」，无需改动）
   _sms.setTimeProvider([this] { return _time.epochOrUptime(); });
   // 短信接收 -> 邮件通知入队（回调仅入队，SMTP 会话在 App::tick 执行，
-  // 不阻塞串口抽数任务）
+  // 不阻塞串口抽数任务）+ 设备日志入库
   _sms.setOnSmsReceivedCb([this](const String &sender, const String &text,
                                  uint32_t ts, int8_t modem) {
     _email.notifySms(sender, text, ts, modem);
+    _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（模组 %d）", sender.c_str(),
+              (int)modem);
   });
-  // SIM 运行时插拔 -> 邮件通知入队
+  // SIM 运行时插拔 -> 邮件通知入队 + 设备日志入库
   _sms.setOnSimChangeCb([this](uint8_t port, bool ready) {
     _email.notifySim(port, ready);
+    _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM %s", (unsigned)port,
+              ready ? "已插入" : "已拔出");
   });
   _panel.begin();                      // 启动 HTTP 服务
   _email.notifyStartup();              // 排入启动邮件（等 WiFi 就绪后发出）
 
   Serial.printf("[app] heap free %u B, psram %u/%u B\r\n", ESP.getFreeHeap(),
                 ESP.getFreePsram(), ESP.getPsramSize());
+  _log.addf(LogLevel::kInfo, "app", "启动完成：heap %u B 空闲，PSRAM %u/%u B",
+            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
+            (unsigned)ESP.getPsramSize());
   Serial.println("[app] ready");
   return true;
 }

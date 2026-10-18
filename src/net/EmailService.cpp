@@ -223,7 +223,13 @@ void EmailService::tick() {
     if (WiFi.status() == WL_CONNECTED) {
       _startupPending = false;
       Guard g(_mutex);
-      queueStartupLocked();
+      if (!activeLocked()) {
+        if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，跳过启动邮件");
+      } else if (!(_notifyTypes & cfg::kEmailNotifyStartup)) {
+        Serial.println("[mail] 「设备启动」邮件通知已关闭，跳过");
+      } else {
+        enqueueStartupLocked();
+      }
     } else if (++_startupTries >= (uint8_t)(cfg::kMailBootWaitMaxMs / 15000)) {
       _startupPending = false;
       Serial.println("[mail] WiFi 长时间未连接，放弃启动邮件");
@@ -252,7 +258,7 @@ void EmailService::tick() {
         _onlineDueMs = now + (uint32_t)_sched.intervalH * 3600000UL;
         fire = true;
       }
-      if (fire) queueOnlineLocked();
+      if (fire && activeLocked()) enqueueOnlineLocked();
     }
   }
 
@@ -274,8 +280,13 @@ void EmailService::tick() {
     _queue[_queueCount] = MailJob{};  // 清空尾槽，及时释放 String 内存
   }
 
+  // HTML 正文在此构建（loop 任务，8KB 栈，正文缓冲走 PSRAM）——入队时只存了原始事件
+  String subject, text;
+  PsBuffer html;
+  if (!buildMail(job, subject, html, text)) return;  // 已被停用/关闭/构建失败：静默丢弃
+
   bool configErr = false;
-  bool ok = sendOnce(job.subject, job.html, job.text, configErr);
+  bool ok = sendOnce(subject, html, text, configErr);
   if (ok) return;
 
   if (configErr) {
@@ -540,21 +551,23 @@ String EmailService::schedText() const {
 
 void EmailService::notifySms(const String &sender, const String &message,
                              uint32_t ts, int8_t modem) {
+  // 运行于抽数任务上下文：只做浅入队，不构建 HTML（模板拼接约 2-3KB 栈）
   Guard g(_mutex);
   if (!activeLocked()) return;  // 总开关关闭或未配置时直接返回，避免每条短信都打日志
   if (!(_notifyTypes & cfg::kEmailNotifySms)) return;
   if (message.length() == 0) return;
 
-  String subject, html, text;
-  buildSmsMail(sender, message, ts, modem, subject, html, text);
   MailJob job;
-  job.subject = subject;
-  job.html = html;
-  job.text = text;
+  job.kind = kSms;
+  job.sender = sender;
+  job.message = message;
+  job.ts = ts;
+  job.modem = modem;
   enqueueLocked(job);
 }
 
 void EmailService::notifySim(uint8_t port, bool ready) {
+  // 同上：抽数任务上下文，浅入队
   Guard g(_mutex);
   if (!activeLocked()) return;
   if (!(_notifyTypes & cfg::kEmailNotifySim)) {
@@ -562,12 +575,10 @@ void EmailService::notifySim(uint8_t port, bool ready) {
     return;
   }
 
-  String subject, html, text;
-  buildSimMail(port, ready, subject, html, text);
   MailJob job;
-  job.subject = subject;
-  job.html = html;
-  job.text = text;
+  job.kind = kSim;
+  job.port = port;
+  job.ready = ready;
   enqueueLocked(job);
 }
 
@@ -579,43 +590,82 @@ void EmailService::notifyStartup() {
 
 void EmailService::notifyOnline() {
   Guard g(_mutex);
-  queueOnlineLocked();
-}
-
-void EmailService::queueStartupLocked() {
-  if (!activeLocked()) return;
-  if (!(_notifyTypes & cfg::kEmailNotifyStartup)) {
-    Serial.println("[mail] 「设备启动」邮件通知已关闭，跳过");
-    return;
-  }
-  String subject, html, text;
-  buildStartupMail(subject, html, text);
-  MailJob job;
-  job.subject = subject;
-  job.html = html;
-  job.text = text;
-  enqueueLocked(job);
-}
-
-void EmailService::queueOnlineLocked() {
   if (!activeLocked()) return;
   if (!(_notifyTypes & cfg::kEmailNotifyOnline)) return;
-  String subject, html, text;
-  buildOnlineMail(subject, html, text);
   MailJob job;
-  job.subject = subject;
-  job.html = html;
-  job.text = text;
+  job.kind = kOnline;
   enqueueLocked(job);
+}
+
+void EmailService::enqueueStartupLocked() {
+  MailJob job;
+  job.kind = kStartup;
+  enqueueLocked(job);
+}
+
+void EmailService::enqueueOnlineLocked() {
+  MailJob job;
+  job.kind = kOnline;
+  enqueueLocked(job);
+}
+
+// 由原始事件构建邮件正文（loop 任务上下文，可做重模板拼接）。
+// 入队与发送之间配置可能被改动，这里做最终判定：
+// 服务未启用/未配置，或该类通知已关闭 -> 返回 false（调用方静默丢弃）。
+bool EmailService::buildMail(const MailJob &job, String &subject,
+                             PsBuffer &html, String &text) const {
+  Guard g(_mutex);
+  if (!activeLocked()) {
+    if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，丢弃待发邮件");
+    return false;
+  }
+  uint32_t bit = 0;
+  switch (job.kind) {
+    case kSms:     bit = cfg::kEmailNotifySms; break;
+    case kSim:     bit = cfg::kEmailNotifySim; break;
+    case kStartup: bit = cfg::kEmailNotifyStartup; break;
+    case kOnline:  bit = cfg::kEmailNotifyOnline; break;
+    case kTest:    break;  // 测试邮件不受通知类型限制
+  }
+  if (bit && !(_notifyTypes & bit)) return false;
+
+  switch (job.kind) {
+    case kSms:
+      buildSmsMail(job.sender, job.message, job.ts, job.modem, subject, html,
+                   text);
+      break;
+    case kSim:
+      buildSimMail(job.port, job.ready, subject, html, text);
+      break;
+    case kStartup:
+      buildStartupMail(subject, html, text);
+      break;
+    case kOnline:
+      buildOnlineMail(subject, html, text);
+      break;
+    case kTest:
+      buildTestMail(subject, html, text);
+      break;
+    default:
+      return false;
+  }
+  if (!html.ok()) {
+    // PSRAM 与 DRAM 都分配不出来：正文不完整，宁可不发也不发坏邮件
+    Serial.println("[mail] 邮件正文缓冲分配失败，本次通知已丢弃");
+    return false;
+  }
+  return true;
 }
 
 bool EmailService::sendTest() {
-  String subject, html, text;
+  String subject, text;
+  PsBuffer html;
   {
     Guard g(_mutex);
     if (!activeLocked()) return false;
     buildTestMail(subject, html, text);
   }
+  if (!html.ok()) return false;
   bool configErr = false;
   return sendOnce(subject, html, text, configErr);
 }
@@ -639,7 +689,7 @@ void EmailService::requeueFrontLocked(const MailJob &job) {
 
 // ---------- 发送 ----------
 
-bool EmailService::sendOnce(const String &subject, const String &html,
+bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
                             const String &text, bool &configErr) {
   configErr = false;
 
@@ -703,11 +753,11 @@ bool EmailService::sendOnce(const String &subject, const String &html,
   s_sslClient.setTimeout(kSocketTimeoutMs);
 
   // HTML 超长时降级为纯文本（编码后体积会膨胀数倍，堆有限）
-  String body = html;
-  if (body.length() > kMaxHtmlChars) {
+  bool useHtml = html.length() > 0;
+  if (useHtml && html.length() > (size_t)kMaxHtmlChars) {
     Serial.printf("[mail] HTML 正文过长（%u 字符），本次仅发送纯文本\r\n",
-                  (unsigned)body.length());
-    body = "";
+                  (unsigned)html.length());
+    useHtml = false;
     if (text.length() == 0) {
       s_smtp.stop();
       return false;
@@ -718,9 +768,10 @@ bool EmailService::sendOnce(const String &subject, const String &html,
   msg.headers.add(rfc822_from, String("SMS Notification <" + user + ">"));
   msg.headers.add(rfc822_to, sendTo);
   msg.headers.add(rfc822_subject, subject);
-  // 有 HTML 就只发 HTML（单部分 text/html），否则退回纯文本
-  if (body.length() > 0) {
-    msg.html.body(body);
+  // 有 HTML 就只发 HTML（单部分 text/html），否则退回纯文本。
+  // PSRAM 缓冲以「静态内容」形式交给库：ReadyMail 直接读指针，不会复制回 DRAM。
+  if (useHtml) {
+    msg.html.body(html.c_str(), html.length());
   } else {
     msg.text.body(text);
   }
@@ -754,77 +805,124 @@ String EmailService::escape(const String &s) const {
   return result;
 }
 
-String EmailService::row(const String &key, const String &val) const {
-  return "<tr><td class=\"k\">" + escape(key) +
-         "</td><td class=\"v\">" + escape(val) + "</td></tr>";
+void EmailService::appendEscaped(PsBuffer &out, const String &s) const {
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s.charAt(i);
+    if (c == '&')       out.append("&amp;");
+    else if (c == '<')  out.append("&lt;");
+    else if (c == '>')  out.append("&gt;");
+    else if (c == '"')  out.append("&quot;");
+    else if (c == '\n') out.append("<br>");
+    else if (c == '\r') { /* 忽略，避免与 \n 重复 */ }
+    else                out.append(c);
+  }
 }
 
-String EmailService::linkRow(const String &key, const String &url) const {
+void EmailService::appendRow(PsBuffer &out, const String &key,
+                             const String &val) const {
+  out.append("<tr><td class=\"k\">");
+  appendEscaped(out, key);
+  out.append("</td><td class=\"v\">");
+  appendEscaped(out, val);
+  out.append("</td></tr>");
+}
+
+void EmailService::appendLinkRow(PsBuffer &out, const String &key,
+                                 const String &url) const {
   if (url.length() == 0) {
-    return row(key, "未知");
+    appendRow(out, key, String("未知"));
+    return;
   }
-  String esc = escape(url);
-  return "<tr><td class=\"k\">" + escape(key) +
-         "</td><td class=\"v\"><a href=\"" + esc +
-         "\" style=\"color:#2f6fed;text-decoration:underline;word-break:break-all\">" +
-         esc + "</a></td></tr>";
+  out.append("<tr><td class=\"k\">");
+  appendEscaped(out, key);
+  out.append("</td><td class=\"v\"><a href=\"");
+  appendEscaped(out, url);
+  out.append("\" style=\"color:#2f6fed;text-decoration:underline;word-break:break-all\">");
+  appendEscaped(out, url);
+  out.append("</a></td></tr>");
 }
 
-String EmailService::table(const String &rows) const {
-  return "<div class=\"blk\"><table class=\"tb\">" + rows + "</table></div>";
+void EmailService::appendTableOpen(PsBuffer &out) const {
+  out.append("<div class=\"blk\"><table class=\"tb\">");
 }
 
-String EmailService::section(const String &caption, const String &rows) const {
-  return "<div class=\"sub\"><div class=\"cap\">" + escape(caption) + "</div>"
-         "<table class=\"tb\">" + rows + "</table></div>";
+void EmailService::appendTableClose(PsBuffer &out) const {
+  out.append("</table></div>");
 }
 
-String EmailService::badge(const String &main, const String &sub, bool ok) const {
+void EmailService::appendSectionOpen(PsBuffer &out,
+                                     const String &caption) const {
+  out.append("<div class=\"sub\"><div class=\"cap\">");
+  appendEscaped(out, caption);
+  out.append("</div><table class=\"tb\">");
+}
+
+void EmailService::appendSectionClose(PsBuffer &out) const {
+  out.append("</table></div>");
+}
+
+void EmailService::appendBadge(PsBuffer &out, const String &main,
+                               const String &sub, bool ok) const {
   // 徽标配色是动态值（正常/异常），仍用内联
-  String s = "<div class=\"badge\" style=\"background:";
-  s += ok ? "#e6f7ec" : "#fff4e6";
-  s += ";border:1px solid ";
-  s += ok ? "#bfe9cd" : "#ffd9a8";
-  s += ";\"><span class=\"b1\" style=\"color:";
-  s += ok ? "#1a8a4a" : "#c97a00";
-  s += ";\">" + escape(main) + "</span>";
+  out.append("<div class=\"badge\" style=\"background:");
+  out.append(ok ? "#e6f7ec" : "#fff4e6");
+  out.append(";border:1px solid ");
+  out.append(ok ? "#bfe9cd" : "#ffd9a8");
+  out.append(";\"><span class=\"b1\" style=\"color:");
+  out.append(ok ? "#1a8a4a" : "#c97a00");
+  out.append(";\">");
+  appendEscaped(out, main);
+  out.append("</span>");
   if (sub.length() > 0) {
-    s += " <span class=\"b2\">" + escape(sub) + "</span>";
+    out.append(" <span class=\"b2\">");
+    appendEscaped(out, sub);
+    out.append("</span>");
   }
-  s += "</div>";
-  return s;
+  out.append("</div>");
 }
 
-String EmailService::note(const String &text) const {
-  return "<div class=\"note\">" + escape(text) + "</div>";
+void EmailService::appendNote(PsBuffer &out, const String &note) const {
+  out.append("<div class=\"note\">");
+  appendEscaped(out, note);
+  out.append("</div>");
 }
 
-String EmailService::buildHtml(const String &title, const String &inner,
-                               int maxWidth) const {
-  // 样式表随每封邮件一起发出：邮件正文是片段，没有 <head> 可放 <style>，只能贴在正文开头
-  String html = "<style>" + String(MAIL_CSS) + "</style>";
-  html += "<div class=\"mw\">";
+void EmailService::buildHtml(PsBuffer &out, const String &title,
+                             const PsBuffer &inner, int maxWidth) const {
+  // 样式表随每封邮件一起发出：邮件正文是片段，没有 <head> 可放 <style>，只能贴在正文开头。
+  // MAIL_CSS 常驻 flash（内存映射），直接按指针追加，不必先拷成 String。
+  out.append("<style>");
+  out.append(MAIL_CSS);
+  out.append("</style>");
+  out.append("<div class=\"mw\">");
   // 卡片宽度按邮件类型可变，动态值保留内联
-  html += "<div class=\"card\" style=\"max-width:" + String(maxWidth) + "px\">";
-  html += "<div class=\"hd\"><span>" + title + "</span></div>";
-  html += inner;
-  html += infoBlock();
-  html += "<div class=\"ft\" style=\"display:flex;justify-content:space-between;align-items:center\">"
-          "<span>SMS Forwarder · 短信转发通知</span>"
-          "<span style=\"text-align:right;flex:1\">已运行 " + formatUptime(millis()) + "</span>"
-          "</div>";
-  html += "</div></div>";
-  return html;
+  out.append("<div class=\"card\" style=\"max-width:");
+  out.append(String(maxWidth));
+  out.append("px\">");
+  out.append("<div class=\"hd\"><span>");
+  out.append(title);  // 可带 emoji，调用方保证已转义
+  out.append("</span></div>");
+  out.append(inner);
+  appendInfoBlock(out);
+  out.append("<div class=\"ft\" style=\"display:flex;justify-content:space-between;align-items:center\">"
+             "<span>SMS Forwarder · 短信转发通知</span>"
+             "<span style=\"text-align:right;flex:1\">已运行 ");
+  out.append(formatUptime(millis()));
+  out.append("</span></div>");
+  out.append("</div></div>");
 }
 
 // ---------- 模板辅助 ----------
 
-String EmailService::infoBlock() const {
-  String rows = row("系统时间",
-                    (_time && _time->isSynced()) ? _time->dateStr() : String("未同步"));
+void EmailService::appendInfoBlock(PsBuffer &out) const {
+  out.append("<div class=\"info\"><table class=\"tb\">");
+  appendRow(out, String("系统时间"),
+            (_time && _time->isSynced()) ? _time->dateStr() : String("未同步"));
 
   // 每个启用的模组一行「本机号码 N」；一个号码都取不到时才回退到设备 IP。
   // 每条通知都应能看出「什么时候、哪台设备」，因此统一在这里追加。
+  // 号码行先攒进独立缓冲：只有确实拿到号码才并入，否则回退 IP 行。
+  bool hasNum = false;
   JsonDocument doc;
   if (_sms && deserializeJson(doc, _sms->modemsJson()) == DeserializationError::Ok &&
       doc.is<JsonArray>()) {
@@ -833,59 +931,58 @@ String EmailService::infoBlock() const {
       if (m["enabled"] | false) enabled++;
     }
     bool multi = enabled > 1;
-    String nums;
+    PsBuffer nums;
     for (JsonObject m : doc.as<JsonArray>()) {
       if (!(m["enabled"] | false)) continue;
       String num = m["num"] | "";
       if (num.length() == 0 || num == "未知") continue;
       int port = m["port"] | 0;
-      nums += row(multi ? (String("本机号码") + String(port)) : String("本机号码"),
-                  num);
+      appendRow(nums,
+                multi ? (String("本机号码") + String(port)) : String("本机号码"),
+                num);
+      hasNum = true;
     }
-    if (nums.length() > 0) {
-      rows += nums;
-      return String("<div class=\"info\"><table class=\"tb\">") + rows + "</table></div>";
-    }
+    if (hasNum && nums.ok()) out.append(nums);
+    else hasNum = false;
   }
-  if (_wifi) rows += row("设备IP", _wifi->ip());  // 无号码时用 IP 标识设备
-  return String("<div class=\"info\"><table class=\"tb\">") + rows + "</table></div>";
+  if (!hasNum && _wifi) {
+    appendRow(out, String("设备IP"), _wifi->ip());  // 无号码时用 IP 标识设备
+  }
+  out.append("</table></div>");
 }
 
-String EmailService::deviceInfoRows() const {
-  String rows;
+void EmailService::appendDeviceRows(PsBuffer &out) const {
   if (_wifi) {
-    rows += linkRow("设备地址", String("http://") + _wifi->ip());
-    rows += row("IP地址", _wifi->ip());
+    appendLinkRow(out, String("设备地址"), String("http://") + _wifi->ip());
+    appendRow(out, String("IP地址"), _wifi->ip());
   }
-  rows += row("MAC地址", WiFi.macAddress());
-  rows += row("设备名称", String("SMS-Forwarder-") + mailDeviceId());
-  rows += row("WiFi信号", String(WiFi.RSSI()) + " dBm");
-  rows += row("运行时长", formatUptime(millis()));
-  rows += chipInfoRows();
-  return rows;
+  appendRow(out, String("MAC地址"), WiFi.macAddress());
+  appendRow(out, String("设备名称"), String("SMS-Forwarder-") + mailDeviceId());
+  appendRow(out, String("WiFi信号"), String(WiFi.RSSI()) + " dBm");
+  appendRow(out, String("运行时长"), formatUptime(millis()));
+  appendChipRows(out);
 }
 
-String EmailService::chipInfoRows() const {
+void EmailService::appendChipRows(PsBuffer &out) const {
   // 芯片型号与片内温度：与运行无关的硬件信息，排查型号差异/过热时有用。
   // 部分芯片或 SDK 未使能温度传感器会返回 NaN，此时展示「不支持」，不打断整封邮件。
   String chipModel = ESP.getChipModel();
   String mdl = (chipModel.length() > 0)
                    ? (chipModel + " rev " + String((int)ESP.getChipRevision()))
                    : String("未知");
-  String rows = row("芯片型号", mdl);
+  appendRow(out, String("芯片型号"), mdl);
 
   float tempC = temperatureRead();
   if (isnan(tempC)) {
-    rows += row("设备温度", "不支持");
+    appendRow(out, String("设备温度"), String("不支持"));
   } else {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f °C", tempC);
-    rows += row("设备温度", String(buf));
+    appendRow(out, String("设备温度"), String(buf));
   }
-  return rows;
 }
 
-String EmailService::modemGroupSection() const {
+void EmailService::appendModemGroupSection(PsBuffer &out) const {
   JsonDocument doc;
   if (_sms && deserializeJson(doc, _sms->modemsJson()) == DeserializationError::Ok &&
       doc.is<JsonArray>()) {
@@ -898,42 +995,49 @@ String EmailService::modemGroupSection() const {
     // 按模组分组：把「模组信息」与「SIM/信号」合并到同一个分组输出，
     // 每个启用的模组一个分组；多模组时分组标题带序号（模组 1 / 模组 2），
     // 单模组时不加序号（模组），与参考项目风格一致。
-    String out;
+    bool any = false;
     for (JsonObject m : doc.as<JsonArray>()) {
       if (!(m["enabled"] | false)) continue;
+      any = true;
       int port = m["port"] | 0;
-      String caption = multi ? (String("模组 ") + String(port)) : String("模组");
-      String rows;
+      appendSectionOpen(out,
+                        multi ? (String("模组 ") + String(port)) : String("模组"));
       String vendor = m["vendor"] | "";
       String model = m["model"] | "";
       String revision = m["revision"] | "";
-      rows += row("制造商", vendor.length() > 0 ? vendor : String("未知"));
-      rows += row("模组型号", model.length() > 0 ? model : String("未知"));
-      rows += row("模组固件", revision.length() > 0 ? revision : String("未知"));
+      appendRow(out, String("制造商"), vendor.length() > 0 ? vendor : String("未知"));
+      appendRow(out, String("模组型号"), model.length() > 0 ? model : String("未知"));
+      appendRow(out, String("模组固件"),
+                revision.length() > 0 ? revision : String("未知"));
       String imei = m["imei"] | "";
-      rows += row("IMEI", imei.length() > 0 ? imei : String("未知"));
+      appendRow(out, String("IMEI"), imei.length() > 0 ? imei : String("未知"));
       String num = m["num"] | "";
-      rows += row("本机号码", (num.length() > 0 && num != "未知") ? num
-                                                                 : String("未知"));
-      rows += row("SIM状态", (m["sim"] | false) ? String("已就绪") : String("未就绪"));
+      appendRow(out, String("本机号码"),
+                (num.length() > 0 && num != "未知") ? num : String("未知"));
+      appendRow(out, String("SIM状态"),
+                (m["sim"] | false) ? String("已就绪") : String("未就绪"));
       String oper = m["oper"] | "";
       String operCode = m["operCode"] | "";
       if (operCode.length() > 0) {
         String cn = operCn(operCode);
-        rows += row("运营商", cn.length() > 0 ? (operCode + " · " + cn) : operCode);
+        appendRow(out, String("运营商"),
+                  cn.length() > 0 ? (operCode + " · " + cn) : operCode);
       } else {
-        rows += row("运营商", oper.length() > 0 ? oper : String("未知"));
+        appendRow(out, String("运营商"),
+                  oper.length() > 0 ? oper : String("未知"));
       }
-      rows += row("信号强度", signalText(m["csq"] | -1));
-      out += section(caption, rows);
+      appendRow(out, String("信号强度"), signalText(m["csq"] | -1));
+      appendSectionClose(out);
     }
-    if (out.length() > 0) return out;
+    if (any) return;
   }
-  return section("模组", row("模组型号", "未启用任何 4G 模组"));
+  appendSectionOpen(out, String("模组"));
+  appendRow(out, String("模组型号"), String("未启用任何 4G 模组"));
+  appendSectionClose(out);
 }
 
-String EmailService::simSectionRows() const {
-  String rows;
+void EmailService::appendSimRows(PsBuffer &out) const {
+  bool any = false;
   JsonDocument doc;
   if (_sms && deserializeJson(doc, _sms->modemsJson()) == DeserializationError::Ok &&
       doc.is<JsonArray>()) {
@@ -944,22 +1048,22 @@ String EmailService::simSectionRows() const {
     bool multi = enabled > 1;
     for (JsonObject m : doc.as<JsonArray>()) {
       if (!(m["enabled"] | false)) continue;
+      any = true;
       int port = m["port"] | 0;
       String p = multi ? (String("模组") + String(port) + " ") : String("");
-      rows += row(p + "SIM状态", (m["sim"] | false) ? String("已就绪")
-                                                    : String("未就绪"));
+      appendRow(out, p + "SIM状态",
+                (m["sim"] | false) ? String("已就绪") : String("未就绪"));
       String operCode = m["operCode"] | "";
       String oper = m["oper"] | "";
-      rows += row(p + "运营商",
-                  operCode.length() > 0 ? operCode
-                                        : (oper.length() > 0 ? oper : String("未知")));
-      rows += row(p + "信号强度", signalText(m["csq"] | -1));
+      appendRow(out, p + "运营商",
+                operCode.length() > 0 ? operCode
+                                      : (oper.length() > 0 ? oper : String("未知")));
+      appendRow(out, p + "信号强度", signalText(m["csq"] | -1));
     }
   }
-  if (rows.length() == 0) {
-    rows = row("SIM状态", "未启用任何 4G 模组");
+  if (!any) {
+    appendRow(out, String("SIM状态"), String("未启用任何 4G 模组"));
   }
-  return rows;
 }
 
 bool EmailService::simOverallReady() const {
@@ -1083,16 +1187,19 @@ void EmailService::parseSmsMeta(const String &message, String &senderName,
 
 // ---------- 各事件邮件 ----------
 
-void EmailService::buildStartupMail(String &subject, String &html,
+void EmailService::buildStartupMail(String &subject, PsBuffer &html,
                                     String &text) const {
   bool ok = simOverallReady();
-  String inner = badge(ok ? "设备启动完成" : "设备已启动（SIM 未就绪）",
-                       simOverallStateText(), ok);
-  inner += section("📡 设备信息", deviceInfoRows());
-  inner += modemGroupSection();
+  PsBuffer inner;
+  appendBadge(inner, ok ? "设备启动完成" : "设备已启动（SIM 未就绪）",
+              simOverallStateText(), ok);
+  appendSectionOpen(inner, String("📡 设备信息"));
+  appendDeviceRows(inner);
+  appendSectionClose(inner);
+  appendModemGroupSection(inner);
 
   subject = "设备启动完成";
-  html = buildHtml("🚀 设备启动完成", inner, 600);
+  buildHtml(html, String("🚀 设备启动完成"), inner, 600);
 
   text = "设备启动完成\n";
   text += "系统时间: " + ((_time && _time->isSynced()) ? _time->dateStr()
@@ -1103,16 +1210,19 @@ void EmailService::buildStartupMail(String &subject, String &html,
   text += "SIM状态: " + simOverallStateText() + "\n";
 }
 
-void EmailService::buildOnlineMail(String &subject, String &html,
+void EmailService::buildOnlineMail(String &subject, PsBuffer &html,
                                    String &text) const {
   bool ok = simOverallReady();
-  String inner = badge("设备在线", simOverallStateText(), ok);
-  inner += section("📡 设备信息", deviceInfoRows());
-  inner += modemGroupSection();
-  inner += note("💡 此邮件由「定时通知」自动发送，用于确认设备仍在线，并非设备刚刚重启。");
+  PsBuffer inner;
+  appendBadge(inner, String("设备在线"), simOverallStateText(), ok);
+  appendSectionOpen(inner, String("📡 设备信息"));
+  appendDeviceRows(inner);
+  appendSectionClose(inner);
+  appendModemGroupSection(inner);
+  appendNote(inner, String("💡 此邮件由「定时通知」自动发送，用于确认设备仍在线，并非设备刚刚重启。"));
 
   subject = "设备在线通知";
-  html = buildHtml("📡 设备在线通知", inner, 600);
+  buildHtml(html, String("📡 设备在线通知"), inner, 600);
 
   text = "设备在线通知（定时通知自动发送）\n";
   text += "系统时间: " + ((_time && _time->isSynced()) ? _time->dateStr()
@@ -1124,20 +1234,21 @@ void EmailService::buildOnlineMail(String &subject, String &html,
 }
 
 void EmailService::buildSimMail(uint8_t port, bool ready, String &subject,
-                                String &html, String &text) const {
-  String inner = badge(ready ? "SIM 卡已插入" : "SIM 卡已拔出",
-                       simStateText(port), ready);
+                                PsBuffer &html, String &text) const {
+  PsBuffer inner;
+  appendBadge(inner, ready ? "SIM 卡已插入" : "SIM 卡已拔出", simStateText(port),
+              ready);
 
   // 事件说明里带上模组标识；再把所有模组的状态都列出来
-  String rows;
-  rows += row("事件说明", String("模组 ") + String(port) +
-                             (ready ? " 的 SIM 卡已插入并就绪"
-                                    : " 的 SIM 卡已拔出或失效"));
-  rows += simSectionRows();
-  inner += table(rows);
+  appendTableOpen(inner);
+  appendRow(inner, String("事件说明"),
+            String("模组 ") + String(port) + (ready ? " 的 SIM 卡已插入并就绪"
+                                                    : " 的 SIM 卡已拔出或失效"));
+  appendSimRows(inner);
+  appendTableClose(inner);
 
   subject = ready ? "SIM 卡已插入" : "SIM 卡已拔出";
-  html = buildHtml(ready ? "🔔 SIM 卡已插入" : "🔔 SIM 卡已拔出", inner);
+  buildHtml(html, ready ? "🔔 SIM 卡已插入" : "🔔 SIM 卡已拔出", inner);
 
   text = subject + "\n";
   text += "模组: " + String(port) + "\n";
@@ -1146,7 +1257,7 @@ void EmailService::buildSimMail(uint8_t port, bool ready, String &subject,
 
 void EmailService::buildSmsMail(const String &sender, const String &message,
                                 uint32_t ts, int8_t modem, String &subject,
-                                String &html, String &text) const {
+                                PsBuffer &html, String &text) const {
   String senderName, verifyCode;
   parseSmsMeta(message, senderName, verifyCode);
 
@@ -1166,32 +1277,40 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
     subject = "来自 " + sender + " 的短信";
   }
 
-  String inner;
+  PsBuffer inner;
 
   // 验证码高亮块（红色大字号，一眼可抄）
   if (verifyCode.length() > 0) {
-    inner += "<div class=\"code\"><div class=\"code1\">验证码</div>";
-    inner += "<div class=\"code2\">" + escape(verifyCode) + "</div></div>";
+    inner.append("<div class=\"code\"><div class=\"code1\">验证码</div>");
+    inner.append("<div class=\"code2\">");
+    appendEscaped(inner, verifyCode);
+    inner.append("</div></div>");
   }
 
-  String rows;
-  rows += "<tr><td class=\"kn\">发件人</td><td class=\"vn\">" + escape(sender);
+  inner.append("<div class=\"rows\"><table class=\"tb\">");
+  inner.append("<tr><td class=\"kn\">发件人</td><td class=\"vn\">");
+  appendEscaped(inner, sender);
   if (senderName.length() > 0) {
-    rows += " <span class=\"hl\">(" + escape(senderName) + ")</span>";
+    inner.append(" <span class=\"hl\">(");
+    appendEscaped(inner, senderName);
+    inner.append(")</span>");
   }
-  rows += "</td></tr>";
-  rows += "<tr><td class=\"kn\">时间</td><td class=\"vn\">" + escape(tsText) +
-          "</td></tr>";
+  inner.append("</td></tr>");
+  inner.append("<tr><td class=\"kn\">时间</td><td class=\"vn\">");
+  appendEscaped(inner, tsText);
+  inner.append("</td></tr>");
   String mlabel = modemLabelOf(modem);
   if (mlabel.length() > 0) {
-    rows += "<tr><td class=\"kn\">接收模组</td><td class=\"vn\">" + escape(mlabel) +
-            "</td></tr>";
+    inner.append("<tr><td class=\"kn\">接收模组</td><td class=\"vn\">");
+    appendEscaped(inner, mlabel);
+    inner.append("</td></tr>");
   }
-  rows += "<tr><td class=\"kn\">内容</td><td class=\"vl\">" + escape(message) +
-          "</td></tr>";
-  inner += "<div class=\"rows\"><table class=\"tb\">" + rows + "</table></div>";
+  inner.append("<tr><td class=\"kn\">内容</td><td class=\"vl\">");
+  appendEscaped(inner, message);
+  inner.append("</td></tr>");
+  inner.append("</table></div>");
 
-  html = buildHtml("📱 " + escape(subject), inner, 600);
+  buildHtml(html, String("📱 ") + escape(subject), inner, 600);
 
   // 纯文本兜底：HTML 不可用（或超长降级）时仍能读到完整信息
   text = "发件人: " + sender;
@@ -1205,15 +1324,13 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
   text += "\n内容:\n" + message;
 }
 
-void EmailService::buildTestMail(String &subject, String &html,
+void EmailService::buildTestMail(String &subject, PsBuffer &html,
                                  String &text) const {
   subject = "测试邮件";
-  String inner = badge("这是一封测试邮件", "SMTP 邮件通知配置正确", true);
+  PsBuffer inner;
+  appendBadge(inner, String("这是一封测试邮件"), String("SMTP 邮件通知配置正确"),
+              true);
 
-  String rows;
-  rows += row("发件账号", _user);
-  rows += row("收件邮箱", _sendTo);
-  rows += row("SMTP 服务器", _server + ":" + String(_port));
   // 通知类型清单
   String types;
   if (_notifyTypes & cfg::kEmailNotifySms) types += "收到短信 / ";
@@ -1222,15 +1339,20 @@ void EmailService::buildTestMail(String &subject, String &html,
   if (_notifyTypes & cfg::kEmailNotifyOnline) types += "定时在线通知 / ";
   if (types.length() >= 3) types = types.substring(0, types.length() - 3);
   if (types.length() == 0) types = "无（全部关闭）";
-  rows += row("通知类型", types);
+
+  appendSectionOpen(inner, String("📮 配置信息"));
+  appendRow(inner, String("发件账号"), _user);
+  appendRow(inner, String("收件邮箱"), _sendTo);
+  appendRow(inner, String("SMTP 服务器"), _server + ":" + String(_port));
+  appendRow(inner, String("通知类型"), types);
   if (_notifyTypes & cfg::kEmailNotifyOnline) {
-    rows += row("在线通知排程", schedText());
+    appendRow(inner, String("在线通知排程"), schedText());
   }
-  inner += section("📮 配置信息", rows);
+  appendSectionClose(inner);
 
-  inner += note("💡 收到本邮件说明 SMTP 配置可用。后续短信、SIM 状态变更、设备启动与定时在线通知都将按上述类型发送。");
+  appendNote(inner, String("💡 收到本邮件说明 SMTP 配置可用。后续短信、SIM 状态变更、设备启动与定时在线通知都将按上述类型发送。"));
 
-  html = buildHtml("📮 测试邮件", inner, 600);
+  buildHtml(html, String("📮 测试邮件"), inner, 600);
 
   text = "这是一封测试邮件\n";
   text += "发件账号: " + _user + "\n";

@@ -110,6 +110,15 @@ constexpr const char *kSsePath = "/api/sse";  // SSE 事件流路径（需认证
 constexpr uint32_t kSsePushMs = 1000;         // 状态采集/比对的周期（ms）
 constexpr uint8_t kSseMaxClients = 8;         // 并发 SSE 客户端上限（超出顶掉最旧）
 
+// ---------------- 设备日志（PSRAM 环形存储）----------------
+// 运行日志环形缓冲（log/LogStore）：条目缓冲区整块分配在 PSRAM，与 WiFi/
+// LwIP 等内部堆使用者隔离，定长条目 + FIFO 淘汰最旧，运行期零堆分配。
+// 默认 512 条 x 140B ≈ 70KB PSRAM；板子无 PSRAM 时自动退化为内部堆分配。
+constexpr uint16_t kLogRingSize = 512;    // 环形缓冲条数上限（FIFO 淘汰最旧）
+constexpr uint8_t  kLogTagMax = 16;       // 标签字段长度（含 '\0'，超出截断）
+constexpr uint8_t  kLogMsgMax = 112;      // 正文字段长度（含 '\0'，超出截断）
+constexpr uint8_t  kLogPageSizeMax = 100; // 分页查询每页条数上限
+
 // ---------------- 短信（4G 模组） ----------------
 constexpr uint8_t kSmsMaxModems = 2;          // 可接模组数（与双串口一一对应）
 constexpr uint16_t kSmsStoreMax = 1000;       // 短信存储条数上限（FIFO 淘汰）

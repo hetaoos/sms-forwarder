@@ -75,12 +75,16 @@ void SerialBridge::reopen(Port &p, uint32_t baud) {
 }
 
 // 初始化互斥量并创建抽数任务（固定到核心 1，优先级 2）
+// 栈 8KB：本任务的调用链很深——URC 回调 -> SmsService::onUnsolicited ->
+// handleCmt（pdulib 解码 + LittleFS 写入 + Serial.printf）-> 上层回调
+// （如邮件通知入队）。原 4KB 余量不足，一旦栈溢出抽数任务死亡，
+// 表现为「短信既收不到也发不出」（状态机与响应收集都随之停摆）。
 void SerialBridge::begin() {
   if (_histMutex) return;
   sInstance = this;
   for (uint8_t i = 0; i < 2; i++) _ports[i].mutex = xSemaphoreCreateMutex();
   _histMutex = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(&SerialBridge::taskEntry, "uart-pump", 4096, this, 2,
+  xTaskCreatePinnedToCore(&SerialBridge::taskEntry, "uart-pump", 8192, this, 2,
                           &_task, 1);
 }
 

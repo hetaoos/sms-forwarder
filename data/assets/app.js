@@ -361,7 +361,7 @@ const MENU = [
     { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
   ]},
   { group: '监控', items: [
-    { id: 'logs', title: '运行日志', icon: 'logs', todo: true },
+    { id: 'logs', title: '运行日志', icon: 'logs' },
   ]},
   { group: '设备控制', items: [
     { id: 'display', title: '屏幕显示', icon: 'display' },
@@ -1271,6 +1271,149 @@ function pageEmail() {
       } finally {
         this.testing = false;
       }
+    },
+  };
+}
+
+/* ---------- 运行日志（PSRAM 环形缓冲：分页 + 级别/关键字过滤 + 自动刷新） ----------
+ * 后端无 SSE 事件源（日志为低频事件，且 diff 基线意义不大），采用 5s 轮询；
+ * 轮询 GET 不走 apiOp（失败不弹 toast，避免离线时刷屏）。 */
+function pageLogs() {
+  const LEVELS = { 0: '调试', 1: '信息', 2: '警告', 3: '错误' };
+  return {
+    logs: [],                 // 当前页记录（按 ID 倒序，最新在前）
+    lastId: 0,                // 已知最新记录 ID（增量拉取基线：只取比它大的）
+    total: 0, page: 1, pageSize: 20,
+    level: '',                // 最低级别过滤：'' 全部 / 1 信息 / 2 警告 / 3 错误
+    q: '',                    // 关键字（匹配 tag/msg）
+    stats: {},                // GET /api/logs/stats
+    statsErr: '',             // 缓冲不可用提示（stats.ok=false）
+    loading: false,
+    auto: true,               // 自动刷新开关
+    timer: null,
+
+    init() {
+      this.loadStats();
+      this.reload();
+      // 5s 轮询走增量（tick），不再整页重拉：后者会重建列表导致闪烁与滚动跳动。
+      // 后台标签页暂停（document.hidden），切页由 onCleanup 清理
+      this.timer = setInterval(() => {
+        if (this.auto && !document.hidden && !this.loading) this.tick();
+      }, 5000);
+      onCleanup(() => {
+        if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      });
+    },
+    // 增量拉取：只取 ID 大于 lastId 的新记录并插入列表顶部（最新在前），
+    // 已在看其它页时不改动可见列表，仅同步计数与基线
+    async tick() {
+      // 还没有基线（视图为空）：静默整页重拉一次拿到基线，后续即走增量
+      if (!this.lastId) { this.reload(true); return; }
+      const limit = 100;
+      try {
+        const q = new URLSearchParams({ after: this.lastId, limit: limit });
+        if (this.level !== '') q.set('level', this.level);
+        if (this.q) q.set('q', this.q);
+        const r = await apiFetch('/api/logs?' + q.toString());
+        if (!r.ok) return;
+        const j = await r.json();
+        this.total = j.total || 0;
+        if (this.stats.max) this.stats.total = this.total;   // 同步顶部「当前条数」
+        const got = j.logs || [];
+        if (!got.length) return;
+        // 插入前记录滚动位置：顶部追加会让下方内容下移，需补偿，避免阅读时跳动
+        const box = this.$refs.box;
+        const prevTop = box ? box.scrollTop : 0;
+        const prevH = box ? box.scrollHeight : 0;
+        if (this.page === 1) {
+          this.logs = got.concat(this.logs);                 // got 升序，新记录在前
+          if (this.logs.length > this.pageSize) this.logs = this.logs.slice(0, this.pageSize);
+        }
+        // 基线推进：取回的条数已满 limit 时只推进到末尾一条，下次继续补齐；
+        // 未满说明后面已无匹配记录，可直接推进到服务端最新 ID
+        this.lastId = got[got.length - 1].id;
+        if (got.length < limit && j.last) this.lastId = j.last;
+        this.$nextTick(() => {
+          if (box && prevTop > 0) box.scrollTop = prevTop + (box.scrollHeight - prevH);
+        });
+      } catch (e) {}
+    },
+    // silent=true：不切 loading 态（轮询兜底用，避免空列表时「加载中…」闪烁）
+    async reload(silent) {
+      if (!silent) this.loading = true;
+      try {
+        const q = new URLSearchParams({ page: this.page, pageSize: this.pageSize });
+        if (this.level !== '') q.set('level', this.level);
+        if (this.q) q.set('q', this.q);
+        const r = await apiFetch('/api/logs?' + q.toString());
+        if (r.ok) {
+          const j = await r.json();
+          this.logs = j.logs || [];
+          this.total = j.total || 0;
+          // 清空/筛选后当前页越界：自动回到最后一页并重新拉取
+          const pc = Math.max(1, Math.ceil(this.total / this.pageSize));
+          if (this.page > pc) { this.page = pc; if (!silent) this.loading = false; return this.reload(silent); }
+          // 基线 = 当前可见的最新一条（列表按 ID 倒序）
+          this.lastId = this.logs.length ? this.logs[0].id : 0;
+        }
+      } catch (e) {}
+      if (!silent) this.loading = false;
+    },
+    async loadStats() {
+      try {
+        const r = await apiFetch('/api/logs/stats');
+        if (r.ok) {
+          const j = await r.json();
+          this.stats = j;
+          this.statsErr = j.ok ? ''
+              : ('日志缓冲不可用（' + (j.error || 'unknown') + '）：请检查串口输出中的 [log] 日志');
+        }
+      } catch (e) {}
+    },
+    search() { this.page = 1; this.reload(); },
+    changePageSize() { this.page = 1; this.reload(); },
+    gotoPage(p) { if (p < 1 || p > this.pageCount) return; this.page = p; this.reload(); },
+    get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+    get pages() {
+      const out = [];
+      const pc = this.pageCount;
+      let start = Math.max(1, this.page - 2);
+      let end = Math.min(pc, start + 4);
+      start = Math.max(1, end - 4);
+      for (let i = start; i <= end; i++) out.push(i);
+      return out;
+    },
+    async clearAll() {
+      if (!await confirmDialog('清空日志', '确定清空全部运行日志吗？', true)) return;
+      const r = await apiOp('/api/logs', { method: 'DELETE' }, '日志已清空');
+      if (r) { this.page = 1; this.reload(); this.loadStats(); }
+    },
+    // 存储位置文案：区分「PSRAM」/「无 PSRAM」/「有 PSRAM 但分配失败」
+    storeText() {
+      if (!this.stats.max) return '-';
+      return this.stats.psram ? 'PSRAM' : '内部堆';
+    },
+    storeHint() {
+      if (this.stats.psram) return '';
+      const total = this.stats.psramTotal || 0;
+      return total
+          ? ('设备有 PSRAM（剩余 ' + fmtBytes(this.stats.psramFree) + ' / ' + fmtBytes(total) +
+             '），但日志缓冲分配失败，已退化到内部堆；功能不受影响')
+          : '设备未启用 PSRAM（或上电检测失败），日志缓冲落在内部堆；功能不受影响';
+    },
+    levelText(l) { return LEVELS[l] || '信息'; },
+    levelClass(l) { return l >= 3 ? 'err' : l === 2 ? 'warn' : l === 0 ? '' : 'info'; },
+    msgClass(l) { return l >= 3 ? 'lv-err' : l === 2 ? 'lv-warn' : ''; },
+    // 时间格式化与仪表盘一致：纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则开机时长
+    fmtTs(ts) {
+      if (!ts) return '-';
+      if (ts >= 1600000000) {
+        const d = new Date(ts * 1000);
+        const p = n => (n < 10 ? '0' : '') + n;
+        return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+               p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      }
+      return '开机 ' + fmtUptime(ts);
     },
   };
 }

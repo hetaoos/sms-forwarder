@@ -1,0 +1,207 @@
+#include "log/LogStore.h"
+
+#include <esp_heap_caps.h>
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <string.h>
+
+#include <Arduino.h>
+
+namespace {
+
+// 安全拷贝定长字段：超长截断并保证 '\0' 结尾
+// dst：目标缓冲区；cap：容量（含 '\0'）；src：源串（可为空）
+void copyTrunc(char *dst, size_t cap, const char *src) {
+  if (!src) {
+    dst[0] = '\0';
+    return;
+  }
+  size_t n = strlen(src);
+  if (n > cap - 1) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+// 大小写不敏感的子串查找；needle 为空视为命中
+// hay：被查找串（'\0' 结尾）；needle：关键字（已转为小写）
+bool containsCI(const char *hay, const char *needle) {
+  if (!hay || !needle) return false;
+  size_t nl = strlen(needle);
+  if (nl == 0) return true;
+  for (const char *p = hay; *p; p++) {
+    size_t i = 0;
+    // p[i] 到 hay 末尾即停（*p 链保证不越界），全部匹配上则命中
+    while (i < nl && p[i] &&
+           tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) {
+      i++;
+    }
+    if (i == nl) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+// max：条数上限（0 或越界取 cfg::kLogRingSize）。
+// PSRAM 优先分配（与短信/HTTP 等 DRAM 使用者隔离），失败退化为内部堆
+void LogStore::begin(uint16_t max) {
+  _mutex = xSemaphoreCreateMutex();
+  if (max == 0 || max > cfg::kLogRingSize) max = cfg::kLogRingSize;
+  _max = max;
+  _count = 0;
+  _nextId = 1;
+
+  size_t bytes = sizeof(Entry) * _max;
+  _buf = (Entry *)heap_caps_calloc(_max, sizeof(Entry), MALLOC_CAP_SPIRAM);
+  _psram = _buf != nullptr;
+  if (!_buf) {  // 无 PSRAM 或分配失败：退化到内部堆，功能不变
+    _buf = (Entry *)calloc(_max, sizeof(Entry));
+  }
+  if (!_buf) {
+    _max = 0;
+    Serial.println("[log] ring alloc failed, logging disabled");
+    return;
+  }
+  Serial.printf("[log] ring ready: %u entries x %u B = %u B in %s\r\n",
+                (unsigned)_max, (unsigned)sizeof(Entry), (unsigned)bytes,
+                _psram ? "PSRAM" : "heap");
+  // 兜底说明：板子无 PSRAM 时属预期，有 PSRAM 却退化则说明 PSRAM 初始化失败
+  // 或剩余空间不足（8MB 板型上通常是前者），串口一眼可辨
+  if (!_psram) {
+    Serial.printf(
+        "[log] PSRAM alloc failed, fell back to heap (psram size %u B, free %u B)\r\n",
+        (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
+  }
+}
+
+// level：级别；tag：模块标签；msg：正文（均可超长截断）
+void LogStore::add(LogLevel level, const char *tag, const char *msg) {
+  if (!_buf) return;
+  lock();
+  uint32_t id = _nextId++;
+  Entry &e = _buf[id % _max];
+  e.id = id;
+  e.ts = _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
+  e.level = (uint8_t)level;
+  copyTrunc(e.tag, sizeof(e.tag), tag);
+  copyTrunc(e.msg, sizeof(e.msg), msg);
+  if (_count < _max) _count++;
+  unlock();
+}
+
+// level：级别；tag：模块标签；fmt：格式串（自动截断到 kLogMsgMax-1）
+void LogStore::addf(LogLevel level, const char *tag, const char *fmt, ...) {
+  if (!_buf || !fmt) return;
+  char msg[cfg::kLogMsgMax];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+  add(level, tag, msg);
+}
+
+// page：页码（1 起）；pageSize：每页条数（越界钳制）；
+// level：最低级别过滤（<0 不过滤）；q：关键字（空不筛，匹配 tag/msg）
+void LogStore::list(int page, int pageSize, int8_t level, const String &q,
+                    std::vector<Entry> &out, int &total) {
+  out.clear();
+  total = 0;
+  if (!_buf) return;
+  if (page < 1) page = 1;
+  if (pageSize < 1) pageSize = 20;
+  if (pageSize > cfg::kLogPageSizeMax) pageSize = cfg::kLogPageSizeMax;
+
+  String ql = q;
+  ql.toLowerCase();
+  const char *needle = ql.length() ? ql.c_str() : nullptr;
+
+  lock();
+  if (_count == 0) {
+    unlock();
+    return;
+  }
+  // 最新在前（ID 倒序）扫描：先只收集命中的 ID，再按页复制条目副本，
+  // 避免为整环匹配结果临时拷贝（定长条目约 140B，拷贝成本远高于 4B ID）
+  std::vector<uint32_t> ids;
+  ids.reserve(_count);
+  uint32_t oldest = _nextId - _count;
+  for (uint32_t id = _nextId; id-- > oldest;) {
+    const Entry &e = _buf[id % _max];
+    if (level >= 0 && e.level < (uint8_t)level) continue;
+    if (needle && !containsCI(e.tag, needle) && !containsCI(e.msg, needle)) {
+      continue;
+    }
+    ids.push_back(id);
+  }
+  total = (int)ids.size();
+
+  int start = (page - 1) * pageSize;
+  if (start < total) {
+    int end = start + pageSize;
+    if (end > total) end = total;
+    out.reserve(end - start);
+    for (int i = start; i < end; i++) {
+      out.push_back(_buf[ids[i] % _max]);
+    }
+  }
+  unlock();
+}
+
+// after：起始 ID（不含）；limit：最多条数（越界钳制）；
+// level：最低级别过滤（<0 不过滤）；q：关键字（空不筛，匹配 tag/msg）
+// 扫描区间为 [max(after+1, 现存最旧), 最新]，一次遍历同时计数与取页，
+// 保证 out（升序）与 total 来自同一快照（新记录可能在两次调用间插入，无影响）
+void LogStore::tail(uint32_t after, size_t limit, int8_t level, const String &q,
+                    std::vector<Entry> &out, int &total) {
+  out.clear();
+  total = 0;
+  if (!_buf) return;
+  if (limit == 0) limit = 1;
+  if (limit > cfg::kLogPageSizeMax) limit = cfg::kLogPageSizeMax;
+
+  String ql = q;
+  ql.toLowerCase();
+  const char *needle = ql.length() ? ql.c_str() : nullptr;
+
+  lock();
+  if (_count == 0) {
+    unlock();
+    return;
+  }
+  uint32_t oldest = _nextId - _count;
+  uint32_t from = (after == 0xFFFFFFFFu) ? 0xFFFFFFFFu : after + 1;  // 溢出保护
+  if (from < oldest) from = oldest;   // 该段已被淘汰：从现存最旧开始
+
+  for (uint32_t id = from; id < _nextId; id++) {
+    const Entry &e = _buf[id % _max];
+    if (level >= 0 && e.level < (uint8_t)level) continue;
+    if (needle && !containsCI(e.tag, needle) && !containsCI(e.msg, needle)) {
+      continue;
+    }
+    total++;
+    if (out.size() < limit) out.push_back(e);
+  }
+  unlock();
+}
+
+// 逻辑清空：_count 归零即全部不可见；保留 _nextId 不回退
+void LogStore::clear() {
+  lock();
+  _count = 0;
+  unlock();
+}
+
+String LogStore::statsJson() const {
+  if (!_buf) return "{\"ok\":false,\"error\":\"log ring not ready\"}";
+  lock();
+  // psramTotal/psramFree：设备 PSRAM 容量与剩余（页面据此区分「无 PSRAM」与
+  // 「有 PSRAM 但分配失败」，而不是只显示一句落点结论）
+  String js = String("{\"ok\":true,\"total\":") + _count + ",\"max\":" + _max +
+              ",\"psram\":" + (_psram ? "true" : "false") +
+              ",\"bytes\":" + (unsigned)(sizeof(Entry) * _max) +
+              ",\"psramTotal\":" + (unsigned)ESP.getPsramSize() +
+              ",\"psramFree\":" + (unsigned)ESP.getFreePsram() + "}";
+  unlock();
+  return js;
+}

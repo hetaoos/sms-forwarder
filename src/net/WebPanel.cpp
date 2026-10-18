@@ -138,12 +138,13 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events/sms/time/email：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events/sms/time/email/log：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, AdminStore &auth, StatusBus &events,
-                   SmsService &sms, TimeSync &time, EmailService &email)
+                   SmsService &sms, TimeSync &time, EmailService &email,
+                   LogStore &log)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events), _sms(sms), _time(time), _email(email) {}
+      _events(events), _sms(sms), _time(time), _email(email), _log(log) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -267,7 +268,14 @@ void WebPanel::sendJson(AsyncWebServerRequest *req, const String &json) {
 // 注册全部路由：
 // 1. 认证中间件：/api/ 前缀统一要求登录（Cookie 或 Bearer 令牌），
 //    登录/登出/会话探测三个端点放行；页面与静态资源公开（不含敏感数据）；
-// 2. 精确路由（API / 首页）先注册，serveStatic 兜底其余静态资源
+// 2. 精确路由（API / 首页）先注册，serveStatic 兜底其余静态资源；
+// 3. 父子路径顺序：ESPAsyncWebServer 对普通 URI 采用 BackwardCompatible
+//    匹配（精确 或 前缀 + "/"，见库 WebServer.cpp 的 AsyncURIMatcher::matches），
+//    且按注册顺序取第一个匹配，故子路径必须注册在父路径之前，否则会被父路由
+//    吞掉（返回父路由的响应，字段对不上）。例：/api/logs/stats 必须先于
+//    /api/logs，/api/sms/stats|latest|ports(GET) 必须先于 /api/sms，
+//    /api/email/enabled|test(POST) 必须先于 POST /api/email。
+//    仅父路由未注册该方法时（如 /api/sms 无 POST），子路由才可放在后面。
 void WebPanel::setupRoutes() {
   _server.addMiddleware([this](AsyncWebServerRequest *req,
                                ArMiddlewareNext next) {
@@ -502,6 +510,100 @@ void WebPanel::setupRoutes() {
     sendJson(req, _bridge.statsJson());
   });
 
+  // ================= 设备日志（PSRAM 环形缓冲）=================
+  // 路由顺序注意：ESPAsyncWebServer 对普通 URI 采用「精确 或 前缀 + /」匹配
+  // （AsyncURIMatcher 的 BackwardCompatible），handler 按注册顺序取第一个匹配，
+  // 故子路径（/api/logs/stats）必须先于父路径（/api/logs）注册，否则会被父路由
+  // 吞掉——表现为返回父路由的 JSON（字段对不上，页面出现「-」）。
+
+  // 存储统计：{"ok":true,"total":n,"max":n,"psram":bool,"bytes":n,
+  //  "psramTotal":n,"psramFree":n}
+  // （psram 表示环形缓冲实际是否落在 PSRAM，bytes 为占用字节数）
+  _server.on("/api/logs/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _log.statsJson());
+  });
+
+  // 分页查询：?page=1&pageSize=20&level=2&q=关键字
+  // page 从 1 起；pageSize 越界钳制（上限 kLogPageSizeMax）；
+  // level 为「最低级别」过滤（0 调试 / 1 信息 / 2 警告 / 3 错误，缺省不过滤）；
+  // q 对 tag/msg 做大小写不敏感的子串匹配；结果按 ID 倒序（最新在前）：
+  // {"ok":true,"total":n,"page":p,"pageSize":ps,
+  //  "logs":[{id,ts,level,tag,msg}...]}
+  _server.on("/api/logs", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    // level 缺省不过滤；前端「仅看警告以上」传 level=2
+    int minLevel = req->hasParam("level") ? paramInt(req, "level", -1) : -1;
+    String q = stringParam(req, "q");
+
+    // ---- 增量模式：?after=<id>&limit=<n> ----
+    // 只取该 ID 之后的新记录（升序），供前端轮询追加，避免整页重绘闪烁。
+    // 过滤条件与分页模式共用；last 为服务端最新 ID（前端据此推进基线）
+    if (req->hasParam("after")) {
+      int afterI = paramInt(req, "after", 0);
+      uint32_t after = afterI > 0 ? (uint32_t)afterI : 0;
+      size_t limit = (size_t)paramInt(req, "limit", cfg::kLogPageSizeMax);
+
+      std::vector<LogStore::Entry> inc;
+      int total = 0;
+      _log.tail(after, limit, (int8_t)minLevel, q, inc, total);
+
+      JsonDocument doc;
+      doc["ok"] = true;
+      doc["last"] = _log.lastId();
+      doc["total"] = total;
+      doc["count"] = (unsigned)inc.size();
+      JsonArray a2 = doc["logs"].to<JsonArray>();
+      for (const LogStore::Entry &e : inc) {
+        JsonObject o = a2.add<JsonObject>();
+        o["id"] = e.id;
+        o["ts"] = e.ts;
+        o["level"] = e.level;
+        o["tag"] = e.tag;
+        o["msg"] = e.msg;
+      }
+      String outInc;
+      serializeJson(doc, outInc);
+      sendJson(req, outInc);
+      return;
+    }
+
+    // ---- 分页模式：?page=&pageSize= ----
+    int page = paramInt(req, "page", 1);
+    int pageSize = paramInt(req, "pageSize", 20);
+    if (page < 1) page = 1;
+    if (pageSize < 1) pageSize = 20;
+    if (pageSize > cfg::kLogPageSizeMax) pageSize = cfg::kLogPageSizeMax;
+
+    std::vector<LogStore::Entry> logs;
+    int total = 0;
+    _log.list(page, pageSize, (int8_t)minLevel, q, logs, total);
+
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["total"] = total;
+    doc["page"] = page;
+    doc["pageSize"] = pageSize;
+    JsonArray arr = doc["logs"].to<JsonArray>();
+    for (const LogStore::Entry &e : logs) {
+      JsonObject o = arr.add<JsonObject>();
+      o["id"] = e.id;
+      o["ts"] = e.ts;
+      o["level"] = e.level;
+      o["tag"] = e.tag;
+      o["msg"] = e.msg;
+    }
+    String out;
+    serializeJson(doc, out);
+    sendJson(req, out);
+  });
+
+  // 清空全部日志（逻辑清空，ID 计数保留，便于前端区分新旧）；
+  // 清空动作本身补记一条日志
+  _server.on("/api/logs", HTTP_DELETE, [this](AsyncWebServerRequest *req) {
+    _log.clear();
+    _log.add(LogLevel::kInfo, "log", "日志已清空");
+    sendOk(req);
+  });
+
   // ---- 屏幕开关 / 亮度 ----
   // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) {
@@ -643,6 +745,26 @@ void WebPanel::setupRoutes() {
              });
 
   // ================= 短信 =================
+  // 路由顺序注意（同设备日志段）：子路径必须先于父路径注册，否则父路由按
+  // BackwardCompatible（精确 或 前缀 + /）匹配会吞掉 /api/sms/stats、
+  // /api/sms/latest 与 GET /api/sms/ports。父路由 /api/sms 未注册 POST，
+  // 故 POST 子路由（ports/reinit/send）不受影响，保持原位即可。
+
+  // 存储统计：{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}
+  _server.on("/api/sms/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _sms.store().statsJson());
+  });
+
+  // 最新一条短信摘要（仪表盘用；与 SSE sms 事件同格式），无记录返回 {}
+  _server.on("/api/sms/latest", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _sms.latestJson());
+  });
+
+  // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
+  _server.on("/api/sms/ports", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+  });
+
   // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
   // "pageSize":ps,"messages":[{id,dir,phone,content,ts,modem}],...}
   _server.on("/api/sms", HTTP_GET, [this](AsyncWebServerRequest *req) {
@@ -651,11 +773,12 @@ void WebPanel::setupRoutes() {
     String q = stringParam(req, "q");
     int portFilter = req->hasParam("port") ? paramInt(req, "port", -1) : -1;
 
-    std::vector<SmsMessage> msgs;
+    SmsList msgs;  // PSRAM 容器：整页最多 100 条
     int total = 0;
     _sms.store().list(page, pageSize, q, (int8_t)portFilter, msgs, total);
 
-    JsonDocument doc;
+    // JSON 内存池也放 PSRAM：整页序列化后可达数十 KB
+    JsonDocument doc(psramJsonAllocator());
     doc["ok"] = true;
     doc["total"] = total;
     doc["page"] = page;
@@ -692,21 +815,6 @@ void WebPanel::setupRoutes() {
       return;
     }
     sendOk(req);
-  });
-
-  // 存储统计：{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}
-  _server.on("/api/sms/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, _sms.store().statsJson());
-  });
-
-  // 最新一条短信摘要（仪表盘用；与 SSE sms 事件同格式），无记录返回 {}
-  _server.on("/api/sms/latest", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, _sms.latestJson());
-  });
-
-  // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
-  _server.on("/api/sms/ports", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
   });
 
   // 配置模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
@@ -774,9 +882,13 @@ void WebPanel::setupRoutes() {
                bool stored = true;
                uint32_t id = _sms.send((uint8_t)port, phone, content, err, &stored);
                if (!id) {
+                 _log.addf(LogLevel::kWarn, "sms", "发送失败（模组 %d -> %s）：%s",
+                           port, phone.c_str(), err.c_str());
                  sendErr(req, 400, err.c_str());
                  return;
                }
+               _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（模组 %d，记录 #%u）",
+                         phone.c_str(), port, (unsigned)id);
                if (!stored) {
                  sendJson(req,
                           "{\"ok\":true,\"stored\":false,\"warn\":"
@@ -792,6 +904,49 @@ void WebPanel::setupRoutes() {
   // SMTP 授权码不回显（hasPass 表示是否已保存），避免泄露
   _server.on("/api/email", HTTP_GET, [this](AsyncWebServerRequest *req) {
     sendJson(req, _email.configJson());
+  });
+
+  // 路由顺序注意（同设备日志段）：POST 子路径必须先于 POST /api/email 注册，
+  // 否则父路由按 BackwardCompatible（精确 或 前缀 + /）匹配会吞掉下面两条；
+  // 被吞时「总开关/测试发送」会走到配置保存分支。GET /api/email 无此问题
+  // （子路径均为 POST，方法不匹配）。
+
+  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
+  // （停用时丢弃待发队列，已保存的 SMTP 参数与通知类型保留）
+  _server.on("/api/email/enabled", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               bool on = true;
+               if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               if (!_email.setEnabled(on)) {
+                 sendErr(req, 500, "config save failed");
+                 return;
+               }
+               sendJson(req, _email.configJson());
+             });
+
+  // 测试发送：立即同步发一封测试邮件（单次尝试，最长阻塞约 15s）。
+  // 用户主动触发、频率极低，可接受；队列中的通知邮件不受影响。
+  _server.on("/api/email/test", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    if (!_email.enabled()) {
+      sendErr(req, 400, "邮件通知未启用，请先打开总开关");
+      return;
+    }
+    if (!_email.isConfigured()) {
+      sendErr(req, 400, "邮件配置不完整，请先保存服务器/账号/授权码/收件人");
+      return;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      sendErr(req, 400, "WiFi 未连接，无法发送");
+      return;
+    }
+    if (!_email.sendTest()) {
+      sendErr(req, 500, "发送失败，请检查 SMTP 配置与网络");
+      return;
+    }
+    sendOk(req);
   });
 
   // 配置保存：JSON {"server":"..","port":465,"user":"..","pass":"..","sendTo":"..",
@@ -844,44 +999,6 @@ void WebPanel::setupRoutes() {
                }
                sendJson(req, _email.configJson());
              });
-
-  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
-  // （停用时丢弃待发队列，已保存的 SMTP 参数与通知类型保留）
-  _server.on("/api/email/enabled", HTTP_POST,
-             [this](AsyncWebServerRequest *req, JsonVariant &json) {
-               bool on = true;
-               if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
-                 sendErr(req, 400, "invalid json");
-                 return;
-               }
-               if (!_email.setEnabled(on)) {
-                 sendErr(req, 500, "config save failed");
-                 return;
-               }
-               sendJson(req, _email.configJson());
-             });
-
-  // 测试发送：立即同步发一封测试邮件（单次尝试，最长阻塞约 15s）。
-  // 用户主动触发、频率极低，可接受；队列中的通知邮件不受影响。
-  _server.on("/api/email/test", HTTP_POST, [this](AsyncWebServerRequest *req) {
-    if (!_email.enabled()) {
-      sendErr(req, 400, "邮件通知未启用，请先打开总开关");
-      return;
-    }
-    if (!_email.isConfigured()) {
-      sendErr(req, 400, "邮件配置不完整，请先保存服务器/账号/授权码/收件人");
-      return;
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-      sendErr(req, 400, "WiFi 未连接，无法发送");
-      return;
-    }
-    if (!_email.sendTest()) {
-      sendErr(req, 500, "发送失败，请检查 SMTP 配置与网络");
-      return;
-    }
-    sendOk(req);
-  });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）
   _server.onNotFound([](AsyncWebServerRequest *req) {

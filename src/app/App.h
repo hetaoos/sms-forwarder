@@ -5,6 +5,7 @@
 #include "app/StatusInfo.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
+#include "log/LogStore.h"
 #include "net/AdminStore.h"
 #include "net/EmailService.h"
 #include "net/StatusBus.h"
@@ -36,7 +37,8 @@ class App {
   StatusBus _events{_wifi, _bridge, _led, _display, _sms, _time};  // SSE 状态推送总线
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
   EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time, _email};  // HTTP 控制台（依赖上述模块）
+  LogStore _log;            // 设备日志环形存储（PSRAM，Web 分页查询）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time, _email, _log};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };

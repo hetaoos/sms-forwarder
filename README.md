@@ -33,6 +33,9 @@
 - **SSE 实时推送**（`net/StatusBus`，`/api/sse`）：状态变化时主动推送给
   全部已连接浏览器（1 秒 diff 比对，只推变化），网页端不再轮询状态接口；
   REST 接口原样保留供第三方客户端使用
+- **设备日志**（`log/LogStore`）：运行日志存入 PSRAM 定长记录环（默认 512 条，
+  写满 FIFO 淘汰最旧，约 70KB；板子无 PSRAM 时自动退化为内部堆），
+  支持按级别 / 关键字过滤的分页查询与一键清空
 - **SMTP 邮件通知**（`net/EmailService`，参考 esp32-sms-forwarding 实现）
   - 统一 HTML 卡片模板（灰底白卡 + 渐变标题栏 + 状态徽标 + 公共信息块），
     自动识别短信验证码并在标题/正文大字高亮；客户端不支持 HTML 时附带纯文本兜底
@@ -47,6 +50,13 @@
   - **总开关**：停用后一切邮件都不发（短信 / SIM / 启动 / 定时在线全部静默
     跳过，待发队列丢弃），已保存的服务器、账号与通知类型保留，重新开启立即恢复
   - 仅支持隐式 TLS 端口（465 等，握手即加密），不支持 587（STARTTLS）
+- **PSRAM 大块内存**（`app/Psram.h`）：ESP32-S3 片外 8MB PSRAM 用于承载瞬时大块
+  数据，内部 DRAM（327KB，还要与任务栈、LWIP 缓冲共用）只留短字符串：
+  - 邮件正文构造：CSS + 卡片 + 多模组表格直接拼进 PSRAM 缓冲区，
+    并以「静态内容」形式交给 ReadyMail（`body(const char*, size_t)`），全程不回拷 DRAM
+  - 短信列表分页：结果容器与响应 JSON 内存池均分配在 PSRAM（一页最多 100 条）
+  - 设备日志环（见上）
+  - 无 PSRAM 或空间不足时自动回退内部堆，功能不变（构造失败则丢弃本次通知并打日志）
 
 ## 硬件与引脚
 
@@ -227,6 +237,20 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 
 `eol` 取值：`0`=CRLF，`1`=CR，`2`=LF，`3`=无。
 
+### 设备日志（PSRAM 环形缓冲）
+
+运行日志存于 PSRAM 的定长记录环（`log/LogStore`，默认 512 条，写满 FIFO
+淘汰最旧；无 PSRAM 时自动退化为内部堆，功能不变）。时间戳与短信记录一致：
+时钟已同步为纪元秒，未同步为开机秒数。级别：`0` 调试 / `1` 信息 / `2` 警告 /
+`3` 错误。
+
+| 方法与路径 | 说明 |
+|-----------|------|
+| `GET /api/logs?page=1&pageSize=20&level=2&q=关键字` | 分页查询：`page` 从 1 起，`pageSize` 上限 100；`level` 为最低级别过滤（缺省不过滤，传 `2` 即仅看警告以上）；`q` 对 tag/msg 大小写不敏感匹配；结果按 ID 倒序（最新在前）。返回 `{"ok":true,"total":n,"page":p,"pageSize":ps,"logs":[{id,ts,level,tag,msg}...]}` |
+| `GET /api/logs?after=<id>&limit=100&level=&q=` | 增量拉取（轮询追加用，避免整页重绘闪烁）：只返回 ID 大于 `after` 的匹配记录，按 ID **升序**（旧→新），最多 `limit` 条（上限 100）；`level`/`q` 与分页模式同义。返回 `{"ok":true,"last":服务端最新ID,"total":匹配总数,"count":本次条数,"logs":[...]}`；`count < limit` 时表示后面已无匹配记录，前端可把基线直接推进到 `last` |
+| `GET /api/logs/stats` | 存储统计：`{"ok":true,"total":n,"max":n,"psram":bool,"bytes":n,"psramTotal":n,"psramFree":n}`；`psram=false` 表示缓冲未落在 PSRAM（无 PSRAM 或分配失败，已退化为内部堆，功能不受影响），此时由 `psramTotal` 区分两种原因（0 = 设备无 PSRAM）。启动串口会打印 `[log] ring ready: ... in PSRAM/heap` |
+| `DELETE /api/logs` | 清空全部日志（逻辑清空，ID 计数保留）；清空动作本身补记一条 |
+
 ### WiFi 配网
 
 | 方法与路径 | 请求体（JSON） | 说明 |
@@ -329,11 +353,14 @@ src/
 ├── main.cpp              Arduino 入口（setup/loop 驱动 App）
 ├── app/                  应用层
 │   ├── App.h/.cpp        模块装配与主循环调度
-│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 邮件通知类型
+│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 邮件通知 / 日志环
+│   ├── Psram.h           PSRAM 工具：可增长缓冲区 + 容器 / ArduinoJson 分配器
 │   └── StatusInfo.h      App -> Display 的状态快照结构
 ├── hal/                  硬件抽象层
 │   ├── Display.h/.cpp    ST7789 屏幕（pimpl 隔离 LovyanGFX）
 │   └── RgbLed.h/.cpp     WS2812 RGB 灯
+├── log/                  设备日志
+│   └── LogStore.h/.cpp   PSRAM 环形日志缓冲（定长条目 / FIFO / 分页查询）
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
 │   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
@@ -354,11 +381,12 @@ data/
 │   ├── email.html        邮件通知：SMTP 配置 / 通知类型 / 测试发送
 │   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
 │   ├── display.html      屏幕显示：开关 / 背光亮度调节
-│   ├── sms.html          短信记录（规划中）
+│   ├── sms.html          短信：收发记录 / 发送 / 搜索 / 详情 / 删除 / 清空
+│   ├── modem.html        4G 模组：状态 / 信号 / 运营商 / 号码 / 启用与别名
 │   ├── push.html         推送通道（规划中，13 种方式）
 │   ├── mqtt.html         MQTT（规划中）
 │   ├── blacklist.html    黑名单（规划中）
-│   ├── logs.html         运行日志（规划中）
+│   ├── logs.html         运行日志：分页查看 / 级别与关键字过滤 / 自动刷新 / 清空
 │   ├── settings.html     系统设置：管理账号修改（用户名/密码存 NVS）
 │   └── tools.html        系统工具（规划中）
 └── assets/               静态资源（改后需重新 uploadfs）

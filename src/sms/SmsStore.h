@@ -7,8 +7,13 @@
 #include <vector>
 
 #include "app/Config.h"
+#include "app/Psram.h"
 #include "app/UserFs.h"
 #include "sms/SmsRecord.h"
+
+// 分页结果容器：一页最多 kSmsPageSizeMax(100) 条，容器自身存 PSRAM，
+// 避免与 LWIP 缓冲、任务栈抢内部 DRAM。
+using SmsList = std::vector<SmsMessage, PsramAllocator<SmsMessage>>;
 
 // 短信存储：每条一个文件，存放于用户数据分区 /data/sms/<id>.txt，
 // 刷固件与 OTA 均保留。与参考实现一致的单文件格式（省 flash、无字段冗余）：
@@ -38,8 +43,9 @@ class SmsStore {
 
   // 分页 + 关键字 + 模组过滤；out 填充本页记录，total 为匹配总数
   // page/pageSize 越界自动钳制；q 为空不筛；modem < 0 不筛
-  void list(int page, int pageSize, const String &q, int8_t modem,
-            std::vector<SmsMessage> &out, int &total);
+  // out 用 SmsList（PSRAM 分配器）：整页记录数可达 100 条
+  void list(int page, int pageSize, const String &q, int8_t modem, SmsList &out,
+            int &total);
 
   // 读取单条；找到返回 true
   bool detail(uint32_t id, SmsMessage &out);

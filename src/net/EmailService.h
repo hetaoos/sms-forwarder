@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "app/Config.h"
+#include "app/Psram.h"
 
 class SmsService;
 class TimeSync;
@@ -90,7 +91,13 @@ class EmailService {
   String configJson() const;
 
   // ---------------- 通知入队（非阻塞，回调上下文安全）----------------
-  // 收到短信：构建短信邮件并入队（未配置或该类已关闭时静默跳过）
+  // 以下方法运行于串口抽数任务（SerialBridge 抽数任务）等后台上下文，
+  // **只允许做浅入队**（互斥锁 + 少量字符串拷贝）。HTML 模板构建（JSON 解析 +
+  // 大量字符串拼接，约 2-3KB 栈）一律推迟到 App::tick（loop 任务）发送前进行，
+  // 否则会撑爆抽数任务栈导致其死亡——短信收发全部停止。
+  // 与 esp32-sms-forwarding 一致：推送链（含邮件构建与 SMTP）只在 loop 任务执行。
+  //
+  // 收到短信：入队一封短信邮件（未配置或该类已关闭时静默跳过）
   // sender：发件人号码；message：正文；ts：纪元秒（未同步时为开机秒数）；
   // modem：接收模组串口号（1..kSmsMaxModems，<0 未知）
   void notifySms(const String &sender, const String &message, uint32_t ts,
@@ -115,45 +122,73 @@ class EmailService {
   // 生成的卡片式正文；各邮件只提供标题与卡片主体片段。
   // 公共信息块（系统时间 + 各模组本机号码，无号码回退设备 IP）由
   // buildHtml() 自动追加，新增邮件类型也自动带上。
+  //
+  // 内存约定：正文一律拼进 PsBuffer（优先 PSRAM），不产生中间 String。
+  // 单封正文可达数 KB~十几 KB，若走 Arduino String 则全部压在内部 DRAM 上，
+  // 与 LWIP 缓冲、任务栈抢空间；改用 PSRAM 后 DRAM 峰值只剩 subject/text 等短串。
+  // 拼接过程中任一步分配失败都会置 ok()=false，调用方据此丢弃本次通知。
 
   // HTML 转义（& < > " 与换行）。所有动态文本进入邮件前都必须过这一层。
+  // 仅用于主题等短文本（返回 String，落 DRAM）；正文请用 appendEscaped()。
   String escape(const String &s) const;
 
-  // 一行「键: 值」表格行（键值均已转义，可直接拼接）
-  String row(const String &key, const String &val) const;
+  // 把转义结果直接追加进缓冲（正文路径专用，不产生中间 String）
+  void appendEscaped(PsBuffer &out, const String &s) const;
+
+  // 一行「键: 值」表格行（键值均已转义）
+  void appendRow(PsBuffer &out, const String &key, const String &val) const;
 
   // 一行「键: 链接」表格行。用自绘 <a> 而不是裸文本 URL：多数邮件客户端
   // 会把裸 URL 自动转成链接，且转写时常把纯数字主机名改坏，自绘锚点可锁定显示文本。
-  String linkRow(const String &key, const String &url) const;
+  void appendLinkRow(PsBuffer &out, const String &key, const String &url) const;
 
-  // 把若干 row() 结果包成一个带内边距的表格块
-  String table(const String &rows) const;
+  // 带内边距的表格块：appendTableOpen() ... 若干行 ... appendTableClose()
+  void appendTableOpen(PsBuffer &out) const;
+  void appendTableClose(PsBuffer &out) const;
 
-  // 带小标题的表格块（用于把多个 table() 分组展示）
-  String section(const String &caption, const String &rows) const;
+  // 带小标题的表格块（用于把多组行分组展示），开闭用法同上
+  void appendSectionOpen(PsBuffer &out, const String &caption) const;
+  void appendSectionClose(PsBuffer &out) const;
 
   // 状态徽标：main 为醒目主文案，sub 为补充说明，ok 决定配色（绿/橙）
-  String badge(const String &main, const String &sub, bool ok) const;
+  void appendBadge(PsBuffer &out, const String &main, const String &sub,
+                   bool ok) const;
 
   // 纯文字说明段（正文里唯一允许出现换行渲染的地方）
-  String note(const String &text) const;
+  void appendNote(PsBuffer &out, const String &text) const;
 
   // 完整 HTML 正文：样式表 + 卡片 + 标题栏 + 主体 + 公共信息块 + 底部标识。
-  // title 可带 emoji，需调用方自行保证已转义。
-  String buildHtml(const String &title, const String &inner,
-                   int maxWidth = 560) const;
+  // 写入 out（PSRAM）；inner 为卡片主体片段；title 可带 emoji，
+  // 需调用方自行保证已转义。
+  void buildHtml(PsBuffer &out, const String &title, const PsBuffer &inner,
+                 int maxWidth = 560) const;
 
   // HTML 正文上限：urlEncode/编码后体积会膨胀数倍，ESP32 堆有限，
   // 超出时只发纯文本兜底。
   static constexpr int kMaxHtmlChars = 6000;
 
  private:
-  // 一封待发邮件（队列单元）
+  // 队列单元的事件类型
+  enum Kind : uint8_t {
+    kSms = 0,    // 收到短信
+    kSim,        // SIM 状态变更
+    kStartup,    // 设备启动完成
+    kOnline,     // 定时在线通知
+    kTest,       // 测试邮件
+  };
+
+  // 一封待发邮件（队列单元）——只存「原始事件」，不存构建好的 HTML。
+  // 原因：入队路径运行于串口抽数任务（4KB 栈），在那里构建 HTML 会栈溢出；
+  // HTML 在 loop 任务发送前由 buildMail() 现构（约 2-3KB 栈，loop 任务 8KB）。
   struct MailJob {
-    String subject;
-    String html;
-    String text;
-    uint8_t attempts = 0;  // 已失败次数（退避重试计数）
+    Kind kind = kSms;        // 事件类型
+    String sender;           // 短信：发件人号码
+    String message;          // 短信：正文
+    uint32_t ts = 0;         // 短信：时间戳（纪元秒；未同步时为开机秒数）
+    int8_t modem = -1;       // 短信：接收模组串口号（<0 未知）
+    uint8_t port = 0;        // SIM 事件：模组串口号
+    bool ready = false;      // SIM 事件：true=已插入 false=已拔出
+    uint8_t attempts = 0;    // 已失败次数（退避重试计数）
   };
 
   // 递归互斥锁守卫：配置读写、入队与模板构建都可能嵌套加锁。
@@ -183,23 +218,31 @@ class EmailService {
   void requeueFrontLocked(const MailJob &job);
 
   // 单次发送尝试（同步阻塞，最长约一次 socket 超时）。
+  // html 为 PSRAM 正文缓冲，直接以「静态内容」形式交给 ReadyMail
+  // （body(const char*, size_t)），全程不复制回 DRAM。
   // configErr 出参：true = 配置类错误（认证失败等，重试无意义，直接丢弃）。
-  bool sendOnce(const String &subject, const String &html, const String &text,
+  bool sendOnce(const String &subject, const PsBuffer &html, const String &text,
                 bool &configErr);
 
+  // 由原始事件构建邮件正文（loop 任务调用，可做重模板拼接）。
+  // 返回 false 表示「当前不该发」：服务未启用/未配置，或该类通知已关闭
+  // （入队后配置可能被改动，发送前再判定一次），或正文缓冲分配失败。
+  bool buildMail(const MailJob &job, String &subject, PsBuffer &html,
+                 String &text) const;
+
   // ---------------- 各事件邮件的构建 ----------------
-  void buildStartupMail(String &subject, String &html, String &text) const;
-  void buildOnlineMail(String &subject, String &html, String &text) const;
-  void buildSimMail(uint8_t port, bool ready, String &subject, String &html,
+  void buildStartupMail(String &subject, PsBuffer &html, String &text) const;
+  void buildOnlineMail(String &subject, PsBuffer &html, String &text) const;
+  void buildSimMail(uint8_t port, bool ready, String &subject, PsBuffer &html,
                     String &text) const;
   void buildSmsMail(const String &sender, const String &message, uint32_t ts,
-                    int8_t modem, String &subject, String &html,
+                    int8_t modem, String &subject, PsBuffer &html,
                     String &text) const;
-  void buildTestMail(String &subject, String &html, String &text) const;
+  void buildTestMail(String &subject, PsBuffer &html, String &text) const;
 
-  // 判定开关与配置后入队（tick / 通知入口共用；持锁调用）
-  void queueStartupLocked();
-  void queueOnlineLocked();
+  // 判定开关与配置后入队（tick 调用，loop 任务上下文；只做浅入队）
+  void enqueueStartupLocked();
+  void enqueueOnlineLocked();
 
   // 每日定点模式是否到点（持锁调用）：本地时间进入触发分窗口、
   // 且晚于 NVS 记录的上次触发时刻时返回 true 并落盘更新。
@@ -212,17 +255,17 @@ class EmailService {
   // 排程的人类可读描述（日志 / 测试邮件用，如「每日 09:00」「每 24 小时」）
   String schedText() const;
 
-  // ---------------- 模板辅助 ----------------
+  // ---------------- 模板辅助（均追加进 PSRAM 缓冲）----------------
   // 公共信息块：系统时间 + 各启用模组本机号码（无号码回退设备 IP）
-  String infoBlock() const;
+  void appendInfoBlock(PsBuffer &out) const;
   // 设备信息行（IP / MAC / 设备名 / WiFi 信号 / 运行时长 / 芯片温度）
-  String deviceInfoRows() const;
+  void appendDeviceRows(PsBuffer &out) const;
   // 芯片型号与片内温度（传感器未使能时展示「不支持」）
-  String chipInfoRows() const;
+  void appendChipRows(PsBuffer &out) const;
   // 按模组分组的「模组信息 + SIM/信号」两节
-  String modemGroupSection() const;
+  void appendModemGroupSection(PsBuffer &out) const;
   // 所有启用模组的 SIM/信号行汇总
-  String simSectionRows() const;
+  void appendSimRows(PsBuffer &out) const;
   // SIM 整体是否就绪（未启用任何模组时视为健康，不因无卡报警）
   bool simOverallReady() const;
   // 徽章副标题用的状态文本

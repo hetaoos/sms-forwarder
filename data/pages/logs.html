@@ -1,23 +1,89 @@
-<div class="page-head">
-  <div>
-    <h2>运行日志</h2>
-    <p class="page-desc">设备运行日志查看、导出与清理</p>
+<div x-data="pageLogs()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>运行日志</h2>
+      <p class="page-desc">设备运行日志 · PSRAM 环形缓冲，写满自动淘汰最旧</p>
+    </div>
+    <div class="bar">
+      <button class="btn ghost sm" @click="reload()">刷新</button>
+      <button class="btn ghost sm" @click="clearAll()" x-show="total">清空日志</button>
+    </div>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128220;</div>
-    <h3>功能规划中</h3>
-    <p>计划提供内存环形缓冲 + 文件持久化两级日志，可按模块过滤查看。</p>
+  <!-- 缓冲不可用时常驻提示（分配失败时各接口空转，页面表现为暂无日志） -->
+  <div class="form-err" x-show="statsErr" x-text="statsErr" style="margin-bottom:12px"></div>
+
+  <!-- 存储信息 -->
+  <div class="stats">
+    <div class="stat"><div class="k">当前条数</div>
+      <div class="v" x-text="(stats.total == null ? '-' : stats.total) + ' 条'"></div></div>
+    <div class="stat"><div class="k">缓冲容量</div>
+      <div class="v" x-text="(stats.max == null ? '-' : stats.max) + ' 条'"></div></div>
+    <div class="stat"><div class="k">占用</div><div class="v" x-text="fmtBytes(stats.bytes)"></div></div>
+    <div class="stat"><div class="k">存储位置</div>
+      <div class="v" style="font-size:15px" x-text="storeText()"></div></div>
   </div>
-</div>
+  <!-- 未落在 PSRAM 时说明原因（环形缓冲功能不受影响，仅换了个内存区域） -->
+  <div class="hint" x-show="stats.max && !stats.psram" x-text="storeHint()"
+       style="margin-top:-6px;margin-bottom:12px"></div>
 
-<div class="card">
-  <h3>计划能力</h3>
-  <div class="row"><span class="k">实时查看</span><span class="v">分页拉取，关键字过滤，自动刷新</span></div>
-  <div class="row"><span class="k">持久化</span><span class="v">写入文件系统，容量上限自动裁顶</span></div>
-  <div class="row"><span class="k">模块过滤</span><span class="v">按模块（串口 / 网络 / 短信等）独立开关</span></div>
-  <div class="row"><span class="k">导出清理</span><span class="v">下载日志文件 / 一键清空</span></div>
+  <!-- 过滤栏 + 日志列表 -->
+  <div class="card">
+    <div class="bar" style="margin-bottom:12px">
+      <div class="fld">
+        <label>级别</label>
+        <select x-model="level" @change="search()">
+          <option value="">全部</option>
+          <option value="1">信息及以上</option>
+          <option value="2">警告及以上</option>
+          <option value="3">仅错误</option>
+        </select>
+      </div>
+      <input class="inp" style="flex:1;min-width:160px" placeholder="搜索模块标签 / 内容"
+             x-model="q" @keyup.enter="search()">
+      <button class="btn ghost sm" @click="search()">搜索</button>
+      <label class="chk"><input type="checkbox" x-model="auto"> 自动刷新（5s）</label>
+    </div>
+
+    <div class="console" x-ref="box">
+      <template x-for="e in logs" :key="e.id">
+        <div class="entry">
+          <div class="log-meta">
+            <span class="badge" :class="levelClass(e.level)" x-text="levelText(e.level)"></span>
+            <span x-text="'#' + e.id"></span>
+            <span x-text="fmtTs(e.ts)"></span>
+            <span class="log-tag" x-text="e.tag"></span>
+          </div>
+          <div class="resp" :class="msgClass(e.level)" x-text="e.msg"></div>
+        </div>
+      </template>
+      <div class="hint" style="color:#6f7885" x-show="!loading && !logs.length">
+        <span x-text="(q || level) ? '当前筛选条件下没有日志' : '暂无日志，设备运行过程中的事件会显示在这里'"></span>
+      </div>
+    </div>
+    <div class="loading" x-show="loading">加载中…</div>
+
+    <!-- 分页 -->
+    <div class="pager" x-show="total > 0">
+      <div class="pager-info">
+        <span x-text="'共 ' + total + ' 条'"></span>
+        <span class="pager-sep">·</span>
+        <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
+      </div>
+      <div class="pager-ctrl">
+        <button class="btn ghost sm" :disabled="page <= 1" @click="gotoPage(page - 1)">上一页</button>
+        <template x-for="p in pages" :key="p">
+          <button class="btn ghost sm pager-num" :class="{ on: p === page }" x-text="p" @click="gotoPage(p)"></button>
+        </template>
+        <button class="btn ghost sm" :disabled="page >= pageCount" @click="gotoPage(page + 1)">下一页</button>
+      </div>
+      <select class="inp sm" x-model.number="pageSize" @change="changePageSize()" title="每页条数">
+        <option value="20">20 条/页</option>
+        <option value="50">50 条/页</option>
+        <option value="100">100 条/页</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="hint" style="margin-top:12px">日志仅存于内存（PSRAM 优先），重启后清空；时间戳在时钟同步前为开机时长。清空为逻辑清空，记录 ID 继续递增，便于区分清空前后的新旧日志。</div>
 </div>
