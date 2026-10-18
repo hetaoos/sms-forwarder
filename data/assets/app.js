@@ -1,4 +1,4 @@
-/* ================= ESP32-S3 控制台 · 应用逻辑 =================
+/* ================= 短信转发器 · 应用逻辑 =================
  * 多页结构：index.html 为外壳（左侧菜单 + 顶栏 + 内容区），
  * 右侧内容按 hash 路由懒加载 pages/<id>.html 片段（Alpine 组件渲染）。
  * 认证：Cookie 会话由浏览器自动携带；401 统一跳转独立登录页。
@@ -298,7 +298,7 @@ function findMenu(id) {
 function renderShell() {
   const sb = $('#sidebar');
   let html = '<div class="brand"><span class="logo">S</span>' +
-             '<span>ESP32-S3<small>控制台</small></span></div><nav class="menu">';
+             '<span>短信转发器</span></div><nav class="menu">';
   for (const g of MENU) {
     html += '<div class="menu-group">' + g.group + '</div>';
     for (const it of g.items) {

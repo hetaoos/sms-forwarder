@@ -248,7 +248,7 @@ void WebPanel::setupRoutes() {
   });
 
   // ---- 页面与静态资源（LittleFS，公开）----
-  // 首页：控制台单页应用（左侧菜单 + 右侧内容，hash 路由）
+  // 首页：短信转发器 Web 控制台单页应用（左侧菜单 + 右侧内容，hash 路由）
   _server.on("/", HTTP_GET, [this](AsyncWebServerRequest *req) {
     sendFile(req, "/index.html", "text/html; charset=utf-8");
   });

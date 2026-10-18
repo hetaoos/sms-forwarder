@@ -1,4 +1,4 @@
-# ESP32-S3 短信转发 / AT 桥接器
+# 短信转发器（SMS Forwarder）
 
 基于 ESP32-S3 的双串口 AT 透传设备：外接两个 AT 模组串口，通过 ST7789 屏幕
 实时显示运行状态与最近一条 AT 交互，并内置 Web 控制台进行远程管理。
@@ -18,7 +18,7 @@
 - **WiFi 管理 + 配网**（`net/WifiManager`）
   - 编译期内置默认账号密码（`-DWIFI_SSID_DEFAULT` / `-DWIFI_PASS_DEFAULT`，不设置则为空）
   - NVS 按功能存 JSON 配置，最多 5 组，启动时按顺序依次尝试
-  - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-FWD-Setup`，开放热点）
+  - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-Forwarder-Setup`，开放热点）
   - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
     两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
     形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
@@ -107,7 +107,7 @@ build_flags =
 
 ## 首次配网流程
 
-1. 烧录后若无任何 WiFi 配置，设备开启热点 **`SMS-FWD-Setup`**（开放，无密码）
+1. 烧录后若无任何 WiFi 配置，设备开启热点 **`SMS-Forwarder-Setup`**（开放，无密码）
 2. 连接该热点，浏览器打开 **`http://192.168.4.1/login`**，在独立登录页输入
    `admin` / `admin123` 登录（登录响应同时返回 Bearer 令牌，见仪表盘页面）
 3. 进入「WiFi 设置」卡片：**扫描附近 WiFi** → 点击扫描结果填入 SSID →

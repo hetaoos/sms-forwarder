@@ -10,7 +10,7 @@
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
 
-// HTTP 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
+// 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
 // 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
 // URL 划分：页面与静态资源在根路径（公开，不含敏感数据），
 // 全部 API 统一在 /api/ 前缀下（除登录/登出/会话探测外均需认证）。

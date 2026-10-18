@@ -24,7 +24,7 @@ constexpr uint32_t kWifiConnectTimeoutMs = 8000;  // 单个候选的连接等待
 constexpr uint32_t kWifiLostRetryMs = 5000;    // STA 掉线后多久开始重连（ms）
 
 // ---------------- AP 配网模式 ----------------
-constexpr const char *kApSsid = "SMS-FWD-Setup";  // AP 热点名（开放无密码，仅配网用）
+constexpr const char *kApSsid = "SMS-Forwarder-Setup";  // AP 热点名（开放无密码，仅配网用）
 // 管理账号：NVS 无有效记录时的默认值（首次启动会写入 NVS，之后以 NVS 为准）
 constexpr const char *kWebAuthUser = "admin";
 constexpr const char *kWebAuthPass = "admin123";

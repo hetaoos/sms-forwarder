@@ -30,7 +30,7 @@ class App {
   SerialBridge _bridge;     // 双串口 AT 透传桥
   StatusBus _events{_wifi, _bridge, _led, _display};  // SSE 状态推送总线
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events};  // HTTP 控制台（依赖上述模块）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events};  // 短信转发器 Web 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };
