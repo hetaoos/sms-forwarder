@@ -8,6 +8,15 @@
 #include <esp_sntp.h>
 #include <time.h>
 
+#include "log/LogStore.h"
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
+
 TimeSync *TimeSync::sSelf = nullptr;
 
 // 纪元时间下限：低于此值视为「未真正同步」（1970 附近的系统时间）
@@ -49,7 +58,7 @@ void TimeSync::begin(SerialBridge &bridge, SmsService &sms) {
   // 先给 WiFi/NTP 一个优先窗口（kSimTimeRetryMs），期间若 NTP 成功则不碰
   // 系统时钟；窗口内模组就绪事件仍可即时触发一次 SIM 同步
   _simRetryNext = millis() + cfg::kSimTimeRetryMs;
-  Serial.println("[time] 时间模块已初始化（NTP 为主，SIM NITZ 兜底，UTC+8）");
+  _log.addf(LogLevel::kInfo, "time", "时间模块已初始化（NTP 为主，SIM NITZ 兜底，UTC+8）");
 }
 
 void TimeSync::syncNTP() {
@@ -65,7 +74,7 @@ void TimeSync::syncNTP() {
   _ntpPending = true;
   _ntpFailed = false;
   _ntpStartMs = millis();
-  Serial.println("[time] NTP 同步已启动，等待 SNTP 回调");
+  _log.addf(LogLevel::kInfo, "time", "NTP 同步已启动，等待 SNTP 回调");
 }
 
 void TimeSync::sntpThunk(struct timeval *tv) {
@@ -82,9 +91,11 @@ void TimeSync::onNtpSynced(struct timeval *tv) {
   applyTimezone();
   if (first) _persistDue = true;  // 首次成功立即落盘，保证重启后有个较新的近似值
   if (first) {
-    Serial.printf("[time] NTP 首次同步成功 (UTC+8): %ld\r\n", (long)tv->tv_sec);
+    _log.addf(LogLevel::kInfo, "time", "NTP 首次同步成功（UTC+8）：%ld",
+              (long)tv->tv_sec);
   } else {
-    Serial.printf("[time] NTP 周期同步成功 (UTC+8): %ld\r\n", (long)tv->tv_sec);
+    _log.addf(LogLevel::kInfo, "time", "NTP 周期同步成功（UTC+8）：%ld",
+              (long)tv->tv_sec);
   }
 }
 
@@ -101,7 +112,7 @@ void TimeSync::tick() {
   if (_ntpPending && now - _ntpStartMs >= cfg::kNtpTimeoutMs) {
     _ntpPending = false;
     _ntpFailed = true;
-    Serial.println("[time] NTP 同步超时，转 SIM NITZ 兜底");
+    _log.addf(LogLevel::kWarn, "time", "NTP 同步超时，转 SIM NITZ 兜底");
   }
 
   // 模组就绪事件的即时请求（NTP 未成功时执行一次）
@@ -148,13 +159,13 @@ void TimeSync::syncFromSIM(uint8_t port) {
 
   int cclkIdx = r.resp.indexOf("+CCLK:");
   if (cclkIdx < 0) {
-    Serial.printf("[time] port%u AT+CCLK? 无响应\r\n", (unsigned)port);
+    _log.addf(LogLevel::kWarn, "time", "模组 %u 的 AT+CCLK? 无响应", (unsigned)port);
     return;
   }
   int q1 = r.resp.indexOf('"', cclkIdx);
   int q2 = r.resp.indexOf('"', q1 + 1);
   if (q1 < 0 || q2 <= q1) {
-    Serial.println("[time] CCLK 格式解析失败");
+    _log.addf(LogLevel::kWarn, "time", "CCLK 响应格式解析失败");
     return;
   }
   String ts = r.resp.substring(q1 + 1, q2);
@@ -163,12 +174,12 @@ void TimeSync::syncFromSIM(uint8_t port) {
   int parsed =
       sscanf(ts.c_str(), "%d/%d/%d,%d:%d:%d%d", &yy, &mo, &dd, &hh, &mi, &ss, &tz);
   if (parsed < 6) {
-    Serial.printf("[time] CCLK 时间字段解析失败: %s\r\n", ts.c_str());
+    _log.addf(LogLevel::kWarn, "time", "CCLK 时间字段解析失败：%s", ts.c_str());
     return;
   }
   if (yy < 0 || yy > 99 || mo < 1 || mo > 12 || dd < 1 || dd > 31 || hh < 0 ||
       hh > 23 || mi < 0 || mi > 59 || ss < 0 || ss > 60) {
-    Serial.printf("[time] CCLK 时间字段越界: %s\r\n", ts.c_str());
+    _log.addf(LogLevel::kWarn, "time", "CCLK 时间字段越界：%s", ts.c_str());
     return;
   }
   if (tz < -56 || tz > 56) tz = 0;  // 时区字段异常按 0 处理（不参与换算）
@@ -178,7 +189,7 @@ void TimeSync::syncFromSIM(uint8_t port) {
   // 因此把墙钟直接当作 UTC 转成 epoch（手算，不碰全局 TZ）。
   time_t utcTime = utcWallClockToEpoch(yy, mo, dd, hh, mi, ss);
   if (utcTime < 0) {
-    Serial.println("[time] CCLK 时间换算失败，放弃本次同步");
+    _log.addf(LogLevel::kWarn, "time", "CCLK 时间换算失败，放弃本次同步");
     return;
   }
 
@@ -190,8 +201,8 @@ void TimeSync::syncFromSIM(uint8_t port) {
   _synced = true;
   _src = TimeSrc::kSim;
   if (first) _persistDue = true;
-  Serial.printf("[time] 已从模组 NITZ 同步 (port%u): %s\r\n", (unsigned)port,
-                ts.c_str());
+  _log.addf(LogLevel::kInfo, "time", "已从模组 %u 的 NITZ 同步时间：%s",
+            (unsigned)port, ts.c_str());
 }
 
 void TimeSync::restoreFromNvs() {
@@ -206,7 +217,7 @@ void TimeSync::restoreFromNvs() {
   applyTimezone();
   _synced = true;  // 近似时间即可用（NTP/SIM 成功后会被校准覆盖）
   _src = TimeSrc::kNvs;
-  Serial.printf("[time] NVS 恢复上次已知时间: %u\r\n", (unsigned)ts);
+  _log.addf(LogLevel::kInfo, "time", "已从 NVS 恢复上次已知时间：%u", (unsigned)ts);
 }
 
 void TimeSync::persistToNvs() {

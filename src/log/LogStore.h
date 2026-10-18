@@ -20,7 +20,11 @@ enum class LogLevel : uint8_t {
 };
 
 // 设备日志环形存储：条目缓冲区一次性分配在 PSRAM 的定长记录环，
-// 供 Web 控制台分页查看（GET /api/logs）。设计要点：
+// 供 Web 控制台分页查看（GET /api/logs）；同时每条记录同步镜像一行到串口，
+// 因此全工程只需要这一个日志出口（各模块不再直接 Serial.printX）。设计要点：
+//   0. 串口镜像：add()/addf() 在入环之外固定向 Serial 输出一行
+//      （[id][级别][标签] 正文）；环形缓冲未就绪（begin 之前）或分配失败
+//      降级时仍然输出，保证启动期与降级期的日志不会凭空消失；
 //   1. PSRAM 驻留：与 WiFi/LwIP/SSL 等内部堆使用者隔离，不争抢 DRAM；
 //      板子无 PSRAM（或分配失败）时自动退化为内部堆分配，功能不变
 //      （psramOk() 可查询实际落点）；
@@ -47,10 +51,11 @@ class LogStore {
   void setTimeProvider(TimeProviderFn fn) { _timeFn = fn; }
 
   // 分配环形缓冲：max 为条数上限（0 或越界取 cfg::kLogRingSize）。
-  // PSRAM 优先，失败退化为内部堆；两者都失败则日志功能关闭（各方法空转）
+  // PSRAM 优先，失败退化为内部堆；两者都失败则不入环（仍逐条输出到串口）
   void begin(uint16_t max);
 
   // 追加一条日志（level：级别；tag：模块标签；msg：正文；均超长自动截断）
+  // 除入环外还向串口镜像一行；环形缓冲不可用时仅输出串口
   void add(LogLevel level, const char *tag, const char *msg);
 
   // String 重载（便利接口，转发到上面的 const char* 版本）
@@ -100,8 +105,9 @@ class LogStore {
 
  private:
   // 取/放互斥锁（保护环形缓冲与计数；add 可能来自抽数/HTTP 等多任务上下文）
-  void lock() const { xSemaphoreTake(_mutex, portMAX_DELAY); }
-  void unlock() const { xSemaphoreGive(_mutex); }
+  // _mutex 为空（begin() 之前）时空转：此时只做串口输出，不落缓冲
+  void lock() const { if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY); }
+  void unlock() const { if (_mutex) xSemaphoreGive(_mutex); }
 
   Entry *_buf = nullptr;   // 环形缓冲（PSRAM 优先，begin 时整块分配）
   uint16_t _max = 0;       // 容量上限（条）
@@ -111,3 +117,11 @@ class LogStore {
   TimeProviderFn _timeFn;  // 时间戳供给（未注入时用开机秒数）
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护写入与查询
 };
+
+// 全局日志实例访问器：全工程唯一的日志出口，各模块与 App 取到的是同一份。
+// 用于不便显式注入依赖的上下文（串口抽数任务回调、命名空间级函数、静态辅助
+// 等）；由 App::begin() 里的 _log.begin() 完成初始化，此前调用只输出到串口。
+// 各模块惯例：在 .cpp 的匿名命名空间里取一个引用别名
+//   namespace { LogStore &_log = devLog(); }
+// 之后统一用 _log.addf(LogLevel::kXxx, "tag", "...") 记日志。
+LogStore &devLog();

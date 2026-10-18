@@ -1,9 +1,18 @@
 #include "sms/SmsService.h"
 
+#include "log/LogStore.h"
+
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
 #include <Arduino.h>
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
 
 // JSON 字符串转义（运营商/IMEI 等文本字段安全入 JSON）
 static String jsonStr(const String &s) {
@@ -122,8 +131,8 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
       if (isPduLine(line)) {
         handleCmt(port, line);
       } else {
-        Serial.printf("[sms] port%u expected PDU after +CMT, got: %s\r\n",
-                      (unsigned)port, line.c_str());
+        _log.addf(LogLevel::kWarn, "sms", "模组 %u 的 +CMT 后未收到 PDU：%s",
+                  (unsigned)port, line.c_str());
       }
       consumed = true;
       continue;
@@ -277,14 +286,14 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
     _lastSmsId = id;
     unlock();
     storedOk = true;
-    Serial.printf("[sms] port%u sent #%u to %s (%d part(s))\r\n", (unsigned)port,
-                  (unsigned)id, num.c_str(), n);
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 已发送 #%u 至 %s（%d 段）",
+              (unsigned)port, (unsigned)id, num.c_str(), n);
   } else {
     // 模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）。
     // 不判失败——短信确实已发出；通过 stored 出参告知调用方（参考实现同款语义：
     // 存储失败不影响发送结果），避免「界面报失败但其实已发送成功」的误判。
-    Serial.printf("[sms] port%u sent to %s but store failed\r\n", (unsigned)port,
-                  num.c_str());
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 已发至 %s，但记录入库失败",
+              (unsigned)port, num.c_str());
   }
   if (storedPtr) *storedPtr = storedOk;
   return storedOk ? id : kIdSentUnstored;
@@ -334,7 +343,8 @@ bool SmsService::reinitPort(uint8_t port) {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   if (!_modems[port].enabled) return false;
   _modems[port].needReinit = true;
-  Serial.printf("[sms] port%u 请求重新初始化（等待抽数任务重跑）\r\n", (unsigned)port);
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 请求重新初始化（等待抽数任务重跑）",
+            (unsigned)port);
   return true;
 }
 
@@ -379,14 +389,14 @@ void SmsService::setSimReady(uint8_t port, bool ready) {
     // 运行时掉卡：仅当模组曾就绪（排除开机初始化过程）才通知
     if (m.everReady && !m.simRemovedNotified) {
       m.simRemovedNotified = true;
-      Serial.printf("[sms] port%u SIM 卡已拔出\r\n", (unsigned)port);
+      _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM 卡已拔出", (unsigned)port);
       if (_onSim) _onSim(port, false);
     }
   } else {
     // 重新插卡：仅当之前通知过拔出才通知
     if (m.simRemovedNotified) {
       m.simRemovedNotified = false;
-      Serial.printf("[sms] port%u SIM 卡已插入\r\n", (unsigned)port);
+      _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM 卡已插入", (unsigned)port);
       if (_onSim) _onSim(port, true);
     }
   }
@@ -409,7 +419,7 @@ void SmsService::startInit(uint8_t port) {
   // 若配置了 EN 复位引脚，先走硬上下电；否则直接等 AT 就绪
   m.initState = (enPin(port) >= 0) ? ModemInitState::kPowerOn : ModemInitState::kWaitAt;
   m.nextPollMs = millis();  // 下一轮泵立即开始
-  Serial.printf("[sms] port%u 模组已启用，启动异步初始化\r\n", (unsigned)port);
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 已启用，启动异步初始化", (unsigned)port);
 }
 
 // 停止初始化：禁用后停留在 kDown，pollInit 不再动作
@@ -419,7 +429,7 @@ void SmsService::stopInit(uint8_t port) {
   m.waitingPdu = false;
   m.needReinit = false;
   m.initState = ModemInitState::kDown;
-  Serial.printf("[sms] port%u 模组已禁用\r\n", (unsigned)port);
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 已禁用", (unsigned)port);
 }
 
 // 模组对应 EN 复位引脚 / 有效电平（来自 Config；-1 表示不控制）
@@ -488,7 +498,8 @@ void SmsService::pollInit(uint8_t port) {
     m.configStep = 0;
     m.failCount = 0;
     m.nextPollMs = now;
-    Serial.printf("[sms] port%u 检测到模组重启，重新开始初始化\r\n", (unsigned)port);
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 检测到重启，重新开始初始化",
+              (unsigned)port);
   }
 
   // 非阻塞 AT：端口忙返回 false（本轮跳过）；成功返回 true（resp 可能为空=超时）
@@ -637,8 +648,8 @@ void SmsService::pollInit(uint8_t port) {
         m.everReady = true;  // 此后 SIM 掉卡/插卡才算「运行时事件」
         m.lastOkMs = now;
         m.nextPollMs = now + cfg::kModemLivenessMs;
-        Serial.printf("[sms] port%u 模组就绪（PDU 模式 + 短信直投已配置）\r\n",
-                      (unsigned)port);
+        _log.addf(LogLevel::kInfo, "sms", "模组 %u 就绪（PDU 模式 + 短信直投已配置）",
+                  (unsigned)port);
         // 通知上层（如时间同步立即尝试 SIM NITZ）。回调运行于抽数任务上下文，
         // 仅允许置标记等轻量操作
         if (_onReady) _onReady(port);
@@ -664,8 +675,8 @@ void SmsService::pollInit(uint8_t port) {
           m.nextPollMs = now + cfg::kModemLivenessMs;
         } else {
           if (++m.failCount >= cfg::kModemLivenessMaxFail) {
-            Serial.printf("[sms] port%u 心跳失败，模组可能掉线/重启，重新初始化\r\n",
-                          (unsigned)port);
+            _log.addf(LogLevel::kWarn, "sms",
+                      "模组 %u 心跳失败，可能掉线/重启，重新初始化", (unsigned)port);
             m.initState = ModemInitState::kWaitAt;
             m.initAttempts = 0;
             m.regAttempts = 0;
@@ -783,8 +794,8 @@ void SmsService::pollInit(uint8_t port) {
                 setSimReady(port, false);
                 if (!m.needReinit) {
                   m.needReinit = true;
-                  Serial.printf("[sms] port%u SIM 卡疑似拔出，重新初始化\r\n",
-                                (unsigned)port);
+                  _log.addf(LogLevel::kWarn, "sms", "模组 %u SIM 卡疑似拔出，重新初始化",
+                            (unsigned)port);
                 }
               }
             }
@@ -834,8 +845,8 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
   String sender, ts, text;
   int concat[3] = {0, 0, 0};
   if (!_codec.decode(pduHex, sender, ts, text, concat)) {
-    Serial.printf("[sms] port%u PDU decode failed (%u chars)\r\n", (unsigned)port,
-                  (unsigned)pduHex.length());
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 的 PDU 解码失败（%u 字符）",
+              (unsigned)port, (unsigned)pduHex.length());
     return;
   }
 
@@ -850,8 +861,8 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     text = full;
     ts = fullTs;
     epoch = SmsCodec::sctsToEpoch(ts);
-    Serial.printf("[sms] port%u long sms assembled (%u parts)\r\n",
-                  (unsigned)port, (unsigned)concat[2]);
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 长短信已拼接（%u 段）",
+              (unsigned)port, (unsigned)concat[2]);
   }
 
   SmsMessage msg;
@@ -865,13 +876,13 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     lock();
     _lastSmsId = id;
     unlock();
-    Serial.printf("[sms] port%u received #%u from %s (%u bytes)\r\n",
-                  (unsigned)port, (unsigned)id, sender.c_str(),
-                  (unsigned)text.length());
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 收到短信 #%u，来自 %s（%u 字节）",
+              (unsigned)port, (unsigned)id, sender.c_str(),
+              (unsigned)text.length());
   } else {
-    // 解码成功但未入库：串口留痕，便于区分「没收到」与「收到没存上」
-    Serial.printf("[sms] port%u received from %s but store failed\r\n",
-                  (unsigned)port, sender.c_str());
+    // 解码成功但未入库：留痕便于区分「没收到」与「收到没存上」
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 收到来自 %s 的短信，但入库失败",
+              (unsigned)port, sender.c_str());
   }
   // 通知上层（邮件通知等）。落盘失败也通知——短信确实已收到，
   // 不应因存储异常丢掉通知。回调运行于抽数任务上下文，只允许轻量操作。
@@ -916,8 +927,8 @@ bool SmsService::loadConfig() {
       _modems[port].alias = o["alias"] | "";
     }
   }
-  Serial.printf("[sms] config loaded: max=%u modems=[%d,%d]\r\n", (unsigned)_max,
-                (int)_modems[1].enabled, (int)_modems[2].enabled);
+  _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，模组=[%d,%d]",
+            (unsigned)_max, (int)_modems[1].enabled, (int)_modems[2].enabled);
   return true;
 }
 

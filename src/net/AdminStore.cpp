@@ -1,11 +1,16 @@
 #include "net/AdminStore.h"
 
+#include "log/LogStore.h"
+
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
 #include <Arduino.h>
 
 namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
 
 // 账号长度上限（与前端校验一致，防 NVS 被异常长字符串塞满）
 constexpr size_t kUserMaxLen = 32;
@@ -16,16 +21,16 @@ constexpr size_t kPassMaxLen = 64;
 // 从 NVS 加载；无有效记录时用编译期默认值并持久化
 void AdminStore::begin() {
   if (loadFromNvs()) {
-    Serial.printf("[auth] loaded from nvs, user=%s\r\n", _user.c_str());
+    _log.addf(LogLevel::kInfo, "auth", "已从 NVS 载入管理账号：%s", _user.c_str());
     return;
   }
   // 无有效记录：落入编译期默认值并落盘，之后所有修改都基于它
   _user = cfg::kWebAuthUser;
   _pass = cfg::kWebAuthPass;
   if (persist()) {
-    Serial.println("[auth] default credentials persisted to nvs");
+    _log.addf(LogLevel::kInfo, "auth", "默认管理账号已写入 NVS");
   } else {
-    Serial.println("[auth] persist default credentials failed");
+    _log.addf(LogLevel::kError, "auth", "默认管理账号写入 NVS 失败");
   }
 }
 
@@ -39,18 +44,18 @@ bool AdminStore::loadFromNvs() {
 
   JsonDocument doc;
   if (deserializeJson(doc, json) != DeserializationError::Ok) {
-    Serial.println("[auth] nvs record parse failed, fallback to default");
+    _log.addf(LogLevel::kWarn, "auth", "NVS 账号记录解析失败，回退默认值");
     return false;
   }
   if (!doc["user"].is<const char *>() || !doc["pass"].is<const char *>()) {
-    Serial.println("[auth] nvs record fields invalid, fallback to default");
+    _log.addf(LogLevel::kWarn, "auth", "NVS 账号记录字段无效，回退默认值");
     return false;
   }
   String u = doc["user"].as<String>();
   String p = doc["pass"].as<String>();
   if (!u.length() || u.length() > kUserMaxLen ||
       !p.length() || p.length() > kPassMaxLen) {
-    Serial.println("[auth] nvs record length invalid, fallback to default");
+    _log.addf(LogLevel::kWarn, "auth", "NVS 账号记录长度异常，回退默认值");
     return false;
   }
   _user = u;
@@ -100,6 +105,6 @@ bool AdminStore::update(const String &user, const String &pass, String *err) {
     if (err) *err = "NVS 写入失败";
     return false;
   }
-  Serial.printf("[auth] credentials updated, user=%s\r\n", _user.c_str());
+  _log.addf(LogLevel::kInfo, "auth", "管理账号已更新：%s", _user.c_str());
   return true;
 }

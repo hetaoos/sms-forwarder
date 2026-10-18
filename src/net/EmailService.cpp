@@ -12,11 +12,15 @@
 #define ENABLE_SMTP
 #include <ReadyMail.h>
 
+#include "log/LogStore.h"
 #include "net/WifiManager.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
 
 namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
 
 // ---- 网络超时 ----
 // 取值原则：网络差时要足够宽容，但必须有硬上界，否则一次阻塞就能把主循环冻死。
@@ -212,8 +216,8 @@ void EmailService::begin(WifiManager &wifi, SmsService &sms, TimeSync &time) {
     _onlineDueMs = millis() + (uint32_t)_sched.intervalH * 3600000UL;
   }
 
-  Serial.printf("[mail] 邮件服务就绪（总开关%s，%s）\r\n", _enabled ? "开" : "关",
-                isConfigured() ? "已配置" : "未配置完整");
+  _log.addf(LogLevel::kInfo, "mail", "邮件服务就绪（总开关%s，%s）",
+            _enabled ? "开" : "关", isConfigured() ? "已配置" : "未配置完整");
 }
 
 void EmailService::tick() {
@@ -228,7 +232,7 @@ void EmailService::tick() {
       // ---- a) 等 WiFi ----
       if (++_startupTries >= (uint8_t)(cfg::kMailBootWaitMaxMs / 15000)) {
         _startupPending = false;
-        Serial.println("[mail] WiFi 长时间未连接，放弃启动邮件");
+        _log.addf(LogLevel::kWarn, "mail", "WiFi 长时间未连接，放弃启动邮件");
       } else {
         _startupDueMs = now + 15000;  // 每 15s 再探一次
       }
@@ -245,14 +249,17 @@ void EmailService::tick() {
       if (gateOk || graceOver) {
         _startupPending = false;
         if (!gateOk && graceOver) {
-          Serial.printf("[mail] 模组初始化 %us 内未出结果，按宽限期照发启动邮件\r\n",
-                        (unsigned)(cfg::kMailBootModemWaitMs / 1000));
+          _log.addf(LogLevel::kWarn, "mail",
+                    "模组初始化 %us 内未出结果，按宽限期照发启动邮件",
+                    (unsigned)(cfg::kMailBootModemWaitMs / 1000));
         }
         Guard g(_mutex);
         if (!activeLocked()) {
-          if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，跳过启动邮件");
+          if (configuredLocked()) {
+            _log.addf(LogLevel::kInfo, "mail", "邮件通知已停用，跳过启动邮件");
+          }
         } else if (!(_notifyTypes & cfg::kEmailNotifyStartup)) {
-          Serial.println("[mail] 「设备启动」邮件通知已关闭，跳过");
+          _log.addf(LogLevel::kInfo, "mail", "「设备启动」邮件通知已关闭，跳过");
         } else {
           enqueueStartupLocked();
         }
@@ -314,12 +321,13 @@ void EmailService::tick() {
 
   if (configErr) {
     // 认证失败等配置类错误：重试无意义，直接丢弃
-    Serial.println("[mail] 配置错误（请检查账号与 SMTP 授权码），本次通知已丢弃");
+    _log.addf(LogLevel::kError, "mail",
+              "邮件配置错误（请检查账号与 SMTP 授权码），本次通知已丢弃");
     return;
   }
   job.attempts++;
   if (job.attempts >= cfg::kMailMaxAttempts) {
-    Serial.println("[mail] 多次重试后仍失败，本次通知已丢弃");
+    _log.addf(LogLevel::kWarn, "mail", "多次重试后仍失败，本次通知已丢弃");
     return;
   }
   // 退避重试：第 2 次前等 2s，第 3 次前等 4s
@@ -350,7 +358,7 @@ bool EmailService::setEnabled(bool on) {
     }
     if (!persistConfig()) return false;
   }
-  Serial.printf("[mail] 邮件通知总开关已%s\r\n", on ? "开启" : "停用");
+  _log.addf(LogLevel::kInfo, "mail", "邮件通知总开关已%s", on ? "开启" : "停用");
   return true;
 }
 
@@ -411,8 +419,9 @@ bool EmailService::saveConfig(const String &server, uint16_t port,
     _onlineImmediate = true;
     _onlineDueMs = millis() + (uint32_t)_sched.intervalH * 3600000UL;
   }
-  Serial.printf("[mail] 配置已保存（总开关 %s，通知类型掩码 0x%02X，在线通知 %s）\r\n",
-                _enabled ? "开" : "关", (unsigned)_notifyTypes, schedText().c_str());
+  _log.addf(LogLevel::kInfo, "mail",
+            "邮件配置已保存（总开关 %s，通知类型掩码 0x%02X，在线通知 %s）",
+            _enabled ? "开" : "关", (unsigned)_notifyTypes, schedText().c_str());
   return true;
 }
 
@@ -446,12 +455,12 @@ bool EmailService::loadConfig() {
     prefs.end();
   }
   if (!json.length()) {
-    Serial.println("[mail] NVS 无邮件配置，使用默认值（四类通知全开）");
+    _log.addf(LogLevel::kInfo, "mail", "NVS 无邮件配置，使用默认值（四类通知全开）");
     return false;
   }
   JsonDocument doc;
   if (deserializeJson(doc, json) != DeserializationError::Ok) {
-    Serial.println("[mail] 邮件配置解析失败，使用默认值");
+    _log.addf(LogLevel::kWarn, "mail", "邮件配置解析失败，使用默认值");
     return false;
   }
   Guard g(_mutex);
@@ -491,9 +500,10 @@ bool EmailService::loadConfig() {
   int64_t lastDaily = doc["lastDaily"] | 0;
   _lastDailyEpoch = (lastDaily > 0 && lastDaily < 0xFFFFFFFFLL) ? (uint32_t)lastDaily : 0;
 
-  Serial.printf("[mail] 配置已载入: server=%s port=%u notify=0x%02X 在线通知[%s]\r\n",
-                _server.c_str(), (unsigned)_port, (unsigned)_notifyTypes,
-                schedText().c_str());
+  _log.addf(LogLevel::kInfo, "mail",
+            "邮件配置已载入：server=%s port=%u notify=0x%02X 在线通知[%s]",
+            _server.c_str(), (unsigned)_port, (unsigned)_notifyTypes,
+            schedText().c_str());
   return true;
 }
 
@@ -594,7 +604,7 @@ void EmailService::notifySim(uint8_t port, bool ready) {
   Guard g(_mutex);
   if (!activeLocked()) return;
   if (!(_notifyTypes & cfg::kEmailNotifySim)) {
-    Serial.println("[mail] 「SIM状态变更」邮件通知已关闭，跳过");
+    _log.addf(LogLevel::kInfo, "mail", "「SIM状态变更」邮件通知已关闭，跳过");
     return;
   }
 
@@ -640,7 +650,9 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
                              PsBuffer &html, String &text) const {
   Guard g(_mutex);
   if (!activeLocked()) {
-    if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，丢弃待发邮件");
+    if (configuredLocked()) {
+      _log.addf(LogLevel::kInfo, "mail", "邮件通知已停用，丢弃待发邮件");
+    }
     return false;
   }
   uint32_t bit = 0;
@@ -675,7 +687,7 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
   }
   if (!html.ok()) {
     // PSRAM 与 DRAM 都分配不出来：正文不完整，宁可不发也不发坏邮件
-    Serial.println("[mail] 邮件正文缓冲分配失败，本次通知已丢弃");
+    _log.addf(LogLevel::kError, "mail", "邮件正文缓冲分配失败，本次通知已丢弃");
     return false;
   }
   return true;
@@ -691,7 +703,7 @@ bool EmailService::requestTest() {
   job.kind = kTest;
   job.attempts = 0;
   enqueueLocked(job);
-  Serial.println("[mail] 测试邮件已入队，稍后由主循环发送");
+  _log.addf(LogLevel::kInfo, "mail", "测试邮件已入队，稍后由主循环发送");
   return true;
 }
 
@@ -699,7 +711,7 @@ bool EmailService::requestTest() {
 
 void EmailService::enqueueLocked(const MailJob &job) {
   if (_queueCount >= cfg::kMailQueueSize) {
-    Serial.println("[mail] 发送队列已满，丢弃本次通知");
+    _log.addf(LogLevel::kWarn, "mail", "发送队列已满，丢弃本次通知");
     return;
   }
   _queue[_queueCount++] = job;
@@ -725,12 +737,12 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
     Guard g(_mutex);
     if (!_enabled) {
       // 运行中被停用（Web 关闭总开关）：待发邮件直接丢弃，不消耗重试
-      Serial.println("[mail] 邮件通知已停用，丢弃待发邮件");
+      _log.addf(LogLevel::kInfo, "mail", "邮件通知已停用，丢弃待发邮件");
       configErr = true;
       return false;
     }
     if (!configuredLocked()) {
-      Serial.println("[mail] 邮件配置不完整，跳过发送");
+      _log.addf(LogLevel::kWarn, "mail", "邮件配置不完整，跳过发送");
       configErr = true;  // 配置类问题，重试无意义
       return false;
     }
@@ -741,13 +753,13 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
     port = _port;
   }
   if (html.length() == 0 && text.length() == 0) {
-    Serial.println("[mail] 邮件正文为空，跳过发送");
+    _log.addf(LogLevel::kWarn, "mail", "邮件正文为空，跳过发送");
     return false;
   }
 
   auto statusCallback = [](SMTPStatus status) {
     if (status.text.length() > 0) {
-      Serial.printf("[mail] SMTP: %s\r\n", status.text.c_str());
+      _log.addf(LogLevel::kDebug, "mail", "SMTP：%s", status.text.c_str());
     }
   };
 
@@ -755,8 +767,8 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   s_smtp.stop();
 
   if (!s_smtp.connect(server, (uint16_t)port, statusCallback)) {
-    Serial.printf("[mail] 邮件服务器连接失败: %s:%u\r\n", server.c_str(),
-                  (unsigned)port);
+    _log.addf(LogLevel::kWarn, "mail", "邮件服务器连接失败：%s:%u", server.c_str(),
+              (unsigned)port);
     return false;
   }
 
@@ -768,7 +780,7 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
 
   if (!s_smtp.authenticate(user, pass, readymail_auth_password)) {
     // 认证失败属配置错误，重试无意义
-    Serial.println("[mail] 邮件认证失败（请检查账号与 SMTP 授权码）");
+    _log.addf(LogLevel::kError, "mail", "邮件认证失败（请检查账号与 SMTP 授权码）");
     s_smtp.stop();
     configErr = true;
     return false;
@@ -780,8 +792,8 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   // HTML 超长时降级为纯文本（编码后体积会膨胀数倍，堆有限）
   bool useHtml = html.length() > 0;
   if (useHtml && html.length() > (size_t)kMaxHtmlChars) {
-    Serial.printf("[mail] HTML 正文过长（%u 字符），本次仅发送纯文本\r\n",
-                  (unsigned)html.length());
+    _log.addf(LogLevel::kWarn, "mail", "HTML 正文过长（%u 字符），本次仅发送纯文本",
+              (unsigned)html.length());
     useHtml = false;
     if (text.length() == 0) {
       s_smtp.stop();
@@ -805,9 +817,9 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   bool ok = s_smtp.send(msg);
   s_smtp.stop();
   if (ok) {
-    Serial.printf("[mail] 邮件发送成功: %s\r\n", subject.c_str());
+    _log.addf(LogLevel::kInfo, "mail", "邮件发送成功：%s", subject.c_str());
   } else {
-    Serial.printf("[mail] 邮件发送失败: %s\r\n", subject.c_str());
+    _log.addf(LogLevel::kWarn, "mail", "邮件发送失败：%s", subject.c_str());
   }
   return ok;
 }

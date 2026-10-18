@@ -151,15 +151,15 @@ void WebPanel::begin() {
   ensureApiToken();   // 载入/生成持久化 API 令牌（NVS）
   // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404
   if (!LittleFS.begin(true)) {
-    Serial.println("[http] LittleFS mount failed, web page unavailable");
+    _log.addf(LogLevel::kError, "http", "LittleFS 挂载失败，网页不可用");
   } else {
-    Serial.println("[http] LittleFS mounted");
+    _log.addf(LogLevel::kInfo, "http", "LittleFS 已挂载");
   }
 
   setupRoutes();
   _events.begin(_server);   // 注册 SSE 事件流（/api/sse，复用上面的认证中间件）
   _server.begin();
-  Serial.printf("[http] server on :%u\r\n", cfg::kHttpPort);
+  _log.addf(LogLevel::kInfo, "http", "HTTP 服务已启动，端口 %u", cfg::kHttpPort);
 }
 
 // 生成 32 位十六进制随机凭证（esp_random 硬件熵源，用于 sid / Bearer 令牌）
@@ -198,7 +198,7 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
 void WebPanel::invalidateAllSessions() {
   _sessionCount = 0;
   _tokenCount = 0;
-  Serial.println("[http] all sessions and tokens invalidated");
+  _log.addf(LogLevel::kInfo, "http", "已注销全部会话与访问令牌");
 }
 
 // 载入/生成持久化 API 令牌：NVS 已有且长度合法则复用，否则生成并写回
@@ -215,9 +215,9 @@ void WebPanel::ensureApiToken() {
       prefs.putString(cfg::kNvsKeyToken, t);
       prefs.end();
     }
-    Serial.println("[http] API 令牌缺失，已自动生成并写入 NVS");
+    _log.addf(LogLevel::kInfo, "http", "API 令牌缺失，已自动生成并写入 NVS");
   } else {
-    Serial.println("[http] 已从 NVS 载入 API 令牌");
+    _log.addf(LogLevel::kInfo, "http", "已从 NVS 载入 API 令牌");
   }
   _apiToken = t;
 }
@@ -230,7 +230,7 @@ String WebPanel::resetApiToken() {
     prefs.putString(cfg::kNvsKeyToken, _apiToken);
     prefs.end();
   }
-  Serial.println("[http] API 令牌已重置");
+  _log.addf(LogLevel::kInfo, "http", "API 令牌已重置");
   return _apiToken;
 }
 
@@ -611,16 +611,16 @@ void WebPanel::handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json) {
   String user = json["user"].as<String>();
   String pass = json["pass"].as<String>();
   String passOld = json["passOld"].as<String>();
-  Serial.printf("[auth] change: new user=%s, stored user=%s\r\n",
-                user.c_str(), _auth.user().c_str());
+  _log.addf(LogLevel::kDebug, "auth", "修改账号请求：新用户名=%s，当前用户名=%s",
+            user.c_str(), _auth.user().c_str());
   if (!_auth.check(_auth.user(), passOld)) {
-    Serial.println("[auth] change rejected: current password mismatch");
+    _log.addf(LogLevel::kWarn, "auth", "修改账号被拒：当前密码不正确");
     sendErr(req, 403, "当前密码不正确");
     return;
   }
   String err;
   if (!_auth.update(user, pass, &err)) {
-    Serial.printf("[auth] change failed: %s\r\n", err.c_str());
+    _log.addf(LogLevel::kWarn, "auth", "修改账号失败：%s", err.c_str());
     sendErr(req, 400, err.c_str());
     return;
   }

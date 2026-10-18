@@ -1,8 +1,17 @@
 #include "app/UserFs.h"
 
+#include "log/LogStore.h"
+
 #include <LittleFS.h>
 
 #include <Arduino.h>
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
 
 namespace userfs {
 
@@ -17,16 +26,17 @@ bool begin() {
   // 若仍失败（如全新分区首挂偶发失败），再显式格式化重试一次兜底。
   g_mounted = g_fs.begin(true, "/data", 10, "userdata");
   if (!g_mounted) {
-    Serial.println("[fs] userdata mount failed, formatting and retrying");
+    _log.addf(LogLevel::kWarn, "fs", "userdata 挂载失败，正在格式化并重试");
     if (g_fs.format()) {
       g_mounted = g_fs.begin(false, "/data", 10, "userdata");
     }
   }
   if (g_mounted) {
-    Serial.printf("[fs] userdata mounted at /data (%u bytes)\r\n",
-                  (unsigned)userfs::totalBytes());
+    _log.addf(LogLevel::kInfo, "fs", "userdata 已挂载于 /data（%u 字节）",
+              (unsigned)userfs::totalBytes());
   } else {
-    Serial.println("[fs] userdata mount failed (check partition table has 'userdata')");
+    _log.addf(LogLevel::kError, "fs",
+              "userdata 挂载失败（检查分区表是否含 userdata 分区）");
   }
   return g_mounted;
 }

@@ -4,6 +4,15 @@
 
 #include <Arduino.h>
 
+#include "log/LogStore.h"
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
+
 // 工作区大小：单段 PDU 解码/编码足够（长短信按段处理，不在单实例内拼接）
 static constexpr int kPduWorkBuf = 1024;
 
@@ -61,7 +70,7 @@ bool SmsCodec::reassemble(SmsConcatSlot *slots, const String &sender,
     for (uint8_t i = 1; i < cfg::kSmsConcatSlots; i++) {
       if (slots[i].firstMs < s->firstMs) s = &slots[i];
     }
-    Serial.println("[sms] concat buffer full, discard oldest group");
+    _log.addf(LogLevel::kWarn, "sms", "长短信重组槽位已满，丢弃最旧的一组");
   }
 
   if (!s->inUse) {
@@ -101,9 +110,9 @@ void SmsCodec::pruneTimeouts(SmsConcatSlot *slots) {
   uint32_t now = millis();
   for (uint8_t i = 0; i < cfg::kSmsConcatSlots; i++) {
     if (slots[i].inUse && now - slots[i].firstMs >= cfg::kSmsConcatTimeoutMs) {
-      Serial.printf("[sms] concat slot%u timeout (ref=%u, %u/%u parts)\r\n",
-                    (unsigned)i, (unsigned)slots[i].ref,
-                    (unsigned)slots[i].received, (unsigned)slots[i].total);
+      _log.addf(LogLevel::kWarn, "sms", "长短信槽位 %u 重组超时（ref=%u，%u/%u 段）",
+                (unsigned)i, (unsigned)slots[i].ref,
+                (unsigned)slots[i].received, (unsigned)slots[i].total);
       slots[i].inUse = false;
     }
   }

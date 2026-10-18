@@ -4,8 +4,12 @@
 #include <LovyanGFX.hpp>
 
 #include "app/Config.h"
+#include "log/LogStore.h"
 
 namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
 
 // ---------- LovyanGFX 自定义引脚面板 ----------
 // 按 cfg 中的引脚/频率配置 SPI 总线、ST7789 面板与 PWM 背光
@@ -280,13 +284,13 @@ bool Display::begin() {
   // 则回退直绘模式（无帧缓冲），屏幕功能不受影响
   _impl->hasFb = _impl->fb.createSprite(_impl->lcd.width(), _impl->lcd.height()) != nullptr;
   if (!_impl->hasFb) {
-    Serial.println("[disp] framebuffer alloc failed, fallback to direct draw");
+    _log.addf(LogLevel::kWarn, "disp", "帧缓冲分配失败，退化为直绘模式");
   }
   paintChrome(target());
   pushFrame();
-  Serial.printf("[disp] ST7789 ready, framebuffer %u KB %s\r\n",
-                (unsigned)(_impl->fb.bufferLength() / 1024),
-                _impl->hasFb ? "in PSRAM" : "(direct draw)");
+  _log.addf(LogLevel::kInfo, "disp", "ST7789 就绪，帧缓冲 %u KB（%s）",
+            (unsigned)(_impl->fb.bufferLength() / 1024),
+            _impl->hasFb ? "PSRAM" : "直绘");
   return true;
 }
 
@@ -328,10 +332,10 @@ void Display::setScreenOn(bool on) {
     _impl->atCache = String();
     _impl->clockCache = String();     // 唤醒后补画标题栏时钟
     pushFrame();                      // 睡眠期间面板内容已丢失，立即整屏推送
-    Serial.println("[disp] screen on");
+    _log.addf(LogLevel::kInfo, "disp", "屏幕已点亮");
   } else {
     _impl->lcd.sleep();               // 关背光 + 面板睡眠
-    Serial.println("[disp] screen off");
+    _log.addf(LogLevel::kInfo, "disp", "屏幕已熄灭");
   }
 }
 

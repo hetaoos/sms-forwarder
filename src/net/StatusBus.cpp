@@ -1,8 +1,16 @@
 #include "net/StatusBus.h"
 
+#include "log/LogStore.h"
 #include "net/StateJson.h"
 
 #include <Arduino.h>
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
 
 // wifi/bridge/led/display/sms/time：各模块引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
@@ -19,7 +27,7 @@ void StatusBus::begin(AsyncWebServer &server) {
     onClientDisconnect(client);
   });
   server.addHandler(&_events);
-  Serial.printf("[sse] event stream on %s\r\n", cfg::kSsePath);
+  _log.addf(LogLevel::kInfo, "sse", "SSE 事件流已挂载：%s", cfg::kSsePath);
 }
 
 // 采集、比对、推送；无客户端时重置基线（下次有人接入全量发）
@@ -111,8 +119,8 @@ void StatusBus::onClientConnect(AsyncEventSourceClient *client) {
   // 超限：关闭最早接入的连接（其 onDisconnect 会把它从列表移除）
   while (_clients.size() >= cfg::kSseMaxClients) {
     AsyncEventSourceClient *oldest = _clients.front();
-    Serial.printf("[sse] client limit %u reached, closing oldest\r\n",
-                  (unsigned)cfg::kMaxSessions);
+    _log.addf(LogLevel::kWarn, "sse", "SSE 客户端已达上限 %u，关闭最旧连接",
+              (unsigned)cfg::kMaxSessions);
     oldest->close();
     // close() 触发断开回调是异步的，这里先从列表摘除，避免向量抖动
     auto it = std::find(_clients.begin(), _clients.end(), oldest);
@@ -124,21 +132,22 @@ void StatusBus::onClientConnect(AsyncEventSourceClient *client) {
   uint32_t resumeFrom = 0;
   if (client->lastId() > 0) {
     resumeFrom = client->lastId();
-    Serial.printf("[sse] client resume from last-event-id %u\r\n",
-                  (unsigned)resumeFrom);
+    _log.addf(LogLevel::kInfo, "sse", "SSE 客户端从 last-event-id %u 续传",
+              (unsigned)resumeFrom);
   }
   _lastHistId = resumeFrom < _lastHistId ? resumeFrom : _lastHistId;
 
   publishSnapshot(client);
-  Serial.printf("[sse] client connected (%u/%u)\r\n", (unsigned)_clients.size(),
-                (unsigned)cfg::kSseMaxClients);
+  _log.addf(LogLevel::kInfo, "sse", "SSE 客户端已连接（%u/%u）",
+            (unsigned)_clients.size(), (unsigned)cfg::kSseMaxClients);
 }
 
 // 客户端断开：从列表移除
 void StatusBus::onClientDisconnect(AsyncEventSourceClient *client) {
   auto it = std::find(_clients.begin(), _clients.end(), client);
   if (it != _clients.end()) _clients.erase(it);
-  Serial.printf("[sse] client disconnected (%u left)\r\n", (unsigned)_clients.size());
+  _log.addf(LogLevel::kInfo, "sse", "SSE 客户端已断开（剩余 %u）",
+            (unsigned)_clients.size());
 }
 
 // 广播一个事件

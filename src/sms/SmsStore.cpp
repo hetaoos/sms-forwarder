@@ -1,8 +1,17 @@
 #include "sms/SmsStore.h"
 
+#include "log/LogStore.h"
+
 #include <algorithm>
 
 #include <Arduino.h>
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
 
 // 确保目录存在；max 为条数上限
 void SmsStore::begin(uint16_t max) {
@@ -10,7 +19,7 @@ void SmsStore::begin(uint16_t max) {
   _max = max;
   if (!userfs::mounted()) {
     _enabled = false;
-    Serial.println("[sms] store disabled: userdata not mounted");
+    _log.addf(LogLevel::kError, "sms", "短信存储已停用：userdata 分区未挂载");
     return;
   }
   if (!userfs::fs().exists(_dir.c_str())) {
@@ -18,7 +27,8 @@ void SmsStore::begin(uint16_t max) {
     // 表现为「短信收发正常但记录存不进去」。这里显式报错并关闭存储。
     if (!userfs::fs().mkdir(_dir.c_str())) {
       _enabled = false;
-      Serial.printf("[sms] store disabled: mkdir %s failed\r\n", _dir.c_str());
+      _log.addf(LogLevel::kError, "sms", "短信存储已停用：创建目录 %s 失败",
+                _dir.c_str());
       return;
     }
   }
@@ -45,8 +55,9 @@ void SmsStore::begin(uint16_t max) {
   }
   if (_count == 0) _minId = 0;
   unlock();
-  Serial.printf("[sms] store ready: %s (actual: /data%s), %d records, max id %u, limit %u\r\n",
-                _dir.c_str(), _dir.c_str(), _count, (unsigned)_maxId, (unsigned)_max);
+  _log.addf(LogLevel::kInfo, "sms",
+            "短信存储就绪：%s（实际 /data%s），%d 条，最大 ID %u，上限 %u",
+            _dir.c_str(), _dir.c_str(), _count, (unsigned)_maxId, (unsigned)_max);
 }
 
 // 写入一条记录（FIFO 淘汰最旧）
@@ -59,7 +70,7 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
   File f = userfs::fs().open(path.c_str(), "w");
   if (!f) {
     unlock();
-    Serial.println("[sms] store write open failed");
+    _log.addf(LogLevel::kError, "sms", "短信写入失败：无法创建文件 #%u", (unsigned)id);
     return 0;
   }
   f.printf("%u,%s,%s,%u,%d\r\n\r\n", (unsigned)id, msg.incoming ? "in" : "out",
@@ -76,7 +87,8 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
     if (userfs::fs().exists(filePath(_minId).c_str())) {
       userfs::fs().remove(filePath(_minId).c_str());
       _count--;
-      Serial.printf("[sms] store full, dropped #%u\r\n", (unsigned)_minId);
+      _log.addf(LogLevel::kWarn, "sms", "短信存储已满，淘汰最旧记录 #%u",
+                (unsigned)_minId);
       _minId++;
       break;
     }
@@ -212,7 +224,7 @@ void SmsStore::clear() {
   _maxId = 0;
   _minId = 0;
   unlock();
-  Serial.println("[sms] store cleared");
+  _log.addf(LogLevel::kInfo, "sms", "短信存储已清空");
 }
 
 // 存储统计

@@ -23,6 +23,16 @@ void copyTrunc(char *dst, size_t cap, const char *src) {
   dst[n] = '\0';
 }
 
+// 级别 -> 固定宽度短名（串口镜像行用，便于肉眼扫描）
+const char *levelName(uint8_t level) {
+  switch ((LogLevel)level) {
+    case LogLevel::kDebug: return "DEBUG";
+    case LogLevel::kWarn:  return "WARN ";
+    case LogLevel::kError: return "ERROR";
+    default:               return "INFO ";
+  }
+}
+
 // 大小写不敏感的子串查找；needle 为空视为命中
 // hay：被查找串（'\0' 结尾）；needle：关键字（已转为小写）
 bool containsCI(const char *hay, const char *needle) {
@@ -43,6 +53,13 @@ bool containsCI(const char *hay, const char *needle) {
 
 }  // namespace
 
+// 全局唯一实例：函数内静态对象，首次访问时构造，
+// 规避跨编译单元的静态初始化顺序问题（各模块的 _log 别名可能在 App 之前初始化）
+LogStore &devLog() {
+  static LogStore inst;
+  return inst;
+}
+
 // max：条数上限（0 或越界取 cfg::kLogRingSize）。
 // PSRAM 优先分配（与短信/HTTP 等 DRAM 使用者隔离），失败退化为内部堆
 void LogStore::begin(uint16_t max) {
@@ -60,39 +77,45 @@ void LogStore::begin(uint16_t max) {
   }
   if (!_buf) {
     _max = 0;
-    Serial.println("[log] ring alloc failed, logging disabled");
+    addf(LogLevel::kError, "log", "环形缓冲分配失败，日志仅输出到串口");
     return;
   }
-  Serial.printf("[log] ring ready: %u entries x %u B = %u B in %s\r\n",
-                (unsigned)_max, (unsigned)sizeof(Entry), (unsigned)bytes,
-                _psram ? "PSRAM" : "heap");
+  addf(LogLevel::kInfo, "log", "日志环就绪：%u 条 x %u B = %u B，位于 %s",
+       (unsigned)_max, (unsigned)sizeof(Entry), (unsigned)bytes,
+       _psram ? "PSRAM" : "内部堆");
   // 兜底说明：板子无 PSRAM 时属预期，有 PSRAM 却退化则说明 PSRAM 初始化失败
   // 或剩余空间不足（8MB 板型上通常是前者），串口一眼可辨
   if (!_psram) {
-    Serial.printf(
-        "[log] PSRAM alloc failed, fell back to heap (psram size %u B, free %u B)\r\n",
-        (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
+    addf(LogLevel::kWarn, "log",
+         "PSRAM 分配失败，已退化到内部堆（PSRAM %u B，剩余 %u B）",
+         (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
   }
 }
 
 // level：级别；tag：模块标签；msg：正文（均可超长截断）
 void LogStore::add(LogLevel level, const char *tag, const char *msg) {
-  if (!_buf) return;
+  uint32_t id = 0;
   lock();
-  uint32_t id = _nextId++;
-  Entry &e = _buf[id % _max];
-  e.id = id;
-  e.ts = _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
-  e.level = (uint8_t)level;
-  copyTrunc(e.tag, sizeof(e.tag), tag);
-  copyTrunc(e.msg, sizeof(e.msg), msg);
-  if (_count < _max) _count++;
+  if (_buf) {  // 缓冲不可用（begin 之前或分配失败）：只做下面的串口输出
+    id = _nextId++;
+    Entry &e = _buf[id % _max];
+    e.id = id;
+    e.ts = _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
+    e.level = (uint8_t)level;
+    copyTrunc(e.tag, sizeof(e.tag), tag);
+    copyTrunc(e.msg, sizeof(e.msg), msg);
+    if (_count < _max) _count++;
+  }
   unlock();
+  // 串口镜像：放在锁外，避免串口拥塞时把日志互斥锁连同调用方一起拖住。
+  // 并发下最坏情况只是两行交错，不影响环形缓冲的一致性。
+  Serial.printf("[%u][%s][%s] %s\r\n", (unsigned)id, levelName((uint8_t)level),
+                tag ? tag : "", msg ? msg : "");
 }
 
 // level：级别；tag：模块标签；fmt：格式串（自动截断到 kLogMsgMax-1）
 void LogStore::addf(LogLevel level, const char *tag, const char *fmt, ...) {
-  if (!_buf || !fmt) return;
+  if (!fmt) return;
   char msg[cfg::kLogMsgMax];
   va_list ap;
   va_start(ap, fmt);

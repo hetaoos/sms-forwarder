@@ -1,8 +1,17 @@
 #include "net/WifiManager.h"
 
+#include "log/LogStore.h"
+
 #include <ArduinoJson.h>
 
 #include <Arduino.h>
+
+namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
+}  // namespace
 
 // 读取 NVS 中的 JSON 配置，失败或不存在时按空列表处理
 void WifiManager::loadFromNvs() {
@@ -16,7 +25,7 @@ void WifiManager::loadFromNvs() {
 
   JsonDocument doc;
   if (deserializeJson(doc, json) != DeserializationError::Ok) {
-    Serial.println("[wifi] nvs config parse failed, ignore");
+    _log.addf(LogLevel::kWarn, "wifi", "NVS 中的 WiFi 配置解析失败，按空列表处理");
     return;
   }
   // 逐条读取，超出容量或 SSID 为空的条目跳过
@@ -28,7 +37,8 @@ void WifiManager::loadFromNvs() {
     _entries[_entryCount].pass = o["pass"] | "";
     _entryCount++;
   }
-  Serial.printf("[wifi] nvs: %u saved network(s)\r\n", (unsigned)_entryCount);
+  _log.addf(LogLevel::kInfo, "wifi", "已从 NVS 载入 %u 个 WiFi 配置",
+            (unsigned)_entryCount);
 }
 
 // 把当前配置列表序列化为 JSON 写入 NVS
@@ -85,7 +95,7 @@ void WifiManager::startNextAttempt() {
   WiFi.setAutoReconnect(true);
   WiFi.begin(c.ssid.c_str(), c.pass.c_str());
   _attemptMs = millis();
-  Serial.printf("[wifi] try '%s' ...\r\n", c.ssid.c_str());
+  _log.addf(LogLevel::kInfo, "wifi", "正在连接 '%s'", c.ssid.c_str());
 }
 
 // 显式试连失败后的回退：回到 NVS 候选重新开始，而不是直接跳 AP
@@ -111,7 +121,8 @@ void WifiManager::enterApMode() {
                     IPAddress(255, 255, 255, 0));
   WiFi.softAP(cfg::kApSsid);  // 开放热点，无密码
   _apUp = true;
-  Serial.printf("[wifi] AP mode '%s' ip=192.168.4.1\r\n", cfg::kApSsid);
+  _log.addf(LogLevel::kInfo, "wifi", "已进入 AP 配网模式 '%s'（IP 192.168.4.1）",
+            cfg::kApSsid);
 }
 
 // 初始化：读 NVS -> 组候选 -> 启动连接状态机
@@ -145,13 +156,14 @@ void WifiManager::tick() {
       if (connected()) {
         _mode = WifiMode::kSta;
         _lostMs = millis();
-        Serial.printf("[wifi] up, ip=%s\r\n", ip().c_str());
+        _log.addf(LogLevel::kInfo, "wifi", "WiFi 已连接，IP %s", ip().c_str());
         unlock();
         if (_onConnect) _onConnect();  // 锁外触发：回调可能启动 NTP 等耗时操作
         return;
       }
       if (millis() - _attemptMs >= cfg::kWifiConnectTimeoutMs) {
-        Serial.println("[wifi] attempt timeout");
+        _log.addf(LogLevel::kWarn, "wifi", "连接 '%s' 超时",
+                  _cand[_candPos].ssid.c_str());
         _candPos++;
         if (_candPos >= _candCount) {  // 一轮结束
           _candPos = 0;
@@ -174,7 +186,7 @@ void WifiManager::tick() {
     case WifiMode::kSta:
       if (!connected()) {
         if (millis() - _lostMs >= cfg::kWifiLostRetryMs) {
-          Serial.println("[wifi] link lost, retry candidates");
+          _log.addf(LogLevel::kWarn, "wifi", "WiFi 链路断开，重新尝试候选网络");
           rebuildCandidates();
           _candPos = 0;
           _round = 0;
@@ -253,13 +265,13 @@ bool WifiManager::save(const String &ssid, const String &pass,
 
   bool persisted = persistToNvs();
   if (persisted) {
-    Serial.printf("[wifi] saved '%s' (total %u)\r\n", ssid.c_str(),
-                  (unsigned)_entryCount);
+    _log.addf(LogLevel::kInfo, "wifi", "已保存 '%s'（共 %u 个）", ssid.c_str(),
+              (unsigned)_entryCount);
   }
   if (persisted && connectNow) requestConnectLocked(ssid, pass);
   unlock();
 
-  if (!persisted) Serial.println("[wifi] persist failed");
+  if (!persisted) _log.addf(LogLevel::kError, "wifi", "WiFi 配置保存失败");
   return persisted;
 }
 
@@ -277,8 +289,8 @@ bool WifiManager::remove(uint8_t index) {
   bool persisted = persistToNvs();
   unlock();
   if (!persisted) return false;
-  Serial.printf("[wifi] removed #%u (total %u)\r\n", (unsigned)index,
-                (unsigned)_entryCount);
+  _log.addf(LogLevel::kInfo, "wifi", "已删除 #%u（剩余 %u 个）", (unsigned)index,
+            (unsigned)_entryCount);
   return true;
 }
 
@@ -301,7 +313,8 @@ bool WifiManager::move(uint8_t from, uint8_t to) {
   bool persisted = persistToNvs();
   unlock();
   if (!persisted) return false;
-  Serial.printf("[wifi] moved #%u -> #%u\r\n", (unsigned)from, (unsigned)to);
+  _log.addf(LogLevel::kInfo, "wifi", "已调整优先级：#%u -> #%u", (unsigned)from,
+            (unsigned)to);
   return true;
 }
 

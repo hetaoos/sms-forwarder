@@ -13,14 +13,14 @@ bool App::begin() {
   // 该分区刷固件后仍保留，短信等业务数据持久化在这里（路径以 /data 开头）
   userfs::begin();
 
-  // 时间同步：先恢复 NVS 里的上次已知时间（近似值），随后由 WiFi 连接（NTP）
-  // 与模组就绪（SIM NITZ）事件驱动校准
-  _time.begin(_bridge, _sms);
-
   // 设备日志：PSRAM 环形缓冲，先于其余模块就绪，后续启动日志均可入库。
   // 时间戳供给与短信记录一致（已同步=纪元秒，未同步=开机秒数）
   _log.begin(cfg::kLogRingSize);
   _log.setTimeProvider([this] { return _time.epochOrUptime(); });
+
+  // 时间同步：先恢复 NVS 里的上次已知时间（近似值），随后由 WiFi 连接（NTP）
+  // 与模组就绪（SIM NITZ）事件驱动校准
+  _time.begin(_bridge, _sms);
 
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 屏幕 + 静态框架
@@ -70,12 +70,10 @@ bool App::begin() {
   _email.setStartupGate([this] { return _sms.modemsSettled(); });
   _email.notifyStartup();              // 排入启动邮件（等 WiFi + 模组就绪后发出）
 
-  Serial.printf("[app] heap free %u B, psram %u/%u B\r\n", ESP.getFreeHeap(),
-                ESP.getFreePsram(), ESP.getPsramSize());
-  _log.addf(LogLevel::kInfo, "app", "启动完成：heap %u B 空闲，PSRAM %u/%u B",
+  _log.addf(LogLevel::kInfo, "app",
+            "启动完成：heap %u B 空闲，PSRAM %u/%u B，进入主循环",
             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
             (unsigned)ESP.getPsramSize());
-  Serial.println("[app] ready");
   return true;
 }
 

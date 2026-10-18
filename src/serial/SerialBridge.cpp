@@ -1,9 +1,15 @@
 #include "serial/SerialBridge.h"
 
+#include "log/LogStore.h"
+
 // 静态成员：单例指针，供中断/静态回调转发使用
 SerialBridge *SerialBridge::sInstance = nullptr;
 
 namespace {
+
+// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+LogStore &_log = devLog();
+
 constexpr uint32_t kRxBufferSize = 4096;   // 串口接收缓冲（加大防溢出）
 constexpr uint32_t kTxBufferSize = 1024;   // 串口发送缓冲
 constexpr uint8_t kRxFifoThrhd = 32;       // 触发中断的 FIFO 阈值，越小越不容易溢出
@@ -49,19 +55,22 @@ void SerialBridge::ensureOpen(Port &p, uint32_t baud) {
   p.dev->begin(baud, SERIAL_8N1, p.rx, p.tx, false, 20000UL, kRxFifoThrhd);
   p.dev->onReceiveError([&p](hardwareSerial_error_t err) {
     p.errCount++;
-    Serial.printf("[uart%u] err=%d rx=%u tx=%u\r\n", p.index + 1, (int)err,
-                  (unsigned)p.rxBytes, (unsigned)p.txBytes);
+    _log.addf(LogLevel::kWarn, "uart",
+              "串口 %u 接收错误 err=%d（已收 %u B，已发 %u B）",
+              (unsigned)(p.index + 1), (int)err, (unsigned)p.rxBytes,
+              (unsigned)p.txBytes);
   });
   p.baud = baud;
   p.opened = true;
-  Serial.printf("[uart%u] open baud=%u\r\n", p.index + 1, (unsigned)baud);
+  _log.addf(LogLevel::kInfo, "uart", "串口 %u 已打开，波特率 %u",
+            (unsigned)(p.index + 1), (unsigned)baud);
 }
 
 // 释放并重开串口：用于自愈
 // p：端口状态；baud：重开时使用的波特率
 void SerialBridge::reopen(Port &p, uint32_t baud) {
-  Serial.printf("[uart%u] recover: reopening at %u\r\n", p.index + 1,
-                (unsigned)baud);
+  _log.addf(LogLevel::kWarn, "uart", "串口 %u 自愈：以 %u 波特率重新打开",
+            (unsigned)(p.index + 1), (unsigned)baud);
   p.dev->end();
   delay(20);
   p.dev->setRxBufferSize(kRxBufferSize);
@@ -76,7 +85,7 @@ void SerialBridge::reopen(Port &p, uint32_t baud) {
 
 // 初始化互斥量并创建抽数任务（固定到核心 1，优先级 2）
 // 栈 8KB：本任务的调用链很深——URC 回调 -> SmsService::onUnsolicited ->
-// handleCmt（pdulib 解码 + LittleFS 写入 + Serial.printf）-> 上层回调
+// handleCmt（pdulib 解码 + LittleFS 写入 + 日志输出）-> 上层回调
 // （如邮件通知入队）。原 4KB 余量不足，一旦栈溢出抽数任务死亡，
 // 表现为「短信既收不到也发不出」（状态机与响应收集都随之停摆）。
 void SerialBridge::begin() {
@@ -91,7 +100,7 @@ void SerialBridge::begin() {
 // FreeRTOS 任务入口：arg 为 SerialBridge 实例指针
 void SerialBridge::taskEntry(void *arg) {
   SerialBridge *self = static_cast<SerialBridge *>(arg);
-  Serial.println("[uart] pump task started");
+  _log.addf(LogLevel::kInfo, "uart", "串口抽数任务已启动");
   for (;;) {
     self->pumpOnce();
     vTaskDelay(kPumpPeriod);
@@ -168,8 +177,8 @@ void SerialBridge::stashUrc(Port &p, const String &resp) {
   // 抽数任务在 120ms 静默后按自发上报归档 -> _urc -> SmsService 解码入库
   p.pend += tail;
   p.pendMs = millis();
-  Serial.printf("[uart%u] urc stashed from at window (%u chars)\r\n",
-                p.index + 1, (unsigned)tail.length());
+  _log.addf(LogLevel::kDebug, "uart", "串口 %u 从 AT 窗口转存自发上报（%u 字符）",
+            (unsigned)(p.index + 1), (unsigned)tail.length());
 }
 
 // 同步收集响应：直到超时或静默 gapMs
@@ -224,8 +233,8 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
   if (resp.length()) {
     p.timeouts = 0;
   } else if (++p.timeouts >= kTimeoutBeforeReset) {
-    Serial.printf("[uart%u] %lu consecutive timeouts\r\n", p.index + 1,
-                  (unsigned long)p.timeouts);
+    _log.addf(LogLevel::kWarn, "uart", "串口 %u 连续 %u 次无响应",
+              (unsigned)(p.index + 1), (unsigned)p.timeouts);
     reopen(p, p.baud);
     p.timeouts = 0;
   }
@@ -273,8 +282,8 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
   if (resp.length()) {
     p.timeouts = 0;
   } else if (++p.timeouts >= kTimeoutBeforeReset) {
-    Serial.printf("[uart%u] %lu consecutive timeouts\r\n", p.index + 1,
-                  (unsigned long)p.timeouts);
+    _log.addf(LogLevel::kWarn, "uart", "串口 %u 连续 %u 次无响应",
+              (unsigned)(p.index + 1), (unsigned)p.timeouts);
     reopen(p, p.baud);
     p.timeouts = 0;
   }
