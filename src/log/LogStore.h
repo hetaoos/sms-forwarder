@@ -36,7 +36,7 @@ enum class LogLevel : uint8_t {
 //      当前页条目副本，持锁时间与页大小成正比。
 class LogStore {
  public:
-  // 一条日志记录（定长结构，按值拷贝；约 140B）
+  // 一条日志记录（定长结构，按值拷贝；约 228B：id/ts/level + 标签 + 正文）
   struct Entry {
     uint32_t id = 0;   // 自增 ID（从 1 起，不回绕）
     uint32_t ts = 0;   // 时间戳：纪元秒（时钟已同步）或开机秒数
@@ -51,7 +51,8 @@ class LogStore {
   void setTimeProvider(TimeProviderFn fn) { _timeFn = fn; }
 
   // 分配环形缓冲：max 为条数上限（0 或越界取 cfg::kLogRingSize）。
-  // PSRAM 优先，失败退化为内部堆；两者都失败则不入环（仍逐条输出到串口）
+  // PSRAM 优先（按上限给足）；失败退化为内部堆并按 cfg::kLogRingSizeNoPsram
+  // 收紧条数；两者都分配失败则不入环（仍逐条输出到串口）
   void begin(uint16_t max);
 
   // 追加一条日志（level：级别；tag：模块标签；msg：正文；均超长自动截断）

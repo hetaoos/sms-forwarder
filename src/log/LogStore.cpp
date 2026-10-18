@@ -61,7 +61,8 @@ LogStore &devLog() {
 }
 
 // max：条数上限（0 或越界取 cfg::kLogRingSize）。
-// PSRAM 优先分配（与短信/HTTP 等 DRAM 使用者隔离），失败退化为内部堆
+// PSRAM 优先分配（与短信/HTTP 等 DRAM 使用者隔离，容量按上限给足）；
+// 失败退化为内部堆，并按 kLogRingSizeNoPsram 收紧条数，避免挤占 DRAM
 void LogStore::begin(uint16_t max) {
   _mutex = xSemaphoreCreateMutex();
   if (max == 0 || max > cfg::kLogRingSize) max = cfg::kLogRingSize;
@@ -69,10 +70,11 @@ void LogStore::begin(uint16_t max) {
   _count = 0;
   _nextId = 1;
 
-  size_t bytes = sizeof(Entry) * _max;
   _buf = (Entry *)heap_caps_calloc(_max, sizeof(Entry), MALLOC_CAP_SPIRAM);
   _psram = _buf != nullptr;
-  if (!_buf) {  // 无 PSRAM 或分配失败：退化到内部堆，功能不变
+  if (!_buf) {
+    // 无 PSRAM 或 PSRAM 分配失败：退化到内部堆，功能不变，只保留最近若干条
+    if (_max > cfg::kLogRingSizeNoPsram) _max = cfg::kLogRingSizeNoPsram;
     _buf = (Entry *)calloc(_max, sizeof(Entry));
   }
   if (!_buf) {
@@ -81,8 +83,8 @@ void LogStore::begin(uint16_t max) {
     return;
   }
   addf(LogLevel::kInfo, "log", "日志环就绪：%u 条 x %u B = %u B，位于 %s",
-       (unsigned)_max, (unsigned)sizeof(Entry), (unsigned)bytes,
-       _psram ? "PSRAM" : "内部堆");
+       (unsigned)_max, (unsigned)sizeof(Entry),
+       (unsigned)(sizeof(Entry) * _max), _psram ? "PSRAM" : "内部堆");
   // 兜底说明：板子无 PSRAM 时属预期，有 PSRAM 却退化则说明 PSRAM 初始化失败
   // 或剩余空间不足（8MB 板型上通常是前者），串口一眼可辨
   if (!_psram) {
@@ -145,7 +147,7 @@ void LogStore::list(int page, int pageSize, int8_t level, const String &q,
     return;
   }
   // 最新在前（ID 倒序）扫描：先只收集命中的 ID，再按页复制条目副本，
-  // 避免为整环匹配结果临时拷贝（定长条目约 140B，拷贝成本远高于 4B ID）
+  // 避免为整环匹配结果临时拷贝（定长条目约 228B，拷贝成本远高于 4B ID）
   std::vector<uint32_t> ids;
   ids.reserve(_count);
   uint32_t oldest = _nextId - _count;

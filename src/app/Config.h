@@ -117,11 +117,16 @@ constexpr uint8_t kSseMaxClients = 8;         // 并发 SSE 客户端上限（�
 // ---------------- 设备日志（PSRAM 环形存储）----------------
 // 运行日志环形缓冲（log/LogStore）：条目缓冲区整块分配在 PSRAM，与 WiFi/
 // LwIP 等内部堆使用者隔离，定长条目 + FIFO 淘汰最旧，运行期零堆分配。
-// 默认 512 条 x 140B ≈ 70KB PSRAM；板子无 PSRAM 时自动退化为内部堆分配。
-constexpr uint16_t kLogRingSize = 512;    // 环形缓冲条数上限（FIFO 淘汰最旧）
-constexpr uint8_t  kLogTagMax = 16;       // 标签字段长度（含 '\0'，超出截断）
-constexpr uint8_t  kLogMsgMax = 112;      // 正文字段长度（含 '\0'，超出截断）
-constexpr uint8_t  kLogPageSizeMax = 100; // 分页查询每页条数上限
+// PSRAM 容量充裕（8MB 板型）：2048 条 x 228B ≈ 467KB，可回溯较长一段时间的
+// 运行记录；无 PSRAM / PSRAM 分配失败退化到内部堆时按 kLogRingSizeNoPsram
+// 收紧条数，避免大缓冲挤占本就紧张的 DRAM（功能不变，只保留最近若干条）。
+// 正文 192B（含 '\0'）足以放下一条完整日志（邮件主题、短信正文片段等），
+// 超长自动截断——串口镜像输出的是同一份截断后的正文，两者不会不一致。
+constexpr uint16_t kLogRingSize = 2048;       // PSRAM 下的环形缓冲条数上限（FIFO 淘汰最旧）
+constexpr uint16_t kLogRingSizeNoPsram = 256; // 退化到内部堆时的条数上限
+constexpr uint8_t  kLogTagMax = 24;           // 标签字段长度（含 '\0'，超出截断）
+constexpr uint8_t  kLogMsgMax = 192;          // 正文字段长度（含 '\0'，超出截断）
+constexpr uint8_t  kLogPageSizeMax = 100;     // 分页查询每页条数上限
 
 // ---------------- 短信（4G 模组） ----------------
 constexpr uint8_t kSmsMaxModems = 2;          // 可接模组数（与双串口一一对应）
