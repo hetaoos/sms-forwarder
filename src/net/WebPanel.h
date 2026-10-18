@@ -15,6 +15,10 @@
 
 // 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
 // + 运行日志查询（PSRAM 环形缓冲分页拉取）
+//
+// 代码组织约定：setupRoutes() 是纯路由表——只写路径、方法注释与一行转发
+// （_server.on(...) 内部不写业务逻辑），具体实现放在同名的 handleXxx() 成员
+// 函数里。新增接口时照此办理：注册处加一行，逻辑写成一个 handleXxx()。
 // 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
 // URL 划分：页面与静态资源在根路径（公开，不含敏感数据），
 // 全部 API 统一在 /api/ 前缀下（除登录/登出/会话探测外均需认证）。
@@ -46,7 +50,17 @@ class WebPanel {
   void begin();
 
  private:
-  // 注册全部 URL 路由与处理器（精确路由需先于 serveStatic 注册）
+  // 注册全部 URL 路由与处理器。
+  //
+  // 【注册顺序规则 —— 必读，新增接口时必须遵守】
+  // 同一前缀下，路径长的必须先注册（子路径在前，父路径在后）：
+  //   /api/sms/ports 先于 /api/sms；/api/logs/stats 先于 /api/logs；
+  //   /api/email/test 先于 /api/email。
+  // 原因：ESPAsyncWebServer 对普通 URI 采用 BackwardCompatible 匹配
+  // （_value == path || path.startsWith(_value + "/")），父路径会连子路径一起
+  // 命中；而服务器按注册顺序取第一个匹配的 handler 就结束查找。父路径若先注册，
+  // 子路径请求会被父 handler 截获并返回父接口的响应（字段名对不上，页面出现
+  // 「-」或按钮走错分支等隐蔽故障）。详见 setupRoutes() 前的说明。
   void setupRoutes();
 
   // 以 200 + application/json 发送响应体
@@ -79,6 +93,82 @@ class WebPanel {
   void ensureApiToken();
   // 重新生成 API 令牌（写 NVS），返回新令牌
   String resetApiToken();
+
+  // ================= 路由处理函数 =================
+  // 约定：setupRoutes() 里只注册路径 + 一行转发，具体逻辑一律在这些函数中实现，
+  // 避免注册处堆积长 lambda。全部运行于 HTTP（async_tcp）任务：不得执行长耗时
+  // 或大栈操作（如 SMTP/TLS），重活应入队交给主循环。
+
+  // 中间件：/api/ 统一鉴权（登录相关端点放行）
+  void handleAuthMiddleware(AsyncWebServerRequest *req, ArMiddlewareNext next);
+
+  // 页面：首页 / 独立登录页
+  void handleIndex(AsyncWebServerRequest *req);
+  void handleLoginPage(AsyncWebServerRequest *req);
+
+  // 认证：登录 / 登出 / 会话探测
+  void handleLogin(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleLogout(AsyncWebServerRequest *req);
+  void handleSession(AsyncWebServerRequest *req);
+
+  // API 令牌与账号：查询/重置令牌、查询/修改账号
+  void handleTokenGet(AsyncWebServerRequest *req);
+  void handleTokenPost(AsyncWebServerRequest *req);
+  void handleAuthGet(AsyncWebServerRequest *req);
+  void handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // RGB：切换下一色 / 查询 / 设置
+  void handleLedNext(AsyncWebServerRequest *req);
+  void handleRgbGet(AsyncWebServerRequest *req);
+  void handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 串口 AT：发命令 / 历史增量 / 清空 / 重初始化 / 串口统计 / 默认波特率
+  void handleAtSend(AsyncWebServerRequest *req);
+  void handleAtHist(AsyncWebServerRequest *req);
+  void handleAtClear(AsyncWebServerRequest *req);
+  void handleAtReset(AsyncWebServerRequest *req);
+  void handleUartStats(AsyncWebServerRequest *req);
+  void handleAtBaud(AsyncWebServerRequest *req);
+
+  // 设备日志：统计 / 分页与增量查询 / 清空
+  void handleLogStats(AsyncWebServerRequest *req);
+  void handleLogList(AsyncWebServerRequest *req);
+  void handleLogClear(AsyncWebServerRequest *req);
+
+  // 屏幕：查询 / 设置开关与亮度
+  void handleDispGet(AsyncWebServerRequest *req);
+  void handleDispPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 系统汇总状态
+  void handleStatus(AsyncWebServerRequest *req);
+
+  // WiFi：状态 / 扫描 / 列表 / 保存 / 删除 / 排序 / 试连
+  void handleWifiStatus(AsyncWebServerRequest *req);
+  void handleWifiScan(AsyncWebServerRequest *req);
+  void handleWifiList(AsyncWebServerRequest *req);
+  void handleWifiSave(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleWifiDelete(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleWifiMove(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 短信：统计 / 最新 / 模组列表 / 列表 / 删除 / 配置模组 / 重初始化 / 发送
+  void handleSmsStats(AsyncWebServerRequest *req);
+  void handleSmsLatest(AsyncWebServerRequest *req);
+  void handleSmsPortsGet(AsyncWebServerRequest *req);
+  void handleSmsList(AsyncWebServerRequest *req);
+  void handleSmsDelete(AsyncWebServerRequest *req);
+  void handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 邮件：配置读取 / 总开关 / 测试发送 / 配置保存
+  void handleEmailGet(AsyncWebServerRequest *req);
+  void handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleEmailTest(AsyncWebServerRequest *req);
+  void handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 兜底 404
+  void handleNotFound(AsyncWebServerRequest *req);
   SerialBridge &_bridge;   // AT 串口桥引用
   RgbLed &_led;            // RGB 灯引用
   WifiManager &_wifi;      // WiFi 管理器引用

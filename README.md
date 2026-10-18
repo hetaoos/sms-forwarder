@@ -270,7 +270,7 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 | `GET /api/email` | - | 邮件配置：`{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":465,"user":"..","sendTo":"..","hasPass":bool,"notifyTypes":n,"schedMode":0\|1,"schedHour":n,"schedMinute":n,"intervalH":n}`；授权码不回显 |
 | `POST /api/email` | `{"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","enabled":true,"notifyTypes":15,"schedMode":1,"schedHour":9,"schedMinute":0,"intervalH":24}` | 保存配置并落盘 NVS；`pass` 为空串表示不修改已保存授权码；`enabled` 为 SMTP 邮件通知总开关（缺省 true，兼容不带该字段的旧客户端）；`notifyTypes` 为位掩码（bit0=设备启动 bit1=SIM状态 bit2=收到短信 bit3=定时在线）；排程 `schedMode=1` 固定间隔（`intervalH` 小时，1-720）/ `schedMode=0` 每日定点（`schedHour:schedMinute`，依赖时间同步）；保存成功返回最新配置 |
 | `POST /api/email/enabled` | `{"enabled":true\|false}` | 只翻转总开关，不动其余配置；停用时丢弃待发队列，重新开启后立即恢复 |
-| `POST /api/email/test` | 无 | 立即发送一封测试邮件（单次尝试，最长阻塞约 15s）；总开关未开、配置不完整或 WiFi 未连接返回 400，发送失败 500 |
+| `POST /api/email/test` | 无 | 入队一封测试邮件并**立即返回** `{"ok":true,"queued":true}`，实际构建与 SMTP 发送在设备主循环（loop 任务）完成；总开关未开、配置不完整或 WiFi 未连接返回 400，入队失败 500。**不可在 HTTP 任务里同步发邮件**：`async_tcp` 任务栈不足以支撑 TLS 握手，会栈溢出重启 |
 
 **总开关**（`enabled`）：false 时一切邮件都不发送——短信 / SIM / 启动 /
 定时在线通知全部静默跳过，待发队列丢弃；已保存的 SMTP 参数与通知类型保留，

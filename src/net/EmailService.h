@@ -113,9 +113,12 @@ class EmailService {
   // 立即排入一封「设备在线」通知邮件
   void notifyOnline();
 
-  // 发送一封测试邮件（同步、单次尝试，供 Web「测试」按钮调用）。
-  // 运行于 HTTP 任务上下文，最长阻塞约一次 socket 超时（15s）。
-  bool sendTest();
+  // 请求发送一封测试邮件：只入队并立即返回，真正的构建与发送由 tick() 在
+  // loop 任务上下文完成（与短信/SIM/在线通知同一条链路）。
+  // 不可在 HTTP 任务里同步发送：本方法运行于 async_tcp 任务，其栈远小于
+  // SMTP + TLS 握手所需，同步发送会栈溢出导致设备重启；且最长 15s 的阻塞
+  // 会拖死整个 Web 服务。返回 false 表示当前不该发（总开关未开或配置不全）
+  bool requestTest();
 
   // ---------------- 统一 HTML 邮件模板工具 ----------------
   // 模板约定（与 esp32-sms-forwarding 一致）：所有通知邮件共用 buildHtml()

@@ -657,17 +657,18 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
   return true;
 }
 
-bool EmailService::sendTest() {
-  String subject, text;
-  PsBuffer html;
-  {
-    Guard g(_mutex);
-    if (!activeLocked()) return false;
-    buildTestMail(subject, html, text);
-  }
-  if (!html.ok()) return false;
-  bool configErr = false;
-  return sendOnce(subject, html, text, configErr);
+// 仅入队后立即返回：构建（含 PSRAM 正文缓冲）与 SMTP 发送都在 tick() 的
+// loop 任务里完成。运行于 HTTP（async_tcp）任务时绝不能同步发送——该任务栈
+// 不足以支撑 TLS 握手，会栈溢出重启，且长时间阻塞会拖住整个 Web 服务。
+bool EmailService::requestTest() {
+  Guard g(_mutex);
+  if (!activeLocked()) return false;
+  MailJob job;
+  job.kind = kTest;
+  job.attempts = 0;
+  enqueueLocked(job);
+  Serial.println("[mail] 测试邮件已入队，稍后由主循环发送");
+  return true;
 }
 
 // ---------- 队列 ----------

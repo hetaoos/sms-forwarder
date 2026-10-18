@@ -1267,7 +1267,8 @@ function pageEmail() {
     async test() {
       this.testing = true;
       try {
-        await postOp('/api/email/test', {}, '测试邮件已发送，请查收邮箱');
+        // 只入队：实际发送在设备主循环完成（HTTP 任务栈不足以跑 SMTP/TLS）
+        await postOp('/api/email/test', {}, '测试邮件已加入发送队列，稍后发出，请查收邮箱');
       } finally {
         this.testing = false;
       }
