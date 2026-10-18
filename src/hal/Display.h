@@ -1,0 +1,37 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "app/StatusInfo.h"
+
+// ST7789 240x320 屏幕：内部持有 LovyanGFX 实例（pimpl 隔离头文件依赖）
+class Display {
+ public:
+  Display();
+  ~Display();
+  Display(const Display &) = delete;             // 禁止拷贝（持有唯一 Impl 指针）
+  Display &operator=(const Display &) = delete;  // 禁止拷贝赋值
+
+  // 初始化面板、背光与静态框架
+  bool begin();
+
+  // percent：背光亮度百分比（0-100，超出自动钳制）
+  void setBrightness(uint8_t percent);
+
+  // 内容有变化才刷新帧缓冲比较后的实际重绘
+  // info：待渲染的状态快照
+  void render(const StatusInfo &info);
+
+  // on：true 点亮屏幕并补画缓存，false 熄屏睡眠
+  void setScreenOn(bool on);
+
+  // 当前屏幕是否点亮
+  bool screenOn() const;
+
+  // 底层实现是否已创建（初始化是否成功）
+  bool available() const { return _impl != nullptr; }
+
+ private:
+  struct Impl;   // 前向声明：实现细节隐藏在 .cpp
+  Impl *_impl;   // pimpl 指针，避免头文件暴露 LovyanGFX
+};
