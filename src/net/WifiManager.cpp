@@ -334,6 +334,8 @@ bool WifiManager::startScan() {
 }
 
 // 导出扫描结果并释放底层缓存
+// 同一 SSID 可能出现多次（多个 AP / mesh / 多信道广播相同名称），
+// 这里按名称去重，每个 SSID 只保留信号最强（RSSI 数值最大）的那一条
 String WifiManager::scanJson() {
   int n = WiFi.scanComplete();
   if (n <= 0) {
@@ -341,13 +343,37 @@ String WifiManager::scanJson() {
     return "[]";
   }
 
-  JsonDocument doc;
-  JsonArray arr = doc.to<JsonArray>();
+  // 去重表：记录每个唯一 SSID 对应的最佳结果下标（下标引用扫描结果，
+  // 需在 scanDelete() 之前用完；64 条唯一 SSID 对选择界面足够）
+  static const int kMaxUnique = 64;
+  int bestIdx[kMaxUnique];
+  int unique = 0;
+
   for (int i = 0; i < n; i++) {
     String ssid = WiFi.SSID(i);
     if (!ssid.length()) continue;  // 隐藏网络不展示
+
+    int slot = -1;
+    for (int j = 0; j < unique; j++) {
+      if (WiFi.SSID(bestIdx[j]) == ssid) {  // 已见过同名 SSID
+        slot = j;
+        break;
+      }
+    }
+    if (slot < 0) {
+      if (unique >= kMaxUnique) continue;   // 超出容量的唯一 SSID 忽略
+      bestIdx[unique++] = i;
+    } else if (WiFi.RSSI(i) > WiFi.RSSI(bestIdx[slot])) {
+      bestIdx[slot] = i;                    // 同名保留信号更强的条目
+    }
+  }
+
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (int j = 0; j < unique; j++) {
+    int i = bestIdx[j];
     JsonObject o = arr.add<JsonObject>();
-    o["ssid"] = ssid;
+    o["ssid"] = WiFi.SSID(i);
     o["rssi"] = WiFi.RSSI(i);
     o["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
   }

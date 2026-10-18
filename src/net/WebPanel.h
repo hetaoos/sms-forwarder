@@ -9,22 +9,20 @@
 #include "serial/SerialBridge.h"
 
 // HTTP 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网管理
-// AP 配网模式下所有页面与接口都需要 Basic Auth（admin/admin123）
+// 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传），
+// AP 配网模式下所有请求先过 Basic Auth（admin/admin123）中间件
 class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display);
 
-  // 注册路由并启动 HTTP 服务
+  // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
 
  private:
-  // 注册全部 URL 路由与处理器
+  // 注册全部 URL 路由与处理器（精确路由需先于 serveStatic 注册）
   void setupRoutes();
-
-  // 用实时状态替换模板占位符，生成完整 HTML 页面
-  String buildPage();
 
   // 以 200 + application/json 发送响应体
   // req：请求对象；json：JSON 文本

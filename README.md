@@ -22,8 +22,9 @@
   - AP 模式下网页用 `admin` / `admin123` Basic 认证保护
   - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连
   - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
-- **Web 控制台**（`net/WebPanel`，端口 80）：状态页 + RGB 控制 + AT 命令 +
-  WiFi 配网，单页应用，1s 轮询增量刷新
+- **Web 控制台**（`net/WebPanel`，端口 80）：单页应用打包进 LittleFS 专有分区
+  （`data/index.html`，支持 gzip），页面静态、数据全部经 `/status`、`/at/*`、
+  `/wifi/*` 等 API 动态渲染
 
 ## 硬件与引脚
 
@@ -52,12 +53,36 @@
 # 编译
 pio run -e esp32s3
 
-# 烧录（串口见 platformio.ini 的 upload_port）
+# 烧录固件（串口见 platformio.ini 的 upload_port）
 pio run -e esp32s3 -t upload
+
+# 上传 Web 页面到 LittleFS 资源分区（改过 data/ 后需重新执行）
+pio run -e esp32s3 -t uploadfs
 
 # 串口监视
 pio device monitor -e esp32s3
 ```
+
+**资源自动 gzip**：`data/` 下的文件在打包时由 `script/uploadfs_gz.py`
+自动 gzip 成 `<文件名>.gz` 后再写入镜像（构建前后自动切换目录，源文件始终
+保持可读；进程异常退出后下次运行会自动恢复现场）。设备端 `serveStatic`
+与 `WebPanel` 都会优先读取 `.gz` 并返回 `Content-Encoding: gzip`，浏览器
+自动解压。烧录固件（`pio run -t upload`）成功后也会自动上传一次 FS 镜像。
+
+分区表 `partitions/esp32s3_16mb.csv`（16MB Flash）布局；app 分区起点与大小均
+64KB 对齐，`userdata` 刷固件后仍保留：
+
+| 分区 | 地址范围 | 大小 | 用途 |
+|------|---------|------|------|
+| nvs | 0x009000~0x018FFF | 64KB | 配置存储（WiFi 等，按功能存 JSON） |
+| otadata | 0x019000~0x01AFFF | 8KB | OTA 启动槽位记录 |
+| app0 / app1 | 0x020000 / 0x420000 | 各 4MB | 双 OTA 固件槽位 |
+| userdata | 0x820000~0xD1FFFF | 5MB | 用户数据，刷固件保留（挂载 `/data`） |
+| spiffs | 0xD20000~0xFDFFFF | 2.75MB | 资源分区：Web 页面 / 字体 / 图标（挂载 `/`） |
+| coredump | 0xFE0000~0xFFFFFF | 128KB | 崩溃转储 |
+
+`pio run -t uploadfs` 的目标是表中最后一个 FS 分区（spiffs 资源分区），
+只影响 Web 资源；`userdata` 仅由设备运行期读写，重烧固件不会丢失。
 
 ### 内置默认 WiFi 账号（可选）
 
@@ -107,7 +132,7 @@ AP 配网模式下所有接口均需 Basic 认证（`admin` / `admin123`）。
 | `GET /led` | 切换下一个 RGB 颜色，返回颜色名 |
 | `GET /set?c=索引` 或 `?r=&g=&b=` | 设置 RGB（预设索引或任意 RGB） |
 | `GET /disp?on=0\|1` | 屏幕开关 |
-| `GET /status` | 状态 JSON（ip/rssi/uptime/heap/color/disp） |
+| `GET /status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/mode/connected） |
 
 ### 串口 AT
 
@@ -148,11 +173,16 @@ src/
 │   └── RgbLed.h/.cpp     WS2812 RGB 灯
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
-│   ├── WebPanel.h/.cpp   HTTP 路由与处理器
-│   └── WebPage.h         单页应用模板（%占位符% 由服务端替换）
+│   └── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
 └── serial/               串口层
     ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈）
     └── AtHistory.h/.cpp     AT 记录环形缓冲（JSON 导出）
+data/
+└── index.html            Web 控制台单页应用（uploadfs 打包进 LittleFS）
+partitions/
+└── esp32s3_16mb.csv      16MB 分区表（含 LittleFS 专有分区）
+script/
+└── uploadfs_gz.py        data/ 打包时自动 gzip 并上传的 PlatformIO 脚本
 ```
 
 代码注释为中文，覆盖类职责、方法、参数与字段含义。

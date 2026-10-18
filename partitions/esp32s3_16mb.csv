@@ -1,0 +1,29 @@
+# ESP32-S3 16MB Flash 分区表
+#
+# 设计要点：
+#   - nvs 64KB：WiFi 配置等按功能组织的 JSON 都放这里
+#   - app0/app1 各 4MB：起点与大小均按 64KB 对齐（OTA 烧录要求）
+#   - userdata 5MB：用户数据分区，刷固件后仍保留；运行期挂载于 /data，
+#     由设备读写，不参与 uploadfs
+#   - spiffs 2.75MB：资源分区，存放 Web 页面 / 字体 / 图标等；
+#     运行期挂载于 /（默认），PlatformIO 的 uploadfs 目标即表中最后一个
+#     FS 分区，故它必须排在 userdata 之后
+#
+# 布局总览：
+#   0x009000 ~ 0x018FFF  nvs        64KB   配置存储
+#   0x019000 ~ 0x01AFFF  otadata     8KB    OTA 启动槽位记录
+#   0x01B000 ~ 0x01FFFF  （保留）   20KB   64KB 对齐补白
+#   0x020000 ~ 0x41FFFF  app0       4MB    固件槽位 0（ota_0）
+#   0x420000 ~ 0x81FFFF  app1       4MB    固件槽位 1（ota_1）
+#   0x820000 ~ 0xD1FFFF  userdata   5MB    用户数据（刷固件保留，挂载 /data）
+#   0xD20000 ~ 0xFDFFFF  spiffs     2.75MB 资源分区：Web/字体/图标（挂载 /）
+#   0xFE0000 ~ 0xFFFFFF  coredump   128KB  崩溃转储
+#
+# Name,     Type, SubType, Offset,    Size,      Flags
+nvs,       data, nvs,      0x9000,    0x10000,
+otadata,   data, ota,      0x19000,   0x2000,
+app0,      app,  ota_0,    0x20000,   0x400000,
+app1,      app,  ota_1,    0x420000,  0x400000,
+userdata,  data, spiffs,   0x820000,  0x500000,
+spiffs,    data, spiffs,   0xD20000,  0x2C0000,
+coredump,  data, coredump, 0xFE0000,  0x20000,

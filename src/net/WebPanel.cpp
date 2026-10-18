@@ -1,8 +1,9 @@
 #include "net/WebPanel.h"
 
-#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <LittleFS.h>
 
-#include "net/WebPage.h"
+#include <Arduino.h>
 
 namespace {
 
@@ -24,14 +25,22 @@ String stringParam(AsyncWebServerRequest *req, const char *name) {
   return req->getParam(name)->value();
 }
 
-// AP 配网模式下对请求做 Basic Auth 校验；
-// req：请求对象；authOn：是否启用认证（AP 接口工作时启用）
-// 返回 false 表示已下发 401，调用方应直接 return
-bool requireAuth(AsyncWebServerRequest *req, bool authOn) {
-  if (!authOn) return true;
-  if (req->authenticate(cfg::kWebAuthUser, cfg::kWebAuthPass)) return true;
-  req->requestAuthentication("ESP32-Setup", false);  // Basic 认证挑战
-  return false;
+// 从 LittleFS 发送页面资源：优先同名 .gz（省 flash，浏览器自动解压），
+// 否则原文件；都不存在返回 404
+// req：请求对象；path：LittleFS 内的路径（如 "/index.html"）；mime：MIME 类型
+void sendFile(AsyncWebServerRequest *req, const char *path, const char *mime) {
+  String gz = String(path) + ".gz";
+  if (LittleFS.exists(gz.c_str())) {
+    AsyncWebServerResponse *resp = req->beginResponse(LittleFS, gz, mime);
+    resp->addHeader("Content-Encoding", "gzip");
+    req->send(resp);
+    return;
+  }
+  if (LittleFS.exists(path)) {
+    req->send(LittleFS, path, mime);
+    return;
+  }
+  req->send(404, "text/plain", "404 Not Found");
 }
 
 }  // namespace
@@ -41,8 +50,15 @@ WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display) {}
 
-// 注册路由并启动 HTTP 服务
+// 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
+  // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404
+  if (!LittleFS.begin(true)) {
+    Serial.println("[http] LittleFS mount failed, web page unavailable");
+  } else {
+    Serial.println("[http] LittleFS mounted");
+  }
+
   setupRoutes();
   _server.begin();
   Serial.printf("[http] server on :%u\r\n", cfg::kHttpPort);
@@ -53,43 +69,39 @@ void WebPanel::sendJson(AsyncWebServerRequest *req, const String &json) {
   req->send(200, "application/json", json);
 }
 
-// 用实时状态替换网页模板中的 %XXX% 占位符，返回完整 HTML
-String WebPanel::buildPage() {
-  String html = FPSTR(kWebPage);
-  char buf[64];
-
-  html.replace("%SSID%", _wifi.ssid());        // 当前网络名（AP 模式为 AP 名）
-  html.replace("%IP%", _wifi.ip());            // 本机 IP（AP 模式为 192.168.4.1）
-  html.replace("%RSSI%", String(_wifi.rssi()));// 信号强度（AP 模式为 0）
-  html.replace("%UPTIME%", String(millis() / 1000));  // 运行秒数
-  html.replace("%HEAP%", String(ESP.getFreeHeap()));  // 剩余堆内存
-  html.replace("%COLOR%", _led.color().name);  // RGB 颜色名
-  snprintf(buf, sizeof(buf), "rgb(%d,%d,%d)", _led.color().r, _led.color().g,
-           _led.color().b);
-  html.replace("%SWATCH%", buf);               // RGB 色块
-  html.replace("%DISPON%", _display.screenOn() ? "1" : "0");  // 屏幕开关状态
-  return html;
-}
-
-// 注册全部路由；AP 配网模式下统一先过 Basic Auth
+// 注册全部路由：
+// 1. 全局 Basic Auth 中间件（仅 AP 配网模式启用）；
+// 2. 精确路由（API / 首页）先注册，serveStatic 兜底其余静态资源
 void WebPanel::setupRoutes() {
-  // 首页：控制台页面
-  _server.on("/", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
-    req->send(200, "text/html; charset=utf-8", buildPage());
+  // AP 配网模式下所有请求统一认证；未认证直接 401 挑战，不进入后续处理链
+  _server.addMiddleware([this](AsyncWebServerRequest *req,
+                               ArMiddlewareNext next) {
+    if (!_wifi.apActive() ||
+        req->authenticate(cfg::kWebAuthUser, cfg::kWebAuthPass)) {
+      next();
+      return;
+    }
+    req->requestAuthentication("ESP32-Setup", false);  // Basic 认证挑战
   });
+
+  // ---- 静态页面（LittleFS）----
+  // 首页：控制台单页应用
+  _server.on("/", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendFile(req, "/index.html", "text/html; charset=utf-8");
+  });
+  // 其余静态资源（css/js/图标等）直接映射到 LittleFS 根目录；
+  // serveStatic 会自动探测同名 .gz 文件
+  _server.serveStatic("/", LittleFS, "/");
 
   // ---- RGB ----
   // 切换到下一个颜色，返回新颜色名
   _server.on("/led", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     _led.next();
     req->send(200, "text/plain", _led.color().name);
   });
 
   // 设置颜色：?c=索引 走预设，?r=&g=&b= 走任意 RGB
   _server.on("/set", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     if (req->hasParam("c")) {
       _led.set(paramInt(req, "c", 0));
     } else if (req->hasParam("r") && req->hasParam("g") && req->hasParam("b")) {
@@ -102,7 +114,6 @@ void WebPanel::setupRoutes() {
   // ---- 串口 AT ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
   _server.on("/at/send", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     uint8_t port = paramInt(req, "port", 1);                 // 串口号，默认 1
     uint32_t baud = paramInt(req, "baud", cfg::kUartBaud);   // 波特率，默认配置值
     uint8_t eol = paramInt(req, "eol", 0);                   // 行尾符，默认 CRLF
@@ -119,7 +130,6 @@ void WebPanel::setupRoutes() {
 
   // 增量拉取历史：?after=上一页最后ID&n=条数
   _server.on("/at/hist", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     int32_t after = paramInt(req, "after", -1);   // -1 = 从头拉
     size_t n = (size_t)paramInt(req, "n", 20);    // 默认 20 条
     sendJson(req, _bridge.historyJson(after, n));
@@ -127,14 +137,12 @@ void WebPanel::setupRoutes() {
 
   // 清空历史记录
   _server.on("/at/clear", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     _bridge.clearHistory();
     req->send(200, "text/plain", "ok");
   });
 
   // 串口重新初始化（手动兜底）：?port=1|2
   _server.on("/at/reset", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     uint8_t port = paramInt(req, "port", 0);
     if (port < 1 || port > 2) {
       req->send(400, "text/plain", "invalid port");
@@ -146,14 +154,12 @@ void WebPanel::setupRoutes() {
 
   // 串口运行统计 JSON
   _server.on("/uart/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     sendJson(req, _bridge.statsJson());
   });
 
   // ---- 屏幕开关 ----
   // ?on=1 点亮，?on=0 熄灭
   _server.on("/disp", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     bool on = paramInt(req, "on", 1) != 0;
     _display.setScreenOn(on);
     req->send(200, "text/plain", _display.screenOn() ? "on" : "off");
@@ -161,34 +167,41 @@ void WebPanel::setupRoutes() {
 
   // 查询默认波特率（供前端下拉框初始化）
   _server.on("/at/baud", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     req->send(200, "application/json", "{\"default\":" + String(cfg::kUartBaud) + "}");
   });
 
   // ---- 系统 ----
-  // 汇总状态 JSON（IP/RSSI/运行时间/堆/颜色/屏幕）
+  // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染）
   _server.on("/status", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
-    char buf[180];
-    snprintf(buf, sizeof(buf),
-             "{\"ip\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%lu,\"color\":\"%s\",\"disp\":%d}",
-             _wifi.ip().c_str(), _wifi.rssi(), millis() / 1000,
-             (unsigned long)ESP.getFreeHeap(), _led.color().name,
-             _display.screenOn() ? 1 : 0);
-    sendJson(req, buf);
+    const RgbLed::Color &c = _led.color();
+    JsonDocument doc;
+    doc["ssid"] = _wifi.ssid();        // 当前网络名（AP 模式为 AP 名）
+    doc["ip"] = _wifi.ip();            // 本机 IP
+    doc["rssi"] = _wifi.rssi();        // 信号强度 dBm
+    doc["uptime"] = millis() / 1000;   // 运行秒数
+    doc["heap"] = ESP.getFreeHeap();   // 剩余堆内存
+    doc["color"] = c.name;             // RGB 颜色名
+    JsonArray rgb = doc["rgb"].to<JsonArray>();
+    rgb.add(c.r);                      // RGB 三通道（前端画色块）
+    rgb.add(c.g);
+    rgb.add(c.b);
+    doc["disp"] = _display.screenOn();          // 屏幕开关
+    doc["connected"] = _wifi.connected();       // STA 是否已连接
+    doc["mode"] = _wifi.apMode() ? "ap" : (_wifi.connected() ? "sta" : "connecting");
+    String out;
+    serializeJson(doc, out);
+    sendJson(req, out);
   });
 
   // ================= WiFi 配网 =================
   // 状态查询：模式 / 连接 / AP 信息 / 已保存数量
   _server.on("/wifi/status", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     sendJson(req, _wifi.statusJson());
   });
 
   // 扫描附近 WiFi：扫描中返回 {"busy":1}，完成后返回 {"busy":0,"nets":[...]}
   // scanComplete() 语义：RUNNING=扫描中 / FAILED=无扫描且无结果 / >=0=结果就绪
   _server.on("/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     int16_t state = WiFi.scanComplete();
     if (state == WIFI_SCAN_RUNNING) {
       sendJson(req, "{\"busy\":1}");  // 扫描进行中，前端继续轮询
@@ -205,14 +218,12 @@ void WebPanel::setupRoutes() {
 
   // 已保存的 WiFi 配置列表（启动时按顺序尝试）
   _server.on("/wifi/list", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     sendJson(req, _wifi.listJson());
   });
 
   // 保存配置：?ssid=&pass=&connect=1
   // SSID 已存在则覆盖密码；成功后按需立即尝试连接
   _server.on("/wifi/save", HTTP_POST, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     String ssid = stringParam(req, "ssid");
     String pass = stringParam(req, "pass");
     if (!ssid.length()) {
@@ -229,7 +240,6 @@ void WebPanel::setupRoutes() {
 
   // 删除配置：?index=列表下标
   _server.on("/wifi/delete", HTTP_POST, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     uint8_t index = (uint8_t)paramInt(req, "index", -1);
     if (!_wifi.remove(index)) {
       req->send(400, "text/plain", "invalid index");
@@ -240,7 +250,6 @@ void WebPanel::setupRoutes() {
 
   // 调整顺序：?from=原下标&to=新下标
   _server.on("/wifi/move", HTTP_POST, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     int from = paramInt(req, "from", -1);
     int to = paramInt(req, "to", -1);
     if (from < 0 || to < 0 || !_wifi.move((uint8_t)from, (uint8_t)to)) {
@@ -252,7 +261,6 @@ void WebPanel::setupRoutes() {
 
   // 试连（不保存）：?ssid=&pass=
   _server.on("/wifi/connect", HTTP_POST, [this](AsyncWebServerRequest *req) {
-    if (!requireAuth(req, _wifi.apActive())) return;
     String ssid = stringParam(req, "ssid");
     String pass = stringParam(req, "pass");
     if (!ssid.length()) {

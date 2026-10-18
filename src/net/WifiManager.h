@@ -85,7 +85,8 @@ class WifiManager {
   bool scanBusy() const { return WiFi.scanComplete() == WIFI_SCAN_RUNNING; }
 
   // 扫描结果 JSON 数组：[{"ssid":"..","rssi":n,"secure":true},..]
-  // 调用后释放扫描结果缓存；无结果返回 []
+  // 按 SSID 去重（保留信号最强的一条）；调用后释放扫描结果缓存，
+  // 无结果返回 []
   String scanJson();
 
   // ---------------- 状态 JSON ----------------

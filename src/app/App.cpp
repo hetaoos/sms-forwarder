@@ -1,12 +1,26 @@
 #include "app/App.h"
 
+#include <LittleFS.h>
+
 #include <Arduino.h>
 
 #include "app/Config.h"
 
+// 用户数据文件系统：全局 LittleFS 实例已被 WebPanel 用于资源分区（spiffs），
+// 这里用独立实例挂载 5MB userdata 分区，二者挂载点与分区互不干扰；
+// 该分区刷固件后仍保留，供业务模块持久化用户数据（路径以 /data 开头）
+static fs::LittleFSFS sUserData;
+
 // 初始化调试串口与所有子模块；返回 true 表示装配完成
 bool App::begin() {
   Serial.begin(115200);
+
+  // 挂载用户数据分区；formatOnFail=true，首次或文件系统损坏时自动格式化
+  if (sUserData.begin(true, "/data", 5, "userdata")) {
+    Serial.println("[app] userdata mounted at /data");
+  } else {
+    Serial.println("[app] userdata mount failed");
+  }
 
   _led.begin(1);                       // RGB 灯默认点亮索引 1（RED）
   _display.begin();                    // 屏幕 + 静态框架

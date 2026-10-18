@@ -1,0 +1,123 @@
+"""
+data/ 资源自动 gzip 打包脚本（PlatformIO extra_scripts，pre: 方式加载）。
+
+工作机制（目录交换）：
+  1. 本次命令行包含 buildfs / uploadfs / uploadfsota 目标时，脚本加载阶段
+     立即把 data/ 整体换名为 .data_src/，并在新的 data/ 中生成各文件的
+     gzip 版本 <文件名>.gz（原文件只在 .data_src/ 中保留）；
+  2. LittleFS 镜像随后由只含 .gz 的 data/ 构建，并上传到 spiffs 资源分区；
+  3. 进程退出时（atexit，构建成功/失败都会执行）删除临时 data/ 并把
+     .data_src/ 换回 data/，仓库里始终保持可读的源文件。
+
+设备侧无需改动：ESPAsyncWebServer 的 serveStatic 与 WebPanel.sendFile()
+都会优先探测同名 .gz 并附带 Content-Encoding: gzip，浏览器自动解压，
+因此上传 .gz 既省 flash 又不影响开发时直接编辑源文件。
+
+健壮性：若进程被强行杀死（SIGKILL 等）导致 .data_src/ 残留，下一次运行
+任何 FS 目标时会先自动恢复现场，不会丢失源文件。
+
+额外便利：pio run -t upload（烧录固件）完成后，自动再上传一次 FS 镜像
+（子进程执行，内部仍走上面的 gzip 流程），与 esp32-sms-forwarding 一致。
+
+用法：
+    pio run -e esp32s3 -t buildfs    # 只构建镜像（自动 gzip，可本地验证）
+    pio run -e esp32s3 -t uploadfs   # 构建并上传资源（自动 gzip）
+    pio run -e esp32s3 -t upload     # 烧录固件，并自动上传资源
+"""
+
+Import("env")  # noqa: F821 — SCons 注入
+
+import atexit
+import gzip
+import os
+import shutil
+import subprocess
+import sys
+
+# 暂存原始文件的目录名（位于项目根，仅 FS 构建期间存在）
+SRC_DIR_NAME = ".data_src"
+
+# 会触发 FS 镜像构建/上传的 PlatformIO 目标
+FS_TARGETS = {"uploadfs", "uploadfsota", "buildfs"}
+
+# SCons 注入的本次命令行目标（如 ['uploadfs']）
+_COMMAND_TARGETS = set(COMMAND_LINE_TARGETS)  # noqa: F821 — SCons 全局
+
+
+def _restore(data_dir, src_dir):
+    """删除临时 data/，把 .data_src/ 换回 data/。"""
+    if not os.path.isdir(src_dir):
+        return
+    shutil.rmtree(data_dir, ignore_errors=True)
+    os.rename(src_dir, data_dir)
+
+
+def _swap_to_gz(data_dir, src_dir):
+    """data/ -> .data_src/，新 data/ 中只放 <文件>.gz；返回 (原始字节, 压缩后字节)。"""
+    os.rename(data_dir, src_dir)  # 原件整体移走（原子操作）
+    os.makedirs(data_dir)
+
+    total_raw = total_gz = 0
+    for root, _dirs, files in os.walk(src_dir):
+        for fname in sorted(files):
+            src_path = os.path.join(root, fname)
+            rel = os.path.relpath(src_path, src_dir)
+            dst_path = os.path.join(data_dir, rel + ".gz")
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            with open(src_path, "rb") as f:
+                content = f.read()
+            with gzip.open(dst_path, "wb") as gf:
+                gf.write(content)
+            total_raw += len(content)
+            total_gz += os.path.getsize(dst_path)
+    return total_raw, total_gz
+
+
+def _prepare_gzip_data(env):
+    """加载阶段：必要时做 gzip 交换并注册退出恢复；返回是否发生了交换。"""
+    project_dir = env.subst("$PROJECT_DIR")
+    data_dir = os.path.join(project_dir, "data")
+    src_dir = os.path.join(project_dir, SRC_DIR_NAME)
+
+    if not os.path.isdir(data_dir):
+        print("[gzip-data] data/ not found, skip")
+        return False
+
+    # 上次异常退出的现场：先恢复再重新交换
+    if os.path.isdir(src_dir):
+        _restore(data_dir, src_dir)
+        print("[gzip-data] recovered leftover %s from previous run" % SRC_DIR_NAME)
+
+    total_raw, total_gz = _swap_to_gz(data_dir, src_dir)
+    print("[gzip-data] packed %d -> %d bytes (gzip); image will contain .gz only"
+          % (total_raw, total_gz))
+
+    atexit.register(_restore, data_dir, src_dir)
+    atexit.register(print, "[gzip-data] original files restored to data/")
+    return True
+
+
+# ---- 机制 1：请求 FS 目标时，加载阶段即完成 gzip 交换，退出时恢复 ----
+# 交换发生在任何构建决策之前，因此镜像一定由 .gz 版本生成；
+# atexit 保证构建成功/失败/异常退出后 data/ 都能恢复。
+if FS_TARGETS & _COMMAND_TARGETS:
+    _prepare_gzip_data(env)
+
+
+# ---- 机制 2：烧录固件后自动上传 FS 镜像（子进程，内部走机制 1）----
+def _upload_fs_after_upload(source, target, env):
+    if FS_TARGETS & _COMMAND_TARGETS:
+        return  # 已显式请求 FS 目标，避免重复上传
+    print("\n[gzip-data] uploading filesystem image...")
+    ret = subprocess.call(
+        [sys.executable, "-m", "platformio", "run", "--target", "uploadfs",
+         "--environment", env["PIOENV"]],
+        cwd=env.subst("$PROJECT_DIR"),
+    )
+    if ret == 0:
+        print("[gzip-data] filesystem upload OK")
+    else:
+        print("[gzip-data] filesystem upload failed (code %d)" % ret)
+
+
+env.AddPostAction("upload", _upload_fs_after_upload)

@@ -1,18 +1,3 @@
-#pragma once
-
-#include <pgmspace.h>
-
-// 网页模板，占位符由 WebPanel::buildPage() 替换：
-//   %SSID%   -> WiFi 热点名
-//   %IP%     -> 本机 IP
-//   %RSSI%   -> 信号强度（dBm）
-//   %UPTIME% -> 运行秒数
-//   %HEAP%   -> 剩余堆内存（字节）
-//   %COLOR%  -> RGB 颜色名
-//   %SWATCH% -> RGB 色块（rgb(r,g,b)）
-//   %DISPON% -> 屏幕开关状态（"1"/"0"，注入 JS 变量）
-// 内容为单页应用：状态卡片 + RGB 控制 + AT 命令控制台（1s 轮询 /at/hist 增量刷新）
-static const char kWebPage[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -27,7 +12,7 @@ static const char kWebPage[] PROGMEM = R"rawliteral(
   .row:last-of-type{border-bottom:none}
   .k{color:#888}
   .v{font-family:ui-monospace,monospace}
-  .swatch{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin-right:6px;background:%SWATCH%}
+  .swatch{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin-right:6px;background:#888}
   label{font-size:13px;color:#666}
   select,input,button{font-size:14px;padding:8px;border:1px solid #ddd;border-radius:8px;background:#fff}
   .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
@@ -48,14 +33,14 @@ static const char kWebPage[] PROGMEM = R"rawliteral(
 
 <div class="card">
   <h1>系统状态</h1>
-  <div class="row"><span class="k">SSID</span><span class="v">%SSID%</span></div>
-  <div class="row"><span class="k">IP</span><span class="v">%IP%</span></div>
-  <div class="row"><span class="k">信号强度</span><span class="v">%RSSI% dBm</span></div>
-  <div class="row"><span class="k">运行时间</span><span class="v">%UPTIME% s</span></div>
-  <div class="row"><span class="k">剩余堆内存</span><span class="v">%HEAP% B</span></div>
-  <div class="row"><span class="k">RGB 灯</span><span class="v"><i class="swatch"></i>%COLOR%</span></div>
+  <div class="row"><span class="k">SSID</span><span class="v" id="stSsid">-</span></div>
+  <div class="row"><span class="k">IP</span><span class="v" id="stIp">-</span></div>
+  <div class="row"><span class="k">信号强度</span><span class="v" id="stRssi">-</span></div>
+  <div class="row"><span class="k">运行时间</span><span class="v" id="stUptime">-</span></div>
+  <div class="row"><span class="k">剩余堆内存</span><span class="v" id="stHeap">-</span></div>
+  <div class="row"><span class="k">RGB 灯</span><span class="v"><i class="swatch" id="stSwatch"></i><span id="stColor">-</span></span></div>
   <div class="bar" style="margin-top:12px">
-    <button onclick="fetch('/led').then(refresh)">切换 RGB</button>
+    <button onclick="fetch('/led').then(refreshStatus)">切换 RGB</button>
     <button class="ghost" id="dispBtn" onclick="toggleDisp()">屏幕</button>
   </div>
 </div>
@@ -117,11 +102,32 @@ static const char kWebPage[] PROGMEM = R"rawliteral(
 let lastId = -1;
 let localHist = [];
 let localIdx = -1;
-let dispOn = %DISPON%;
+let dispOn = false;
 
 function syncDispBtn(){
   const b = document.getElementById('dispBtn');
   b.textContent = dispOn ? '关闭屏幕' : '打开屏幕';
+}
+
+// 用 /status 的实时数据填充系统状态卡片（静态页面，无服务端占位符）
+async function refreshStatus(){
+  try {
+    const r = await fetch('/status');
+    const j = await r.json();
+    document.getElementById('stSsid').textContent = j.ssid || '-';
+    document.getElementById('stIp').textContent = j.ip || '-';
+    document.getElementById('stRssi').textContent =
+      j.connected ? (j.rssi + ' dBm') : '-';
+    document.getElementById('stUptime').textContent = j.uptime + ' s';
+    document.getElementById('stHeap').textContent = j.heap + ' B';
+    document.getElementById('stColor').textContent = j.color || '-';
+    if (j.rgb) {
+      document.getElementById('stSwatch').style.background =
+        'rgb(' + j.rgb[0] + ',' + j.rgb[1] + ',' + j.rgb[2] + ')';
+    }
+    dispOn = !!j.disp;
+    syncDispBtn();
+  } catch (e) {}
 }
 
 async function toggleDisp(){
@@ -131,7 +137,6 @@ async function toggleDisp(){
     syncDispBtn();
   } catch (e) {}
 }
-syncDispBtn();
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
@@ -177,7 +182,8 @@ async function poll(){
     const arr = await r.json();
     arr.forEach(e => { addEntry(e); lastId = Math.max(lastId, e.id); });
   } catch (e) {}
-  wifiStatus();   // 顺带刷新 WiFi 状态行
+  refreshStatus();  // 顺带刷新系统状态卡片
+  wifiStatus();     // 与 WiFi 状态行
 }
 
 /* ---------------- WiFi 配网 ---------------- */
@@ -320,8 +326,6 @@ async function clearLog(){
   lastId = -1;
 }
 
-function refresh(){ location.reload(); }
-
 document.getElementById('cmd').addEventListener('keydown', function(ev){
   if (ev.key === 'Enter') { sendCmd(); }
   else if (ev.key === 'ArrowUp') {
@@ -336,8 +340,8 @@ document.getElementById('cmd').addEventListener('keydown', function(ev){
 
 poll();
 setInterval(poll, 1000);
-loadSaved();   // 页面加载即拉取已保存的 WiFi 配置
+refreshStatus();   // 页面加载即拉取系统状态
+loadSaved();       // 与已保存的 WiFi 配置
 </script>
 </body>
 </html>
-)rawliteral";
