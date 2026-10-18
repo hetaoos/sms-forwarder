@@ -65,7 +65,10 @@ bool App::begin() {
               ready ? "已插入" : "已拔出");
   });
   _panel.begin();                      // 启动 HTTP 服务
-  _email.notifyStartup();              // 排入启动邮件（等 WiFi 就绪后发出）
+  // 启动邮件的放行条件：除 WiFi 外还要等模组初始化出结果（就绪或故障），
+  // 否则邮件里的模组状态会是「初始化中」。须在 notifyStartup() 前注入
+  _email.setStartupGate([this] { return _sms.modemsSettled(); });
+  _email.notifyStartup();              // 排入启动邮件（等 WiFi + 模组就绪后发出）
 
   Serial.printf("[app] heap free %u B, psram %u/%u B\r\n", ESP.getFreeHeap(),
                 ESP.getFreePsram(), ESP.getPsramSize());

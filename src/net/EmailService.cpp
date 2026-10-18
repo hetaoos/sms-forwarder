@@ -202,6 +202,7 @@ void EmailService::begin(WifiManager &wifi, SmsService &sms, TimeSync &time) {
   // 启动邮件：等 WiFi 连上再发（boot 阶段大概率还没连上）
   _startupPending = true;
   _startupTries = 0;
+  _startupWifiMs = 0;
   _startupDueMs = millis() + cfg::kMailBootDelayMs;
 
   // 定时在线通知：间隔模式从开机起算一个周期；每日模式由 dailyDueLocked()
@@ -218,23 +219,45 @@ void EmailService::begin(WifiManager &wifi, SmsService &sms, TimeSync &time) {
 void EmailService::tick() {
   uint32_t now = millis();
 
-  // ---- 启动邮件：延迟到 WiFi 就绪后发出；始终连不上则等待超时后放弃 ----
+  // ---- 启动邮件：分两段等待 ----
+  //   a) WiFi 未连：每 15s 探一次，超过 kMailBootWaitMaxMs 放弃（无网发不出）；
+  //   b) WiFi 已连：给模组初始化 kMailBootModemWaitMs 宽限，期间模组一有结果就
+  //      发，到期仍未出结果也照发（正文状态显示未就绪），不因模组异常而卡死。
   if (_startupPending && now >= _startupDueMs) {
-    if (WiFi.status() == WL_CONNECTED) {
-      _startupPending = false;
-      Guard g(_mutex);
-      if (!activeLocked()) {
-        if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，跳过启动邮件");
-      } else if (!(_notifyTypes & cfg::kEmailNotifyStartup)) {
-        Serial.println("[mail] 「设备启动」邮件通知已关闭，跳过");
+    if (WiFi.status() != WL_CONNECTED) {
+      // ---- a) 等 WiFi ----
+      if (++_startupTries >= (uint8_t)(cfg::kMailBootWaitMaxMs / 15000)) {
+        _startupPending = false;
+        Serial.println("[mail] WiFi 长时间未连接，放弃启动邮件");
       } else {
-        enqueueStartupLocked();
+        _startupDueMs = now + 15000;  // 每 15s 再探一次
       }
-    } else if (++_startupTries >= (uint8_t)(cfg::kMailBootWaitMaxMs / 15000)) {
-      _startupPending = false;
-      Serial.println("[mail] WiFi 长时间未连接，放弃启动邮件");
     } else {
-      _startupDueMs = now + 15000;  // 每 15s 再探一次
+      // ---- b) 等模组初始化（有宽限期，到期照发）----
+      if (_startupWifiMs == 0) {
+        // WiFi 首次连上：记录时刻并给出模组宽限期的截止点
+        _startupWifiMs = now;
+        _startupDueMs = now + cfg::kMailBootModemWaitMs;
+      }
+      // 未注入放行钩子时视为满足（只等 WiFi）
+      bool gateOk = !_startupGate || _startupGate();
+      bool graceOver = now >= _startupWifiMs + cfg::kMailBootModemWaitMs;
+      if (gateOk || graceOver) {
+        _startupPending = false;
+        if (!gateOk && graceOver) {
+          Serial.printf("[mail] 模组初始化 %us 内未出结果，按宽限期照发启动邮件\r\n",
+                        (unsigned)(cfg::kMailBootModemWaitMs / 1000));
+        }
+        Guard g(_mutex);
+        if (!activeLocked()) {
+          if (configuredLocked()) Serial.println("[mail] 邮件通知已停用，跳过启动邮件");
+        } else if (!(_notifyTypes & cfg::kEmailNotifyStartup)) {
+          Serial.println("[mail] 「设备启动」邮件通知已关闭，跳过");
+        } else {
+          enqueueStartupLocked();
+        }
+      }
+      // 宽限期内且模组未出结果：下个 tick 再看（tick 每 loop 一次，无需改 dueMs）
     }
   }
 
@@ -585,6 +608,7 @@ void EmailService::notifySim(uint8_t port, bool ready) {
 void EmailService::notifyStartup() {
   _startupPending = true;
   _startupTries = 0;
+  _startupWifiMs = 0;
   _startupDueMs = millis() + cfg::kMailBootDelayMs;
 }
 

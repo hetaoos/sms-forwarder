@@ -344,6 +344,26 @@ bool SmsService::modemReady(uint8_t port) const {
   return _modems[port].initState == ModemInitState::kReady;
 }
 
+// 启用模组的初始化是否都已出结果（终态 kReady / kFault，不含中间态）。
+// 只读枚举值（单字节读，与其他 const 访问器一致，不加锁），调用方据此
+// 决定是否可以继续依赖模组状态的动作（如发送启动邮件）
+bool SmsService::modemsSettled() const {
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    if (!_modems[p].enabled) continue;
+    switch (_modems[p].initState) {
+      // 终态：就绪或故障（故障态会慢速重试，但初始化这一轮已有结论）
+      case ModemInitState::kReady:
+      case ModemInitState::kFault:
+      case ModemInitState::kDown:
+        break;
+      // 中间态：上电 / 等 AT / 等 SIM / 射频 / 等注册 / 下发配置
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
 // 设置 SIM 就绪态并检测运行时切换（插卡/拔卡事件）。
 // 两类「假切换」必须排除，否则每次开机/模组重启都会误报：
 //   1. 开机首次就绪：everReady=false（模组从未就绪过），属启动流程；

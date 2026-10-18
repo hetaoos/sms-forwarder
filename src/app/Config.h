@@ -67,7 +67,11 @@ constexpr uint8_t  kMailQueueSize = 6;               // 待发邮件队列深度
 constexpr uint8_t  kMailMaxAttempts = 3;             // 单封邮件最大尝试次数（含首次）
 constexpr uint32_t kMailSocketTimeoutMs = 15000;     // SMTP 单次 socket 读写上限（ms）
 constexpr uint32_t kMailBootDelayMs = 15000;         // 启动邮件延迟（等 WiFi 连上再发）
-constexpr uint32_t kMailBootWaitMaxMs = 300000;      // 启动邮件最长等待（5 分钟，超时放弃）
+constexpr uint32_t kMailBootWaitMaxMs = 300000;      // 启动邮件等 WiFi 的最长等待（5 分钟，超时放弃）
+// WiFi 连上后留给模组初始化的宽限：期间模组一有结果（就绪/故障）就发；
+// 到期仍未出结果也照发（正文的模组状态会显示未就绪），避免模组异常时
+// 启动邮件一直发不出去。总时长仍受 kMailBootWaitMaxMs 之外的这段限制。
+constexpr uint32_t kMailBootModemWaitMs = 20000;     // WiFi 连上后最多再等模组 20s
 
 // ---------------- 定时在线通知排程模式（与 esp32-sms-forwarding 的 Schedule.mode 一致）-
 // 总控开关为通知类型位 kEmailNotifyOnline（Web「通知类型」里的「定时在线通知」）；

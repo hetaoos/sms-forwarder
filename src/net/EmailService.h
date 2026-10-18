@@ -106,9 +106,20 @@ class EmailService {
   // SIM 状态变更（运行时插卡/拔卡，由 SmsService 状态切换触发）
   void notifySim(uint8_t port, bool ready);
 
-  // 排入启动邮件：延迟 kMailBootDelayMs 等待 WiFi 连接，连不上最多再等
-  // kMailBootWaitMaxMs，超时放弃（App::begin 调用一次）
+  // 排入启动邮件（App::begin 调用一次）。发送时机：
+  //   1. 先等 kMailBootDelayMs（WiFi 通常此时还没连上）；
+  //   2. WiFi 未连：每 15s 探一次，超过 kMailBootWaitMaxMs 放弃（无网发不出）；
+  //   3. WiFi 已连：给模组初始化 kMailBootModemWaitMs 的宽限，期间模组一有
+  //      结果（就绪 / 故障）就立即发；到期仍未出结果也照发（正文的模组状态会
+  //      显示为未就绪），不会因模组异常而永远不发。
   void notifyStartup();
+
+  // 启动邮件的额外放行条件（除 WiFi 外的等待项，如「模组初始化已完成」）。
+  // 返回 true 表示可以发；未注入时只等 WiFi。
+  // 由 App 注入（SmsService::modemsSettled），原因：启动邮件正文含模组状态，
+  // 模组还在初始化时发出会显示「初始化中」，故需等其出结果（就绪或故障）。
+  using StartupGateFn = std::function<bool()>;
+  void setStartupGate(StartupGateFn fn) { _startupGate = fn; }
 
   // 立即排入一封「设备在线」通知邮件
   void notifyOnline();
@@ -314,8 +325,10 @@ class EmailService {
   uint32_t _nextRetryMs = 0;            // 下次退避重试时刻
   uint32_t _onlineDueMs = 0;            // 间隔模式下次触发时刻
   uint32_t _startupDueMs = 0;           // 启动邮件计划发送时刻
-  uint8_t _startupTries = 0;            // 启动邮件已等待次数
+  uint32_t _startupWifiMs = 0;          // 启动邮件等待期间 WiFi 首次连上的时刻（0=尚未连上）
+  uint8_t _startupTries = 0;            // 启动邮件已等待次数（仅用于等 WiFi 的放弃判定）
   bool _startupPending = false;         // 启动邮件待发送
+  StartupGateFn _startupGate;           // 启动邮件额外放行条件（未注入则只等 WiFi）
   bool _onlineImmediate = false;        // 保存配置后补发一封在线通知（确认用）
 
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护配置与队列（递归锁）
