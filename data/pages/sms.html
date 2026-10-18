@@ -31,13 +31,13 @@
           <template x-for="msg in messages" :key="msg.id">
             <tr @click="showDetail(msg)" style="cursor:pointer">
               <td x-text="fmtTs(msg.ts)"></td>
-              <td x-text="modemLabelOf(msg.port)"></td>
+              <td x-text="modemLabelOf(msg.modem)"></td>
               <td>
                 <span class="badge" :class="msg.dir === 'in' ? 'ok' : 'warn'"
                       x-text="msg.dir === 'in' ? '收' : '发'"></span>
               </td>
               <td x-text="msg.phone"></td>
-              <td x-text="preview(msg.text)" style="max-width:320px"></td>
+              <td x-text="preview(msg.content)" style="max-width:320px"></td>
               <td><button class="btn ghost sm" @click.stop="del(msg.id)">删除</button></td>
             </tr>
           </template>
@@ -99,10 +99,10 @@
       <template x-if="detail">
         <div class="form">
           <div class="row"><span class="k">时间</span><span class="v" x-text="fmtTs(detail.ts)"></span></div>
-          <div class="row"><span class="k">模组</span><span class="v" x-text="modemLabelOf(detail.port)"></span></div>
+          <div class="row"><span class="k">模组</span><span class="v" x-text="modemLabelOf(detail.modem)"></span></div>
           <div class="row"><span class="k">方向</span><span class="v" x-text="detail.dir === 'in' ? '收到' : '发送'"></span></div>
           <div class="row"><span class="k">号码</span><span class="v" x-text="detail.phone"></span></div>
-          <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap" x-text="detail.text"></span></div>
+          <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap" x-text="detail.content"></span></div>
         </div>
       </template>
       <div class="bar" style="margin-top:8px">

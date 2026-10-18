@@ -71,7 +71,7 @@
           </template>
           <template x-if="m.enabled && !m.ready">
             <span style="margin-left:0;color:#6f7885"
-                  x-text="'（' + (m.simReady ? 'SIM 就绪' : '等待 SIM') + '）'"></span>
+                  x-text="'（' + (m.sim ? 'SIM 就绪' : '等待 SIM') + '）'"></span>
           </template>
         </span>
       </div>

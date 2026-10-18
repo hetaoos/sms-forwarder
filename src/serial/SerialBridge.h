@@ -140,6 +140,13 @@ class SerialBridge {
   // 把字符追加为可打印形式（控制字符转为 \xNN）
   static void appendPrintable(String &out, char c);
 
+  // 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
+  // readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
+  // 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信丢失。
+  // 本方法持端口锁把 URC 段追加到 p.pend，由抽数任务按常规自发上报流程
+  // （120ms 静默后回调 _urc）归档；resp 本身不改动，调用方解析不受影响。
+  void stashUrc(Port &p, const String &resp);
+
   // 串口错误中断的静态跳板（当前 onReceiveError 用 lambda 直接捕获 Port，此跳板作为无捕获场景的备用）
   static void onErrorThunk(hardwareSerial_error_t err);
 

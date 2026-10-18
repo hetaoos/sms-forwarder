@@ -26,7 +26,7 @@
             <div x-show="modemRevision(m)">固件版本：<b x-text="modemRevision(m)"></b></div>
             <div>信号：<b x-text="csqBars(m.csq) + ' ' + csqDbm(m.csq)"></b></div>
             <div>号码：<b x-text="m.num || '未知号码'"></b></div>
-            <div>SIM：<b x-text="m.simReady ? '就绪' : '未就绪'"></b> ·
+            <div>SIM：<b x-text="m.sim ? '就绪' : '未就绪'"></b> ·
                  运营商：<b x-text="(m.operCode ? (m.operCode + (operCn(m.operCode) ? ' · ' + operCn(m.operCode) : '')) : (m.oper || '-'))"></b></div>
             <div>注册：<b x-text="m.reg || '-'"></b><span x-show="m.act" x-text="' · ' + actText(m.act)"></span></div>
             <div>IMEI：<b x-text="m.imei || '-'"></b></div>

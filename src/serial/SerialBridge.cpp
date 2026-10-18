@@ -23,6 +23,16 @@ void SerialBridge::appendPrintable(String &out, char c) {
   }
 }
 
+// 判断 s 的 pos 处是否正好是前缀 pfx（不依赖 String 的 offset 重载）
+bool matchAt(const String &s, int pos, const char *pfx) {
+  int n = (int)strlen(pfx);
+  if (pos < 0 || pos + n > (int)s.length()) return false;
+  for (int i = 0; i < n; i++) {
+    if (s[pos + i] != pfx[i]) return false;
+  }
+  return true;
+}
+
 // 确保串口处于打开状态；已打开且波特率不同时热更新
 // p：端口状态；baud：目标波特率
 void SerialBridge::ensureOpen(Port &p, uint32_t baud) {
@@ -125,6 +135,39 @@ void SerialBridge::pumpOnce() {
   }
 }
 
+// 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
+// readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
+// 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信丢失。
+// 本方法持端口锁把 URC 段追加到 p.pend，由抽数任务按常规自发上报流程
+// （120ms 静默后回调 _urc）归档；resp 本身不改动，调用方解析不受影响。
+// p：端口状态（调用方须持有端口锁）；resp：刚收集到的 AT 响应
+void SerialBridge::stashUrc(Port &p, const String &resp) {
+  // 找响应中第一个短信类 URC 起始位置
+  int idx = -1;
+  for (int i = 0; i < (int)resp.length(); i++) {
+    if (resp[i] != '+') continue;
+    if (matchAt(resp, i, "+CMT:") || matchAt(resp, i, "+CMTI:") ||
+        matchAt(resp, i, "+CDS:")) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return;  // 无 URC 混入：零行为变化
+
+  // 回退到本行行首，避免把上一行残留（如 OK\r\n）切进 URC 段
+  int start = idx;
+  while (start > 0 && resp[start - 1] != '\n') start--;
+  String tail = resp.substring(start);
+  if (!tail.length()) return;
+
+  // 追加到 pend（端口锁保护，与 pumpOnce 的读写一致）；pendMs 置当前时刻，
+  // 抽数任务在 120ms 静默后按自发上报归档 -> _urc -> SmsService 解码入库
+  p.pend += tail;
+  p.pendMs = millis();
+  Serial.printf("[uart%u] urc stashed from at window (%u chars)\r\n",
+                p.index + 1, (unsigned)tail.length());
+}
+
 // 同步收集响应：直到超时或静默 gapMs
 // p：端口状态；waitMs：总等待上限；gapMs：收到数据后的静默判停间隔
 String SerialBridge::readResponse(Port &p, uint32_t waitMs, uint32_t gapMs) {
@@ -169,6 +212,9 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
   p.dev->flush();
 
   String resp = readResponse(p, timeoutMs, 80);
+
+  // 响应窗口内混入的短信 URC 交回 pend，避免被当作 AT 响应丢弃（新短信丢失）
+  stashUrc(p, resp);
 
   // 自愈：连续多次无响应 -> 复位串口
   if (resp.length()) {
@@ -215,6 +261,9 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
   p.dev->flush();
 
   String resp = readResponse(p, timeoutMs, 80);
+
+  // 响应窗口内混入的短信 URC 交回 pend，避免被当作 AT 响应丢弃（新短信丢失）
+  stashUrc(p, resp);
 
   // 自愈：连续多次无响应 -> 复位串口（与 send 一致）
   if (resp.length()) {

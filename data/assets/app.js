@@ -41,10 +41,11 @@ function modemModel(m) {
   const parts = [vendor, full].filter(x => x);
   return parts.length ? parts.join(' ') : '未知型号';
 }
-// 固件版本：仅在 CGMR 与已展示型号不同（即非完整料号）时返回，避免重复
+// 固件版本：仅当 CGMR 未被型号行覆盖时展示（型号可能是「厂商+完整料号」，如
+// CMCC ML307A-DSLN-MTSH1S00，此时固件与型号重复，隐藏以免刷屏）
 function modemRevision(m) {
   const rev = String(m.revision || '').trim();
-  return (rev && rev !== modemModel(m)) ? rev : '';
+  return (rev && modemModel(m).indexOf(rev) < 0) ? rev : '';
 }
 // 运营商短代码 -> 中文名（CMCC/CUCC/CTCC/CBN）
 function operCn(code) {
@@ -760,7 +761,7 @@ function pageRgb() {
     async applyBright() {
       const r = await postOp('/api/rgb', { bright: this.bright });
       if (r) {
-        this.st = await r.json();
+        Alpine.store('live').rgb = await r.json();
         this.bright = this.st.bright;
       }
       this.touched = false;
@@ -1042,7 +1043,7 @@ function pageSms() {
                               : '开机 ' + fmtUptime(ts);
     },
     preview(s) { return s.length > 40 ? s.slice(0, 40) + '…' : s; },
-    // 按 port 取显示名（含别名）：记录 / 详情里模组只带 port，需回查别名
+    // 按模组号取显示名（含别名）：记录 / 详情里模组号字段为 modem，需回查别名
     modemLabelOf(port) {
       const m = this.modems.find(x => x.port === port);
       return modemLabel(m || { port: port });

@@ -252,6 +252,12 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
     unlock();
     Serial.printf("[sms] port%u sent #%u to %s (%d part(s))\r\n", (unsigned)port,
                   (unsigned)id, num.c_str(), n);
+  } else {
+    // 模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）：
+    // 必须给出明确原因，否则调用方只收到空 error，无法判断短信到底发没发出去
+    err = "模组已发出，但记录存储失败（检查 userdata 分区是否挂载）";
+    Serial.printf("[sms] port%u sent to %s but store failed\r\n", (unsigned)port,
+                  num.c_str());
   }
   return id;
 }
@@ -768,6 +774,10 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     Serial.printf("[sms] port%u received #%u from %s (%u bytes)\r\n",
                   (unsigned)port, (unsigned)id, sender.c_str(),
                   (unsigned)text.length());
+  } else {
+    // 解码成功但未入库：串口留痕，便于区分「没收到」与「收到没存上」
+    Serial.printf("[sms] port%u received from %s but store failed\r\n",
+                  (unsigned)port, sender.c_str());
   }
 }
 
