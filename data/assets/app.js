@@ -20,6 +20,49 @@ function fmtBytes(b) {
        : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B';
 }
 const fmt = fmtUptime;  // 模板里用的短名
+
+// ---- 模组状态 / 信号强度展示（仪表盘与短信页共用）----
+function modemName(p) { return '模组' + p; }
+function modemStateText(m) {
+  if (!m.enabled) return '已禁用';
+  switch (m.state) {
+    case 'ready': return '已就绪';
+    case 'fault': return '故障 / 未连接';
+    case 'wait_at': return '等待模组响应';
+    case 'wait_cpin': return '等待 SIM 卡';
+    case 'bring_rf': return '射频启动中';
+    case 'wait_reg': return '等待网络注册';
+    case 'config': return '下发模组配置';
+    case 'poweron': return '上电中';
+    default: return '初始化中';
+  }
+}
+function modemStateClass(m) {
+  if (!m.enabled) return 'err';
+  if (m.state === 'ready') return 'ok';
+  if (m.state === 'fault') return 'err';
+  return 'warn';
+}
+function csqBars(csq) {            // 信号格（0~4）
+  if (csq < 0 || csq > 31) return '—';
+  const n = Math.max(0, Math.min(4, Math.round(csq / 8)));
+  return '▮'.repeat(n) + '▯'.repeat(4 - n);
+}
+function csqDbm(csq) {             // 信号 dBm
+  if (csq < 0 || csq > 31) return '-';
+  return (-113 + 2 * csq) + ' dBm';
+}
+function actText(act) {            // 接入技术（AT+CREG/CEREG 末字段）
+  switch (Number(act)) {
+    case 0: return 'GSM';
+    case 2: return 'UMTS';
+    case 3: return 'GSM(compact)';
+    case 4: case 5: return 'E-UTRAN';
+    case 6: return 'HSDPA';
+    case 7: return 'LTE';
+    default: return '';
+  }
+}
 function fmtAgo(ms) {
   if (ms == null || ms >= 0xFFFFFFFF) return '从未';
   ms = Math.floor(ms / 1000);
@@ -118,6 +161,8 @@ Alpine.store('live', {
   rgb: {},              // 同 GET /api/rgb
   disp: {},             // 同 GET /api/disp
   at: [],               // AT 日志（全页面共享，300 条上限）
+  sms: {},              // 最新一条短信摘要（SSE sms 事件）
+  smsports: [],         // 模组配置 [{port,enabled}]（SSE smsports 事件）
   // 追加 AT 记录：按 id 去重（SSE 重推/自身回显/REST 兜底三种来源安全合并），
   // 非数字 id（本地占位）直接入列
   pushAt(entries) {
@@ -162,6 +207,10 @@ async function restSnapshot() {
     const r = await fetch('/api/at/hist?after=-1&n=50');
     if (r.ok) live.pushAt(await r.json());
   } catch (e) {}
+  try {
+    const r = await fetch('/api/sms/ports');
+    if (r.ok) { const j = await r.json(); live.smsports = j.modems || []; }
+  } catch (e) {}
 }
 
 // 降级轮询（SSE 不可用/持续失败时）
@@ -191,6 +240,8 @@ function connectSSE() {
   on('rgb', d => { live.rgb = d; });
   on('disp', d => { live.disp = d; });
   on('at', d => { live.pushAt(d); });
+  on('sms', d => { live.sms = d; });
+  on('smsports', d => { live.smsports = d.modems || []; });
   es.onopen = () => {
     setConn('online');
     restSnapshot();   // 兜底快照：补齐建连前数据与断线期记录
@@ -249,12 +300,19 @@ function confirmDialog(title, text, danger) {
 
 /* ---------- 菜单配置（新增页面：加一条 + 放一个 pages/<id>.html） ---------- */
 const MENU = [
-  { group: '监控', items: [
+  { group: '总览', items: [
     { id: 'dashboard', title: '仪表盘', icon: 'dashboard' },
+  ]},
+  { group: '短信', items: [
+    { id: 'sms', title: '短信', icon: 'sms' },
+    { id: 'modem', title: '4G 模组', icon: 'modem' },
+    { id: 'serial', title: '短信调试', icon: 'serial' },
+    { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
+  ]},
+  { group: '监控', items: [
     { id: 'logs', title: '运行日志', icon: 'logs', todo: true },
   ]},
   { group: '设备控制', items: [
-    { id: 'serial', title: '串口 AT', icon: 'serial' },
     { id: 'display', title: '屏幕显示', icon: 'display' },
     { id: 'rgb', title: 'RGB 灯', icon: 'rgb' },
   ]},
@@ -262,10 +320,6 @@ const MENU = [
     { id: 'wifi', title: 'WiFi 设置', icon: 'wifi' },
     { id: 'push', title: '推送通道', icon: 'push', todo: true },
     { id: 'mqtt', title: 'MQTT', icon: 'mqtt', todo: true },
-  ]},
-  { group: '短信', items: [
-    { id: 'sms', title: '短信记录', icon: 'sms', todo: true },
-    { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
   ]},
   { group: '系统', items: [
     { id: 'settings', title: '系统设置', icon: 'settings' },
@@ -283,6 +337,7 @@ const ICONS = {
   push: '<svg viewBox="0 0 24 24"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l4-4"/></svg>',
   mqtt: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7 11l10-4M7 13l10 4"/></svg>',
   sms: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3.5V5z"/></svg>',
+  modem: '<svg viewBox="0 0 24 24"><rect x="3" y="14" width="3" height="7" rx="1"/><rect x="8.5" y="10" width="3" height="11" rx="1"/><rect x="14" y="6" width="3" height="15" rx="1"/><rect x="19.5" y="3" width="3" height="18" rx="1"/></svg>',
   blacklist: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
   logs: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><polyline points="14 3 14 7 18 7"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><line x1="4" y1="7" x2="20" y2="7"/><circle cx="9" cy="7" r="2"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="15" cy="17" r="2"/></svg>',
@@ -302,6 +357,7 @@ function renderShell() {
   for (const g of MENU) {
     html += '<div class="menu-group">' + g.group + '</div>';
     for (const it of g.items) {
+      if (it.hidden) continue;  // 隐藏项（如 AT 调试）不进主菜单，仅可经直达链接访问
       html += '<div class="menu-item" data-id="' + it.id + '">' + ICONS[it.icon] +
               '<span>' + it.title + '</span>' + (it.todo ? '<span class="todo">规划中</span>' : '') +
               '</div>';
@@ -392,16 +448,35 @@ document.addEventListener('DOMContentLoaded', bootstrap);
 /* ---------- 仪表盘 ---------- */
 function pageDashboard() {
   return {
-    token: '',
+    token: '',                // 持久化 API 令牌（GET /api/token 拉取，默认掩码展示）
+    tokenShown: false,        // 是否显示完整令牌
     // 全部数据来自 SSE 实时仓（外壳级共享），本页不做任何轮询
     get st() { return Alpine.store('live').status; },
     get stats() { return Alpine.store('live').stats; },
+    get modems() { return Alpine.store('live').smsports; },  // 模组状态（含信号/运营商，由 SSE 实时更新）
     get recent() {
       const at = Alpine.store('live').at;
       return at.slice(-5).reverse();
     },
+    // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
+    get tokenMasked() {
+      const t = this.token || '';
+      if (!t.length) return '';
+      if (this.tokenShown) return t;
+      return t.slice(0, 6) + '••••••••••' + t.slice(-4);
+    },
+    async loadToken() {
+      try {
+        const r = await apiFetch('/api/token');
+        if (r.ok) this.token = (await r.json()).token || '';
+      } catch (e) {}
+    },
+    async resetToken() {
+      const r = await postOp('/api/token', {}, 'API 令牌已重置');
+      if (r) { this.token = (await r.json()).token || ''; this.tokenShown = true; }
+    },
     init() {
-      this.token = sessionStorage.getItem('apiToken') || '';
+      this.loadToken();
       // 仓库还是空（SSE 尚未送达）时兜底拉一次
       const live = Alpine.store('live');
       if (!Object.keys(live.status).length) restSnapshot();
@@ -792,5 +867,183 @@ function pageAuth() {
       this.hint = '';
       this.errField = '';
     },
+  };
+}
+
+/* ---------- 短信 ----------
+ * 收发 / 列表 / 删除 + 模组启用管理；新短信经 SSE sms 事件实时刷新列表 */
+function pageSms() {
+  return {
+    modems: [],               // [{port,enabled}]
+    sendPort: 1, phone: '', content: '', sending: false,
+    sendHint: '', sendErr: false, sendOpen: false,
+    q: '', portFilter: -1, page: 1, pageSize: 20,
+    total: 0, messages: [], stats: {}, loading: false,
+    detail: null,
+
+    init() {
+      // SSE 驱动：新短信 -> 刷新列表（无筛选时）；模组配置 -> 同步开关
+      this.$watch('$store.live.sms', () => { if (!this.q) this.reload(); });
+      this.$watch('$store.live.smsports', v => this.applyPorts(v));
+      const live = Alpine.store('live');
+      if (live.smsports.length) this.applyPorts(live.smsports);
+      else this.loadPorts();
+      this.reload();
+      this.loadStats();
+    },
+
+    /* ---- 模组 ---- */
+    applyPorts(list) {
+      this.modems = list || [];
+      // 当前选择的模组被禁用时，切到第一个启用的模组
+      const cur = this.modems.find(m => m.port === this.sendPort);
+      if (!cur || !cur.enabled) {
+        const first = this.modems.find(m => m.enabled);
+        this.sendPort = first ? first.port : 0;
+      }
+    },
+    async loadPorts() {
+      try {
+        const r = await apiFetch('/api/sms/ports');
+        if (r.ok) this.applyPorts((await r.json()).modems || []);
+      } catch (e) {}
+    },
+    enabledPorts() { return this.modems.filter(m => m.enabled); },
+
+    /* ---- 发送（对话框） ---- */
+    openSend() {
+      // 默认选中第一个启用的模组
+      if (!this.enabledPorts().find(m => m.port === this.sendPort)) {
+        const first = this.enabledPorts()[0];
+        this.sendPort = first ? first.port : 0;
+      }
+      this.sendHint = ''; this.sendErr = false;
+      this.sendOpen = true;
+    },
+    closeSend() { this.sendOpen = false; },
+    async send() {
+      const phone = this.phone.trim();
+      if (!phone) { this.sendFail('请输入对方号码'); return; }
+      if (!this.content.length) { this.sendFail('请输入短信内容'); return; }
+      if (!this.sendPort) { this.sendFail('没有可用的模组，请先在「4G 模组」中启用'); return; }
+      this.sending = true;
+      this.sendHint = '正在发送…';
+      this.sendErr = false;
+      let r;
+      try {
+        // 带 30s 超时（发送可能耗时较久），失败精确回显状态码与原因
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30000);
+        try {
+          r = await apiFetch('/api/sms/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port: this.sendPort, phone: phone, content: this.content }),
+            signal: ctrl.signal,
+          });
+        } finally { clearTimeout(timer); }
+      } catch (e) {
+        this.sending = false;
+        this.sendFail('请求失败 / 超时：' + (e && e.message ? e.message : e));
+        return;
+      }
+      this.sending = false;
+      if (r.ok) {
+        this.sendHint = '发送成功';
+        this.sendErr = false;
+        this.phone = '';
+        this.content = '';
+        this.sendOpen = false;
+        this.reload();
+        this.loadStats();
+      } else {
+        // 精确回显：HTTP 状态码 + 后端错误原因（如「模组尚未就绪」「号码格式不正确」）
+        const msg = await errText(r);
+        this.sendFail('发送失败（HTTP ' + r.status + '）：' + msg);
+      }
+    },
+    sendFail(msg) { this.sendHint = msg; this.sendErr = true; this.sending = false; },
+
+    /* ---- 列表 ---- */
+    async reload() {
+      this.loading = true;
+      try {
+        const q = new URLSearchParams({ page: this.page, pageSize: this.pageSize });
+        if (this.q) q.set('q', this.q);
+        if (this.portFilter > 0) q.set('port', this.portFilter);
+        const r = await apiFetch('/api/sms?' + q.toString());
+        if (r.ok) {
+          const j = await r.json();
+          this.messages = j.messages || [];
+          this.total = j.total || 0;
+        }
+      } catch (e) {}
+      this.loading = false;
+    },
+    async loadStats() {
+      try {
+        const r = await apiFetch('/api/sms/stats');
+        if (r.ok) this.stats = await r.json();
+      } catch (e) {}
+    },
+    search() { this.page = 1; this.reload(); },
+    gotoPage(p) { if (p < 1 || p > this.pageCount) return; this.page = p; this.reload(); },
+    get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+    get pages() {
+      const out = [];
+      const pc = this.pageCount;
+      let start = Math.max(1, this.page - 2);
+      let end = Math.min(pc, start + 4);
+      start = Math.max(1, end - 4);
+      for (let i = start; i <= end; i++) out.push(i);
+      return out;
+    },
+    async del(id) {
+      if (!await confirmDialog('删除记录', '确定删除这条短信记录吗？', true)) return;
+      const r = await apiOp('/api/sms?id=' + id, { method: 'DELETE' }, '已删除');
+      if (r) { this.reload(); this.loadStats(); }
+    },
+    async clearAll() {
+      if (!await confirmDialog('清空记录', '确定清空全部短信记录吗？此操作不可恢复！', true)) return;
+      const r = await apiOp('/api/sms?all=1', { method: 'DELETE' }, '已清空');
+      if (r) { this.page = 1; this.reload(); this.loadStats(); }
+    },
+    showDetail(m) { this.detail = m; },
+    fmtTs(ts) {
+      return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
+                              : '开机 ' + fmtUptime(ts);
+    },
+    preview(s) { return s.length > 40 ? s.slice(0, 40) + '…' : s; },
+  };
+}
+
+/* ---------- 4G 模组（查看 + 设置：状态 / 信号 / 运营商 / 注册 / 号码） ---------- */
+function pageModem() {
+  return {
+    modems: [],
+    init() {
+      // SSE 推送模组状态（含遥测）时同步
+      this.$watch('$store.live.smsports', v => this.applyPorts(v));
+      const live = Alpine.store('live');
+      if (live.smsports.length) this.applyPorts(live.smsports);
+      else this.loadPorts();
+    },
+    applyPorts(list) { this.modems = list || []; },
+    async loadPorts() {
+      try {
+        const r = await apiFetch('/api/sms/ports');
+        if (r.ok) this.applyPorts((await r.json()).modems || []);
+      } catch (e) {}
+    },
+    async togglePort(p, enabled) {
+      const r = await postOp('/api/sms/ports', { port: p, enabled: enabled },
+                             '模组' + p + (enabled ? ' 已启用' : ' 已禁用'));
+      if (r) this.applyPorts((await r.json()).modems || []);
+    },
+    async reinitPort(p) {
+      const r = await postOp('/api/sms/reinit', { port: p }, '模组' + p + ' 重新初始化');
+      if (r) this.applyPorts((await r.json()).modems || []);
+    },
+    enabledPorts() { return this.modems.filter(m => m.enabled); },
   };
 }

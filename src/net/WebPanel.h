@@ -9,6 +9,7 @@
 #include "net/StatusBus.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
+#include "sms/SmsService.h"
 
 // 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
 // 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
@@ -21,15 +22,18 @@
 //      且不会随跨站请求发送，天然防 CSRF）；
 //   2. 访问令牌：Authorization: Bearer <token> 头，登录响应体返回，
 //      供脚本 / 第三方客户端使用。
-// 会话与令牌均为服务端随机生成（esp_random），仅存内存，重启全部失效。
-// 账号密码存于 NVS（AdminStore），修改后全部会话/令牌作废。
+// 身份支持两种方式（任一通过即可）：
+//   1. 会话 Cookie（sid）：登录后下发，存内存，重启失效；
+//   2. 访问令牌（Bearer）：长期有效的 API 令牌，持久化于 NVS，重启不失效，
+//      供脚本 / 第三方客户端使用；设备首次启动自动生成，可在 UI 重置。
+// 账号密码存于 NVS（AdminStore），修改后登录会话作废（API 令牌独立保留）。
 class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
-  // auth：管理账号存储（NVS）；events：SSE 状态推送总线
+  // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
-           AdminStore &auth, StatusBus &events);
+           AdminStore &auth, StatusBus &events, SmsService &sms);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -62,10 +66,17 @@ class WebPanel {
   String _tokens[cfg::kMaxSessions];       // 有效 Bearer 访问令牌（重启失效）
   uint8_t _sessionCount = 0;               // 会话表当前数量
   uint8_t _tokenCount = 0;                 // 令牌表当前数量
+  String _apiToken;                        // 持久化 API 访问令牌（NVS，重启不失效）
+
+  // 载入/生成持久化 API 令牌：NVS 已有则复用，否则生成并写回
+  void ensureApiToken();
+  // 重新生成 API 令牌（写 NVS），返回新令牌
+  String resetApiToken();
   SerialBridge &_bridge;   // AT 串口桥引用
   RgbLed &_led;            // RGB 灯引用
   WifiManager &_wifi;      // WiFi 管理器引用
   Display &_display;       // 屏幕引用
   AdminStore &_auth;       // 管理账号存储引用（NVS）
   StatusBus &_events;      // SSE 状态推送总线引用
+  SmsService &_sms;        // 短信服务引用
 };

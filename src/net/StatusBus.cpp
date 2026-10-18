@@ -4,10 +4,10 @@
 
 #include <Arduino.h>
 
-// wifi/bridge/led/display：各模块引用，保存供 tick 采集使用
+// wifi/bridge/led/display/sms：各模块引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
-                     Display &display)
-    : _wifi(wifi), _bridge(bridge), _led(led), _display(display) {}
+                     Display &display, SmsService &sms)
+    : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _sms(sms) {}
 
 // 注册 SSE handler；onConnect/onDisconnect 用于维护客户端列表与上限
 void StatusBus::begin(AsyncWebServer &server) {
@@ -78,6 +78,19 @@ void StatusBus::tick() {
       publish("at", json);
     }
     _lastHistId = lastId;
+  }
+
+  // ---- 短信：有新记录才推最新一条摘要 ----
+  if (_sms.lastSmsId() != _lastSmsId) {
+    _lastSmsId = _sms.lastSmsId();
+    publish("sms", _sms.latestJson());
+  }
+
+  // ---- 模组配置：变化才推 ----
+  String ports = _sms.modemsJson();
+  if (!_baseline || ports != _lastSmsPorts) {
+    publish("smsports", "{\"ok\":true,\"modems\":" + ports + "}");
+    _lastSmsPorts = ports;
   }
 
   _baseline = true;

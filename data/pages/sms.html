@@ -1,33 +1,104 @@
-<div class="page-head">
-  <div>
-    <h2>短信记录</h2>
-    <p class="page-desc">接收 / 发送的短信管理，计划支持分页、搜索、删除与主动发送</p>
+<div x-data="pageSms()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>短信</h2>
+      <p class="page-desc">收发记录与发送 · 新短信自动刷新</p>
+    </div>
+    <button class="btn" @click="openSend()" x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用模组）'"></button>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128172;</div>
-    <h3>功能规划中</h3>
-    <p>短信模块尚未接入本设备固件，页面结构已按目标功能预留。</p>
-  </div>
-</div>
+  <!-- 短信记录 -->
+  <div class="card">
+    <div class="bar" style="margin-bottom:12px">
+      <select class="inp sm" x-model.number="portFilter">
+        <option value="-1">全部模组</option>
+        <template x-for="m in modems" :key="m.port">
+          <option :value="m.port" x-text="modemName(m.port) + ' (串口' + m.port + ')'"></option>
+        </template>
+      </select>
+      <input class="inp sm" style="flex:1;min-width:160px" placeholder="搜索号码 / 内容"
+             x-model="q" @keyup.enter="search()">
+      <button class="btn ghost sm" @click="search()">搜索</button>
+      <button class="btn ghost sm" @click="clearAll()" x-show="total">清空</button>
+    </div>
 
-<div class="grid cols2">
-  <div class="card">
-    <h3>计划能力</h3>
-    <div class="row"><span class="k">短信记录</span><span class="v">分页浏览 / 关键字搜索 / 单条删除 / 清空</span></div>
-    <div class="row"><span class="k">接收信息</span><span class="v">来源号码 / 时间 / 接入模组 / ICCID / 本机号码</span></div>
-    <div class="row"><span class="k">长短信</span><span class="v">自动合并（最多 10 片，超时归档）</span></div>
-    <div class="row"><span class="k">持久化</span><span class="v">独立分区按条存储，可配置容量上限</span></div>
-    <div class="row"><span class="k">主动发送</span><span class="v">网页填写号码与内容，可选模组发出</span></div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr><th>时间</th><th>模组</th><th>方向</th><th>号码</th><th>内容</th><th></th></tr>
+        </thead>
+        <tbody>
+          <template x-for="msg in messages" :key="msg.id">
+            <tr @click="showDetail(msg)" style="cursor:pointer">
+              <td x-text="fmtTs(msg.ts)"></td>
+              <td x-text="'串口' + msg.port"></td>
+              <td>
+                <span class="badge" :class="msg.dir === 'in' ? 'ok' : 'warn'"
+                      x-text="msg.dir === 'in' ? '收' : '发'"></span>
+              </td>
+              <td x-text="msg.phone"></td>
+              <td x-text="preview(msg.text)" style="max-width:320px"></td>
+              <td><button class="btn ghost sm" @click.stop="del(msg.id)">删除</button></td>
+            </tr>
+          </template>
+          <tr x-show="!loading && !messages.length"><td colspan="6" class="hint" style="text-align:center;padding:24px">暂无记录</td></tr>
+          <tr x-show="loading"><td colspan="6" class="hint" style="text-align:center;padding:24px">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pager" x-show="pageCount > 1">
+      <button class="btn ghost sm" :disabled="page <= 1" @click="gotoPage(page - 1)">上一页</button>
+      <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
+      <button class="btn ghost sm" :disabled="page >= pageCount" @click="gotoPage(page + 1)">下一页</button>
+    </div>
   </div>
-  <div class="card">
-    <h3>联动规划</h3>
-    <div class="row"><span class="k">推送通道</span><span class="v">收到短信按策略广播 / 故障转移到各通道</span></div>
-    <div class="row"><span class="k">黑名单</span><span class="v">按号码过滤短信与来电</span></div>
-    <div class="row"><span class="k">MQTT</span><span class="v">短信事件 JSON 上报，订阅指令远程收发</span></div>
-    <div class="row"><span class="k">管理员控制</span><span class="v">特定号码短信远程执行指令</span></div>
+
+  <!-- 发送短信对话框 -->
+  <div class="modal-mask" x-show="sendOpen" @click.self="closeSend()" style="display:none">
+    <div class="modal">
+      <h3>发送短信</h3>
+      <div class="form">
+        <label>模组</label>
+        <select class="inp" x-model.number="sendPort">
+          <option value="0" x-show="!enabledPorts().length">无可用模组</option>
+          <template x-for="m in enabledPorts()" :key="m.port">
+            <option :value="m.port" x-text="modemName(m.port) + ' (串口' + m.port + ')' + (m.ready ? '' : ' · 未就绪')"></option>
+          </template>
+        </select>
+
+        <label>对方号码</label>
+        <input class="inp" placeholder="如 13800138000 或 +86138..." x-model="phone">
+
+        <label>短信内容</label>
+        <textarea class="inp" rows="4" placeholder="输入短信内容" x-model="content"></textarea>
+
+        <div class="hint" :class="sendErr ? 'err' : ''" x-show="sendHint" x-text="sendHint"></div>
+      </div>
+      <div class="bar" style="margin-top:8px">
+        <button class="btn" :disabled="sending || !sendPort"
+                @click="send()" x-text="sending ? '发送中…' : '发送'"></button>
+        <button class="btn ghost" @click="closeSend()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情对话框 -->
+  <div class="modal-mask" x-show="detail" @click.self="detail = null" style="display:none">
+    <div class="modal">
+      <h3>短信详情</h3>
+      <template x-if="detail">
+        <div class="form">
+          <div class="row"><span class="k">时间</span><span class="v" x-text="fmtTs(detail.ts)"></span></div>
+          <div class="row"><span class="k">模组</span><span class="v" x-text="'串口' + detail.port"></span></div>
+          <div class="row"><span class="k">方向</span><span class="v" x-text="detail.dir === 'in' ? '收到' : '发送'"></span></div>
+          <div class="row"><span class="k">号码</span><span class="v" x-text="detail.phone"></span></div>
+          <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap" x-text="detail.text"></span></div>
+        </div>
+      </template>
+      <div class="bar" style="margin-top:8px">
+        <button class="btn ghost" @click="detail = null">关闭</button>
+      </div>
+    </div>
   </div>
 </div>

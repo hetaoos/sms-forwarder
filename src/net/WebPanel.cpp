@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 
 #include <Arduino.h>
 
@@ -89,8 +90,8 @@ void sendErr(AsyncWebServerRequest *req, int code, const char *msg) {
             String("{\"ok\":false,\"error\":\"") + msg + "\"}");
 }
 
-// 统一成功响应：{"ok":true}，可附额外字段
-void sendOk(AsyncWebServerRequest *req, const char *extra = "") {
+// 统一成功响应：{"ok":true}，可附额外字段（如 ",\"id\":12"）
+void sendOk(AsyncWebServerRequest *req, const String &extra = "") {
   req->send(200, "application/json", String("{\"ok\":true") + extra + "}");
 }
 
@@ -137,14 +138,16 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events/sms：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
-                   Display &display, AdminStore &auth, StatusBus &events)
+                   Display &display, AdminStore &auth, StatusBus &events,
+                   SmsService &sms)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events) {}
+      _events(events), _sms(sms) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
+  ensureApiToken();   // 载入/生成持久化 API 令牌（NVS）
   // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404
   if (!LittleFS.begin(true)) {
     Serial.println("[http] LittleFS mount failed, web page unavailable");
@@ -184,7 +187,7 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
     String a = req->getHeader("Authorization")->value();
     if (a.startsWith("Bearer ")) {
       String t = a.substring(7);
-      if (t.length() && storeHas(_tokens, _tokenCount, t)) return true;
+      if (t.length() && (storeHas(_tokens, _tokenCount, t) || t == _apiToken)) return true;
     }
   }
   return false;
@@ -195,6 +198,39 @@ void WebPanel::invalidateAllSessions() {
   _sessionCount = 0;
   _tokenCount = 0;
   Serial.println("[http] all sessions and tokens invalidated");
+}
+
+// 载入/生成持久化 API 令牌：NVS 已有且长度合法则复用，否则生成并写回
+void WebPanel::ensureApiToken() {
+  Preferences prefs;
+  String t;
+  if (prefs.begin(cfg::kNvsNamespace, true)) {
+    t = prefs.getString(cfg::kNvsKeyToken, "");
+    prefs.end();
+  }
+  if (t.length() != 32) {  // genSecret 生成 32 位十六进制；非法则重新生成
+    t = genSecret();
+    if (prefs.begin(cfg::kNvsNamespace, false)) {
+      prefs.putString(cfg::kNvsKeyToken, t);
+      prefs.end();
+    }
+    Serial.println("[http] API 令牌缺失，已自动生成并写入 NVS");
+  } else {
+    Serial.println("[http] 已从 NVS 载入 API 令牌");
+  }
+  _apiToken = t;
+}
+
+// 重新生成 API 令牌（写 NVS），返回新令牌
+String WebPanel::resetApiToken() {
+  _apiToken = genSecret();
+  Preferences prefs;
+  if (prefs.begin(cfg::kNvsNamespace, false)) {
+    prefs.putString(cfg::kNvsKeyToken, _apiToken);
+    prefs.end();
+  }
+  Serial.println("[http] API 令牌已重置");
+  return _apiToken;
 }
 
 // 凭证表新增：store 数组；count：数量引用；v：凭证值；满返回 false
@@ -319,6 +355,19 @@ void WebPanel::setupRoutes() {
     sendJson(req, "{\"ok\":true,\"user\":\"" + _auth.user() + "\"}");
   });
 
+  // ---- API 访问令牌（持久化，重启不失效）----
+  // 查询当前令牌（需登录）；UI 默认掩码展示，点按后才显示完整
+  _server.on("/api/token", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+    sendJson(req, "{\"ok\":true,\"token\":\"" + _apiToken + "\"}");
+  });
+  // 重置令牌：生成新令牌并写 NVS，旧令牌立即失效
+  _server.on("/api/token", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+    String t = resetApiToken();
+    sendJson(req, "{\"ok\":true,\"token\":\"" + t + "\"}");
+  });
+
   // ---- 管理账号 ----
   // 查询当前用户名（密码不回传）
   _server.on("/api/auth", HTTP_GET, [this](AsyncWebServerRequest *req) {
@@ -407,6 +456,7 @@ void WebPanel::setupRoutes() {
 
   // ---- 串口 AT ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
+  // 经短信模块发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
   _server.on("/api/at/send", HTTP_GET, [this](AsyncWebServerRequest *req) {
     uint8_t port = paramInt(req, "port", 1);                 // 串口号，默认 1
     uint32_t baud = paramInt(req, "baud", cfg::kUartBaud);   // 波特率，默认配置值
@@ -414,9 +464,10 @@ void WebPanel::setupRoutes() {
     uint32_t timeout = constrain(paramInt(req, "t", 1000), 100, 5000);  // 超时钳制在 100..5000ms
     String cmd = stringParam(req, "cmd");                    // 命令文本
 
-    auto result = _bridge.send(port, baud, cmd, (SerialBridge::Eol)eol, timeout);
+    String err;
+    auto result = _sms.sendAt(port, baud, cmd, (SerialBridge::Eol)eol, timeout, err);
     if (!result.ok) {
-      sendErr(req, 400, "invalid port");
+      sendErr(req, 400, err.length() ? err.c_str() : "invalid port");
       return;
     }
     sendJson(req, _bridge.entryJson(result.id));  // 直接回该条记录 JSON
@@ -589,6 +640,127 @@ void WebPanel::setupRoutes() {
                }
                _wifi.requestConnect(ssid, pass);
                sendOk(req, ",\"connecting\":true");
+             });
+
+  // ================= 短信 =================
+  // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
+  // "pageSize":ps,"messages":[{id,dir,phone,content,ts,modem}],...}
+  _server.on("/api/sms", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    int page = paramInt(req, "page", 1);
+    int pageSize = paramInt(req, "pageSize", 20);
+    String q = stringParam(req, "q");
+    int portFilter = req->hasParam("port") ? paramInt(req, "port", -1) : -1;
+
+    std::vector<SmsMessage> msgs;
+    int total = 0;
+    _sms.store().list(page, pageSize, q, (int8_t)portFilter, msgs, total);
+
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["total"] = total;
+    doc["page"] = page;
+    doc["pageSize"] = pageSize;
+    JsonArray arr = doc["messages"].to<JsonArray>();
+    for (const SmsMessage &m : msgs) {
+      JsonObject o = arr.add<JsonObject>();
+      o["id"] = m.id;
+      o["dir"] = m.incoming ? "in" : "out";
+      o["phone"] = m.phone;
+      o["content"] = m.content;
+      o["ts"] = m.ts;
+      o["modem"] = m.modem;
+    }
+    String out;
+    serializeJson(doc, out);
+    sendJson(req, out);
+  });
+
+  // 删除：?id=n 删单条（不存在 404）；?all=1 清空
+  _server.on("/api/sms", HTTP_DELETE, [this](AsyncWebServerRequest *req) {
+    if (req->hasParam("all")) {
+      _sms.store().clear();
+      sendOk(req);
+      return;
+    }
+    if (!req->hasParam("id")) {
+      sendErr(req, 400, "missing id or all");
+      return;
+    }
+    uint32_t id = (uint32_t)paramInt(req, "id", 0);
+    if (!_sms.store().deleteOne(id)) {
+      sendErr(req, 404, "record not found");
+      return;
+    }
+    sendOk(req);
+  });
+
+  // 存储统计：{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}
+  _server.on("/api/sms/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _sms.store().statsJson());
+  });
+
+  // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
+  _server.on("/api/sms/ports", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+  });
+
+  // 启用/禁用模组：JSON {"port":1,"enabled":true}（热配置 + 持久化）
+  _server.on("/api/sms/ports", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               int port;
+               bool enabled;
+               if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
+                   !jsonBool(json["enabled"], enabled)) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               if (port < 1 || port > cfg::kSmsMaxModems) {
+                 sendErr(req, 400, "invalid port");
+                 return;
+               }
+               if (!_sms.setModemEnabled((uint8_t)port, enabled)) {
+                 sendErr(req, 500, "config save failed");
+                 return;
+               }
+               sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+             });
+
+  // 重新初始化模组：JSON {"port":1}（仅启用态有效；置位 needReinit 由抽数任务重跑）
+  _server.on("/api/sms/reinit", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               int port;
+               if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
+                   port < 1 || port > cfg::kSmsMaxModems) {
+                 sendErr(req, 400, "invalid port");
+                 return;
+               }
+               if (!_sms.reinitPort((uint8_t)port)) {
+                 sendErr(req, 400, "模组未启用或不存在");
+                 return;
+               }
+               sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+             });
+
+  // 发送短信：JSON {"port":1,"phone":"..","content":".."}
+  // 成功返回 {"ok":true,"id":记录ID}；失败 {"ok":false,"error":"原因"}
+  _server.on("/api/sms/send", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               int port;
+               if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
+                   !json["phone"].is<const char *>() ||
+                   !json["content"].is<const char *>()) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               String phone = json["phone"].as<String>();
+               String content = json["content"].as<String>();
+               String err;
+               uint32_t id = _sms.send((uint8_t)port, phone, content, err);
+               if (!id) {
+                 sendErr(req, 400, err.c_str());
+                 return;
+               }
+               sendOk(req, String(",\"id\":") + id);
              });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）

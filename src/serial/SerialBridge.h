@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <functional>
 #include <stdint.h>
 
 #include "app/Config.h"
@@ -46,9 +47,29 @@ class SerialBridge {
   void begin();
 
   // 阻塞式：写命令后在 timeoutMs 内收集响应
-  // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时
+  // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时；
+  // quiet：true 时不记入 AT 历史（模组初始化、短信 PDU 交互等不需要用户看见的流量）
   Result send(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
-              uint32_t timeoutMs);
+              uint32_t timeoutMs, bool quiet = false);
+
+  // 非阻塞式（try-lock）：若端口正忙（如正在发送短信）立即返回 false（out 无效），
+  // 不阻塞抽数任务。成功取到端口锁返回 true（out 有效，resp 为空表示超时无响应）。
+  // 由抽数任务在每端口处理完后调用，用于模组初始化/心跳等周期性 AT 交互。
+  bool trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
+               uint32_t timeoutMs, bool quiet, Result &out);
+
+  // 未请求上报（URC）消费回调：抽数任务每归档一段模组自发数据前调用，
+  // 返回 true 表示已被消费（不再记入 AT 历史）。
+  // 注意：该回调在抽数任务上下文调用，不持任何桥锁（端口锁已先释放），
+  // 因此可安全地做文件 I/O / 短信重组；仍不得回调本类会再次取端口锁的方法。
+  // 短信 +CMT 等实时 URC 经此接入。
+  using UnsolicitedFn = std::function<bool(uint8_t port, const String &text)>;
+  void setUnsolicitedHandler(UnsolicitedFn fn) { _urc = fn; }
+
+  // 每端口处理完后的周期性轮询回调（不持锁）：模组状态机用它驱动初始化/心跳。
+  // 回调内应只用 trySend（非阻塞），以免拖住抽数任务。
+  using PollFn = std::function<void(uint8_t port)>;
+  void setPollHandler(PollFn fn) { _poll = fn; }
 
   // 手动复位指定串口（关闭后按当前波特率重开）
   void reset(uint8_t port);
@@ -88,6 +109,7 @@ class SerialBridge {
     String pend;            // 自发上报的未成段数据（等间隔超时后归档）
     uint32_t pendMs = 0;    // pend 最后一次变化的时间戳
     uint8_t index = 0;      // 逻辑序号 0/1（日志用，显示为 index+1）
+    SemaphoreHandle_t mutex = nullptr;     // 每端口独立锁（避免故障模组阻塞另一模组）
   };
 
   // FreeRTOS 任务入口，arg 指向 SerialBridge 实例
@@ -105,9 +127,15 @@ class SerialBridge {
   // 在 waitMs 内持续读响应，静默 gapMs 后提前结束
   String readResponse(Port &p, uint32_t waitMs, uint32_t gapMs);
 
-  // 取/放成员互斥锁（临界区保护）
-  void lock() { xSemaphoreTake(_mutex, portMAX_DELAY); }
-  void unlock() { xSemaphoreGive(_mutex); }
+  // ---- 锁助手：每端口锁 + 历史锁，互不嵌套（先端口锁后历史锁）----
+  // 取/放端口锁（阻塞）
+  void lockPort(uint8_t i) { xSemaphoreTake(_ports[i].mutex, portMAX_DELAY); }
+  void unlockPort(uint8_t i) { xSemaphoreGive(_ports[i].mutex); }
+  // 尝试取端口锁（不阻塞）：成功返回 true
+  bool tryLockPort(uint8_t i) { return xSemaphoreTake(_ports[i].mutex, 0) == pdTRUE; }
+  // 取/放 AT 历史锁
+  void lockHist() { xSemaphoreTake(_histMutex, portMAX_DELAY); }
+  void unlockHist() { xSemaphoreGive(_histMutex); }
 
   // 把字符追加为可打印形式（控制字符转为 \xNN）
   static void appendPrintable(String &out, char c);
@@ -118,12 +146,14 @@ class SerialBridge {
   // 两个串口的状态（索引 0 -> 串口1，索引 1 -> 串口2）
   Port _ports[2] = {
       {&Serial1, cfg::kUart1Rx, cfg::kUart1Tx, 0, false, 0, 0, 0, 0, 0, 0,
-       String(), 0, 0},
+       String(), 0, 0, nullptr},
       {&Serial2, cfg::kUart2Rx, cfg::kUart2Tx, 0, false, 0, 0, 0, 0, 0, 0,
-       String(), 0, 1},
+       String(), 0, 1, nullptr},
   };
   static SerialBridge *sInstance;       // 单例指针，供静态中断回调使用
+  UnsolicitedFn _urc;                   // URC consumer callback (pump task context)
+  PollFn _poll;                         // 每端口周期轮询回调（初始化/心跳，非阻塞）
   AtHistory _hist;                      // AT 历史环形缓冲
-  SemaphoreHandle_t _mutex = nullptr;   // 保护共享状态的互斥量
+  SemaphoreHandle_t _histMutex = nullptr;  // 保护 AT 历史（独立于端口锁）
   TaskHandle_t _task = nullptr;         // 抽数任务句柄
 };

@@ -1,0 +1,776 @@
+#include "sms/SmsService.h"
+
+#include <ArduinoJson.h>
+#include <Preferences.h>
+
+#include <Arduino.h>
+
+// JSON 字符串转义（运营商/IMEI 等文本字段安全入 JSON）
+static String jsonStr(const String &s) {
+  String o;
+  o.reserve(s.length() + 2);
+  for (int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"' || c == '\\') { o += '\\'; o += c; }
+    else if (c == '\n') o += "\\n";
+    else if (c == '\r') o += "\\r";
+    else o += c;
+  }
+  return o;
+}
+
+// 网络注册状态码 -> 可读文本（AT+CREG/CEREG 第二字段）
+static const char *regText(int stat) {
+  switch (stat) {
+    case 0:  return "未注册";
+    case 1:  return "已注册(家网)";
+    case 2:  return "搜索中";
+    case 3:  return "注册被拒";
+    case 4:  return "未知";
+    case 5:  return "已注册(漫游)";
+    default: return "未知";
+  }
+}
+
+// bridge：AT 串口桥引用
+SmsService::SmsService(SerialBridge &bridge) : _bridge(bridge) {}
+
+// 载入配置、准备存储、对启用模组启动异步初始化（状态机由抽数任务轮询驱动）
+void SmsService::begin() {
+  _mutex = xSemaphoreCreateMutex();
+  _store.begin(cfg::kSmsStoreMax);
+  bool hadRecord = loadConfig();
+  if (!hadRecord) saveConfig();  // 首次启动落一份默认配置
+
+  // 注册抽数任务轮询回调：每个端口处理完后由泵任务调用，驱动模组初始化/心跳。
+  // 回调运行于抽数任务上下文、不持桥锁，内部只用 trySend（非阻塞），因此绝不阻塞
+  // 抽数任务、主循环或 Web；故障/未连接模组只会在自身端口上空转重试。
+  _bridge.setPollHandler([this](uint8_t port) { this->pollInit(port); });
+
+  // 对启用模组启动初始化（异步：仅置初始态，真正 AT 交互交由 pollInit）
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    if (_modems[p].enabled) configureModem(p, true);
+  }
+  _lastSmsId = _store.maxId();
+}
+
+// 周期调用（主循环）：仅长短信重组超时清理；模组初始化由抽数任务轮询驱动
+void SmsService::tick() {
+  _codec.pruneTimeouts(_concat);
+}
+
+// 串口自发数据消费（抽数任务上下文，持锁运行——禁止回调 SerialBridge）
+bool SmsService::onUnsolicited(uint8_t port, const String &text) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  ModemState &m = _modems[port];
+
+  String t = text;
+  t.replace("\r", "");
+  // 取第一行（一段 pend 可能含多行）
+  int nl = t.indexOf('\n');
+  String line = nl >= 0 ? t.substring(0, nl) : t;
+  line.trim();
+
+  // 运行时模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化
+  // （故障/未连接模组不会误触发；区别于初始化阶段模组自身上报的 RDY/CPIN）
+  if (m.initState == ModemInitState::kReady) {
+    if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY") ||
+        line == "+CPIN: READY") {
+      m.needReinit = true;
+      return true;  // 消费，不进 AT 历史
+    }
+  }
+
+  if (line.startsWith("+CMT:")) {
+    // PDU 可能紧跟在同一段后续行，也可能在下一段
+    if (nl >= 0) {
+      int nl2 = t.indexOf('\n', nl + 1);
+      String pdu = nl2 >= 0 ? t.substring(nl + 1, nl2) : t.substring(nl + 1);
+      pdu.trim();
+      if (pdu.length()) {
+        handleCmt(port, pdu);
+      } else {
+        m.waitingPdu = true;  // 头行已到，PDU 在后续段（头/PDU 跨 flush 时）
+      }
+    } else {
+      m.waitingPdu = true;  // 等下一段
+    }
+    return true;  // +CMT 头行也消费掉，不进 AT 历史
+  }
+  if (m.waitingPdu) {
+    m.waitingPdu = false;
+    String pdu = line;  // 该段第一行即 PDU（后续行忽略）
+    if (pdu.length()) handleCmt(port, pdu);
+    return true;
+  }
+  // 其它短信相关 URC（CNMI=2,2 模式下正常不会出现）：消费但不处理，
+  // 避免模组索引通知类流量冲刷 AT 历史
+  if (line.startsWith("+CMTI:") || line.startsWith("+CDS:")) return true;
+  return false;  // 非短信流量：交回 AT 历史
+}
+
+// ---------------- 模组管理 ----------------
+bool SmsService::modemEnabled(uint8_t port) const {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  return _modems[port].enabled;
+}
+
+bool SmsService::setModemEnabled(uint8_t port, bool enabled) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  configureModem(port, enabled);
+  return saveConfig();
+}
+
+String SmsService::modemsJson() const {
+  String js = "[";
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    if (p > 1) js += ",";
+    const ModemState &m = _modems[p];
+    bool ready = m.initState == ModemInitState::kReady;
+    js += "{\"port\":" + String(p) +
+          ",\"enabled\":" + (m.enabled ? "true" : "false") +
+          ",\"ready\":" + (ready ? "true" : "false") +
+          ",\"state\":\"" + initStateName(m.initState) + "\"" +
+          ",\"csq\":" + String(m.csq) +
+          ",\"oper\":\"" + jsonStr(m.oper) + "\"" +
+          ",\"reg\":\"" + jsonStr(m.reg) + "\"" +
+          ",\"sim\":" + (m.simReady ? "true" : "false") +
+          ",\"act\":" + String(m.act) +
+          ",\"imei\":\"" + jsonStr(m.imei) + "\"" +
+          ",\"num\":\"" + jsonStr(m.num) + "\"}";
+  }
+  js += "]";
+  return js;
+}
+
+// ---------------- 发送 ----------------
+uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
+                          String &err) {
+  if (port < 1 || port > cfg::kSmsMaxModems) {
+    err = "模组不存在";
+    return 0;
+  }
+  ModemState &m = _modems[port];
+  if (!m.enabled) {
+    err = "模组未启用或不存在";
+    return 0;
+  }
+  // 模组未就绪（初始化中/故障/未连接）时直接拒绝，避免无谓等待与持锁
+  if (m.initState != ModemInitState::kReady) {
+    err = "模组尚未就绪（初始化中或故障）";
+    return 0;
+  }
+  // 号码清洗：去分隔符，仅保留数字与前导 +
+  String num;
+  for (size_t i = 0; i < phone.length(); i++) {
+    char c = phone[i];
+    if (c == ' ' || c == '-' || c == '(' || c == ')' || c == '.') continue;
+    num += c;
+  }
+  size_t digits = (num.length() && num[0] == '+') ? 1 : 0;
+  if (num.length() - digits < 3 || num.length() > 20) {
+    err = "号码格式不正确";
+    return 0;
+  }
+  for (size_t i = digits; i < num.length(); i++) {
+    if (num[i] < '0' || num[i] > '9') {
+      err = "号码只能包含数字";
+      return 0;
+    }
+  }
+  if (!text.length()) {
+    err = "短信内容不能为空";
+    return 0;
+  }
+  if (text.length() > 1000) {
+    err = "短信内容过长";
+    return 0;
+  }
+
+  // 编码（长短信自动拆分）；参考号取本模组计数器（单条时忽略）
+  SmsPduPart parts[cfg::kSmsConcatMaxParts];
+  int n = _codec.encodeSend(num, text, m.csmsRef, parts,
+                            cfg::kSmsConcatMaxParts);
+  if (n < 0) {
+    err = String("内容编码失败（错误码 ") + n + "）";
+    return 0;
+  }
+  // 推进参考号（跳过 0：库要求非零）
+  if (++m.csmsRef == 0) m.csmsRef = 1;
+
+  // 逐段发送，任一失败即中止；发送期间持续刷新 lastSendMs 让初始化轮询让行
+  m.lastSendMs = millis();
+  for (int i = 0; i < n; i++) {
+    if (!sendPduPart(port, parts[i], err)) return 0;
+    m.lastSendMs = millis();
+  }
+
+  // 入库（发出记录）
+  SmsMessage msg;
+  msg.incoming = false;
+  msg.phone = num;
+  msg.content = text;
+  msg.ts = millis() / 1000;  // 设备无 RTC/NTP，记开机秒数
+  msg.modem = port;
+  uint32_t id = _store.add(msg);
+  if (id) {
+    lock();
+    _lastSmsId = id;
+    unlock();
+    Serial.printf("[sms] port%u sent #%u to %s (%d part(s))\r\n", (unsigned)port,
+                  (unsigned)id, num.c_str(), n);
+  }
+  return id;
+}
+
+// ---------------- AT 控制台 ----------------
+// 经短信模块发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
+// 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
+// 置 lastSendMs 令 pollInit 让行，避免与心跳 AT 互相干扰。模组就绪后自动还原
+// CMGF=0 / CNMI=2,2，使控制台任意 AT（如切到文本模式、关直投、关射频）都不会
+// 让短信收发永久失效——这是与原"直接 _bridge.send 绕过短信模块"最关键的区别。
+SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
+                                        const String &cmd, SerialBridge::Eol eol,
+                                        uint32_t timeoutMs, String &err) {
+  SerialBridge::Result empty{false, (uint32_t)-1, String()};
+  if (port < 1 || port > cfg::kSmsMaxModems) {
+    err = "模组不存在";
+    return empty;
+  }
+  ModemState &m = _modems[port];
+  m.lastSendMs = millis();  // 令初始化/心跳轮询在此期间让行
+  // quiet=false：命令与响应记入 AT 历史，供控制台展示
+  SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs, false);
+  if (!r.ok) {
+    err = "invalid port";
+    return r;
+  }
+  // 还原短信关键配置（仅模组就绪时）；初始化进行中由状态机负责下发，无需此处干预
+  if (m.initState == ModemInitState::kReady) {
+    _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0", SerialBridge::kCrlf,
+                 cfg::kSmsCmdTimeoutMs, true);
+    _bridge.send(port, cfg::kUartBaud, "AT+CNMI=2,2,0,0,0", SerialBridge::kCrlf,
+                 cfg::kSmsCmdTimeoutMs, true);
+  }
+  return r;
+}
+
+// ---------------- 内部实现 ----------------
+bool SmsService::configureModem(uint8_t port, bool enabled) {
+  if (enabled) startInit(port);
+  else stopInit(port);
+  return true;
+}
+
+// 触发模组重新初始化：仅启用态有效，置 needReinit 由抽数任务状态机重跑（不清空已发记录）
+bool SmsService::reinitPort(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  if (!_modems[port].enabled) return false;
+  _modems[port].needReinit = true;
+  Serial.printf("[sms] port%u 请求重新初始化（等待抽数任务重跑）\r\n", (unsigned)port);
+  return true;
+}
+
+// 启动异步初始化：仅置初始态与计数，真正的 AT 交互由 pollInit（抽数任务轮询）驱动
+void SmsService::startInit(uint8_t port) {
+  ModemState &m = _modems[port];
+  m.enabled = true;
+  m.waitingPdu = false;
+  m.needReinit = false;
+  m.configStep = 0;
+  m.initAttempts = 0;
+  m.regAttempts = 0;
+  m.failCount = 0;
+  // 重置遥测（重新初始化后从空开始采集）
+  m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.act = 0; m.num = "";
+  m.simReady = false; m.nextTeleMs = 0; m.teleStep = 0;
+  // 若配置了 EN 复位引脚，先走硬上下电；否则直接等 AT 就绪
+  m.initState = (enPin(port) >= 0) ? ModemInitState::kPowerOn : ModemInitState::kWaitAt;
+  m.nextPollMs = millis();  // 下一轮泵立即开始
+  Serial.printf("[sms] port%u 模组已启用，启动异步初始化\r\n", (unsigned)port);
+}
+
+// 停止初始化：禁用后停留在 kDown，pollInit 不再动作
+void SmsService::stopInit(uint8_t port) {
+  ModemState &m = _modems[port];
+  m.enabled = false;
+  m.waitingPdu = false;
+  m.needReinit = false;
+  m.initState = ModemInitState::kDown;
+  Serial.printf("[sms] port%u 模组已禁用\r\n", (unsigned)port);
+}
+
+// 模组对应 EN 复位引脚 / 有效电平（来自 Config；-1 表示不控制）
+int8_t SmsService::enPin(uint8_t port) const {
+  return port == 1 ? cfg::kModemEnPin1 : (port == 2 ? cfg::kModemEnPin2 : -1);
+}
+bool SmsService::enActiveLow() const { return cfg::kModemEnActiveLow; }
+
+// 状态机可读名（SSE/JSON 用）
+const char *SmsService::initStateName(ModemInitState s) {
+  switch (s) {
+    case ModemInitState::kDown: return "down";
+    case ModemInitState::kPowerOn: return "poweron";
+    case ModemInitState::kWaitAt: return "wait_at";
+    case ModemInitState::kWaitCpin: return "wait_cpin";
+    case ModemInitState::kBringRf: return "bring_rf";
+    case ModemInitState::kWaitReg: return "wait_reg";
+    case ModemInitState::kConfig: return "config";
+    case ModemInitState::kReady: return "ready";
+    case ModemInitState::kFault: return "fault";
+  }
+  return "unknown";
+}
+
+// 解析注册状态响应中的 stat（第二字段）；无 stat 或失败返回 -1
+int SmsService::parseRegStat(const String &resp, const char *prefix) {
+  int idx = resp.indexOf(prefix);
+  if (idx < 0) return -1;
+  int c1 = resp.indexOf(',', idx);
+  if (c1 < 0) return -1;  // 仅 +CEREG: <n> 无 stat，视为不完整
+  int c2 = resp.indexOf(',', c1 + 1);
+  String statStr = c2 < 0 ? resp.substring(c1 + 1) : resp.substring(c1 + 1, c2);
+  return statStr.toInt();
+}
+
+// 模组初始化状态机：由 SerialBridge 抽数任务每端口轮询调用（抽数任务上下文）。
+// 全程非阻塞——用 trySend，端口忙（正在发短信）立即跳过；受 nextPollMs 节流，
+// 单步 AT 最多持端口锁 ~1.5s。故障/未连接模组只在自身端口空转，不波及另一模组、
+// 主循环或 Web。就绪后周期性心跳探活；检测到运行时重启则回到初始化重新配置。
+void SmsService::pollInit(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  if (!m.enabled) {
+    m.initState = ModemInitState::kDown;
+    return;
+  }
+  uint32_t now = millis();
+  // 发送窗口内让行：避免心跳/初始化 AT 在多段发送的两个段之间（端口锁短暂释放）
+  // 插入，破坏正在进行的 CMGS 握手。窗口覆盖整段发送（含 20s 等待），之后恢复。
+  // 仅在确有发送记录（lastSendMs != 0）时生效，避免开机 0 值误判屏蔽初始化。
+  if (m.lastSendMs != 0 && (now - m.lastSendMs) < cfg::kSmsSendTimeoutMs + 3000) return;
+  // 节流：就绪态心跳(30s)与遥测(4s)各有计时，取较早者决定本轮是否动作
+  uint32_t nextAt = m.nextPollMs;
+  if (m.initState == ModemInitState::kReady && m.nextTeleMs && m.nextTeleMs < nextAt)
+    nextAt = m.nextTeleMs;
+  if (now < nextAt) return;
+
+  // 运行时重启检测（onUnsolicited 在就绪态置位）
+  if (m.needReinit) {
+    m.needReinit = false;
+    m.initState = ModemInitState::kWaitAt;
+    m.initAttempts = 0;
+    m.regAttempts = 0;
+    m.configStep = 0;
+    m.failCount = 0;
+    m.nextPollMs = now;
+    Serial.printf("[sms] port%u 检测到模组重启，重新开始初始化\r\n", (unsigned)port);
+  }
+
+  // 非阻塞 AT：端口忙返回 false（本轮跳过）；成功返回 true（resp 可能为空=超时）
+  String resp;
+  auto at = [&](const char *cmd, uint32_t to, bool quiet = true) -> bool {
+    SerialBridge::Result r;
+    if (!_bridge.trySend(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf, to, quiet, r))
+      return false;  // 端口忙
+    resp = r.resp;
+    return true;
+  };
+
+  switch (m.initState) {
+    case ModemInitState::kDown:
+      m.initState = ModemInitState::kWaitAt;
+      m.initAttempts = 0;
+      m.nextPollMs = now;
+      return;
+
+    case ModemInitState::kPowerOn: {
+      if (enPin(port) < 0) {  // 未配置 EN 引脚，直接等 AT
+        m.initState = ModemInitState::kWaitAt;
+        m.initAttempts = 0;
+        m.nextPollMs = now;
+        return;
+      }
+      // 阶段 0：拉低关机 -> 1.2s；阶段 1：拉高开机 -> 0.5s；阶段 2：进等 AT
+      if (m.configStep == 0) {
+        pinMode(enPin(port), OUTPUT);
+        digitalWrite(enPin(port), enActiveLow() ? LOW : HIGH);
+        m.configStep = 1;
+        m.nextPollMs = now + 1200;
+        return;
+      } else if (m.configStep == 1) {
+        digitalWrite(enPin(port), enActiveLow() ? HIGH : LOW);
+        m.configStep = 2;
+        m.nextPollMs = now + 500;
+        return;
+      } else {
+        m.configStep = 0;
+        m.initState = ModemInitState::kWaitAt;
+        m.initAttempts = 0;
+        m.nextPollMs = now;
+        return;
+      }
+    }
+
+    case ModemInitState::kWaitAt: {
+      if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;  // 忙：跳过本轮
+      if (resp.indexOf("OK") >= 0) {
+        m.lastOkMs = now;
+        m.failCount = 0;
+        m.initState = ModemInitState::kWaitCpin;
+        m.initAttempts = 0;
+        m.nextPollMs = now + 200;
+      } else {
+        if (++m.initAttempts >= cfg::kModemAtReadyMax) {
+          m.initState = ModemInitState::kFault;  // 转故障态慢速重试
+          m.nextPollMs = now + cfg::kModemFaultRetryMs;
+        } else {
+          m.nextPollMs = now + cfg::kModemAtPollMs;
+        }
+      }
+      return;
+    }
+
+    case ModemInitState::kWaitCpin: {
+      if (!at("AT+CPIN?", cfg::kSmsCmdTimeoutMs)) return;
+      if (resp.indexOf("+CPIN: READY") >= 0) {
+        m.simReady = true;
+        m.initState = ModemInitState::kBringRf;
+        m.nextPollMs = now + 200;
+      } else if (resp.indexOf("NOT INSERTED") >= 0 || resp.indexOf("+CME ERROR: 10") >= 0) {
+        m.simReady = false;
+        m.initState = ModemInitState::kFault;  // 明确未插卡：慢速重试（也许会插卡）
+        m.nextPollMs = now + cfg::kModemFaultRetryMs;
+      } else {
+        if (++m.initAttempts >= cfg::kModemCpinMax) {
+          m.initState = ModemInitState::kFault;
+          m.nextPollMs = now + cfg::kModemFaultRetryMs;
+        } else {
+          m.nextPollMs = now + cfg::kModemCpinPollMs;
+        }
+      }
+      return;
+    }
+
+    case ModemInitState::kBringRf: {
+      at("AT+CFUN=1", cfg::kSmsCmdTimeoutMs);  // 射频上线（失败不阻断）
+      m.initState = ModemInitState::kWaitReg;
+      m.regAttempts = 0;
+      m.nextPollMs = now + 500;
+      return;
+    }
+
+    case ModemInitState::kWaitReg: {
+      // 优先 CEREG（LTE），无则退回 CREG；端口忙则跳过本轮（不推进计数）
+      int stat = -1;
+      bool busy = false;
+      if (!at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) {
+        busy = true;
+      } else {
+        stat = parseRegStat(resp, "+CEREG:");
+        if (stat < 0) {
+          if (at("AT+CREG?", cfg::kSmsCmdTimeoutMs))
+            stat = parseRegStat(resp, "+CREG:");
+          else
+            busy = true;
+        }
+      }
+      if (busy) return;
+      if (stat == 1 || stat == 5) {
+        m.initState = ModemInitState::kConfig;
+        m.configStep = 0;
+        m.nextPollMs = now + 200;
+      } else {
+        if (++m.regAttempts >= cfg::kModemRegMaxAttempts) {
+          m.initState = ModemInitState::kFault;
+          m.nextPollMs = now + cfg::kModemFaultRetryMs;
+        } else {
+          m.nextPollMs = now + cfg::kModemRegPollMs;
+        }
+      }
+      return;
+    }
+
+    case ModemInitState::kConfig: {
+      // 逐条下发（每条 tick 一条，节流），避免一次性持端口锁过久
+      static const char *kCmds[] = {
+          "AT+COPS=0", "AT+CEREG=3", "AT+CGDCONT=1,\"IP\",\"\"",
+          "AT+CNMI=2,2,0,0,0", "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1"};
+      if (m.configStep == 1) {
+        // CEREG=3 失败降级到 =2（部分 2G 模组不支持带原因的注册上报）
+        if (at("AT+CEREG=3", cfg::kSmsCmdTimeoutMs)) {
+          if (resp.indexOf("OK") < 0) at("AT+CEREG=2", cfg::kSmsCmdTimeoutMs);
+        } else {
+          return;  // 忙
+        }
+      } else {
+        if (!at(kCmds[m.configStep], cfg::kSmsCmdTimeoutMs)) return;  // 忙
+      }
+      m.configStep++;
+      if (m.configStep >= (int)(sizeof(kCmds) / sizeof(kCmds[0]))) {
+        m.initState = ModemInitState::kReady;
+        m.failCount = 0;
+        m.lastOkMs = now;
+        m.nextPollMs = now + cfg::kModemLivenessMs;
+        Serial.printf("[sms] port%u 模组就绪（PDU 模式 + 短信直投已配置）\r\n",
+                      (unsigned)port);
+      } else {
+        m.nextPollMs = now + cfg::kModemConfigStepMs;
+      }
+      return;
+    }
+
+    case ModemInitState::kReady: {
+      // 心跳探活（周期 30s）与遥测采集（周期 4s）相互独立：各自计时、各自推进，
+      // 端口忙（如正在发送短信）则整轮跳过，下一轮重试。
+      bool liveDue = (now >= m.nextPollMs);
+      bool teleDue = (now >= m.nextTeleMs);
+      if (!liveDue && !teleDue) return;
+
+      // 心跳探活：连续失败判定模组掉线/重启，回到初始化重新配置
+      if (liveDue) {
+        if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;  // 忙（如正在发送短信）跳过
+        if (resp.indexOf("OK") >= 0) {
+          m.lastOkMs = now;
+          m.failCount = 0;
+          m.nextPollMs = now + cfg::kModemLivenessMs;
+        } else {
+          if (++m.failCount >= cfg::kModemLivenessMaxFail) {
+            Serial.printf("[sms] port%u 心跳失败，模组可能掉线/重启，重新初始化\r\n",
+                          (unsigned)port);
+            m.initState = ModemInitState::kWaitAt;
+            m.initAttempts = 0;
+            m.regAttempts = 0;
+            m.configStep = 0;
+            m.nextPollMs = now;
+          } else {
+            m.nextPollMs = now + cfg::kModemLivenessMs;
+          }
+        }
+      }
+
+      // 遥测：每轮推进一步，轮流查询信号 / 运营商 / 注册 / IMEI
+      if (teleDue) {
+        m.nextTeleMs = now + cfg::kModemTeleMs;
+        switch (m.teleStep) {
+          case 0: {  // 信号质量 AT+CSQ
+            if (at("AT+CSQ", cfg::kSmsCmdTimeoutMs)) {
+              int i = resp.indexOf("+CSQ:");
+              if (i >= 0) {
+                String s = resp.substring(i + 5);
+                int c = s.indexOf(',');
+                if (c >= 0) s = s.substring(0, c);
+                s.trim();
+                int v = s.toInt();
+                m.csq = (v == 99 || v < 0) ? -1 : (int8_t)v;
+              }
+            }
+            break;
+          }
+          case 1: {  // 运营商 AT+COPS?
+            if (at("AT+COPS?", cfg::kSmsCmdTimeoutMs)) {
+              int i = resp.indexOf("+COPS:");
+              if (i >= 0) {
+                String seg = resp.substring(i + 6);   // 去掉 "+COPS:"
+                int fc = seg.indexOf(',');
+                int sc = (fc >= 0) ? seg.indexOf(',', fc + 1) : -1;
+                if (sc >= 0) { String op = seg.substring(fc + 1, sc); op.replace("\"", ""); m.oper = op; }
+                else m.oper = "";
+              }
+            }
+            break;
+          }
+          case 2: {  // 网络注册 + 接入技术（优先 LTE CEREG，否则 CREG）
+            int stat = -1;
+            if (at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) stat = parseRegStat(resp, "+CEREG:");
+            if (stat < 0 && at("AT+CREG?", cfg::kSmsCmdTimeoutMs)) stat = parseRegStat(resp, "+CREG:");
+            m.reg = regText(stat);
+            if (stat >= 0) {
+              int commas = 0;
+              for (int k = 0; k < resp.length(); k++) if (resp[k] == ',') commas++;
+              if (commas >= 3) {  // 含 act 字段时才取（否则末段是 stat 非 act）
+                int lc = resp.lastIndexOf(',');
+                if (lc >= 0) m.act = (uint8_t)resp.substring(lc + 1).toInt();
+              }
+            }
+            break;
+          }
+          case 3: {  // 模组 IMEI AT+CGSN
+            if (at("AT+CGSN", cfg::kSmsCmdTimeoutMs)) {
+              String s = resp; s.replace("\r", ""); s.replace("\n", "");
+              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+              s.trim(); m.imei = s;
+            }
+            break;
+          }
+          case 4: {  // 本机号码（SIM 号码）AT+CNUM，取第二个引号串（number）
+            if (at("AT+CNUM", cfg::kSmsCmdTimeoutMs)) {
+              int i = resp.indexOf("+CNUM:");
+              if (i >= 0) {
+                String seg = resp.substring(i + 6);
+                int q1 = seg.indexOf('"'), q2 = (q1 >= 0) ? seg.indexOf('"', q1 + 1) : -1;
+                int q3 = (q2 >= 0) ? seg.indexOf('"', q2 + 1) : -1;
+                int q4 = (q3 >= 0) ? seg.indexOf('"', q3 + 1) : -1;
+                if (q3 >= 0 && q4 > q3) m.num = seg.substring(q3 + 1, q4);
+                else m.num = "";
+              }
+            }
+            break;
+          }
+        }
+        m.teleStep = (m.teleStep + 1) % 5;
+      }
+      return;
+    }
+
+    case ModemInitState::kFault: {
+      // 慢速重试：探活看是否恢复（故障/未连接模组只在自身端口空转）
+      if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;
+      if (resp.indexOf("OK") >= 0) {
+        m.initState = ModemInitState::kWaitAt;
+        m.initAttempts = 0;
+        m.regAttempts = 0;
+        m.configStep = 0;
+        m.nextPollMs = now;
+      } else {
+        m.nextPollMs = now + cfg::kModemFaultRetryMs;
+      }
+      return;
+    }
+  }
+}
+
+// 发送一段 PDU：AT+CMGS=<len> -> 等 '>' -> 发 PDU(内嵌 0x1A) -> 等 +CMGS/OK
+bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) {
+  if (part.tpduLen <= 0) {
+    err = "PDU 长度异常";
+    return false;
+  }
+  // 1) 报长度
+  auto r1 = _bridge.send(port, cfg::kUartBaud, "AT+CMGS=" + String(part.tpduLen),
+                         SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs, true);
+  if (r1.resp.indexOf('>') < 0) {
+    err = "模组未返回 > 提示（无响应或拒绝）";
+    return false;
+  }
+  // 2) 发 PDU 十六进制（末尾已内嵌 0x1A，不再追加行尾）
+  auto r2 = _bridge.send(port, cfg::kUartBaud, part.hex, SerialBridge::kNone,
+                         cfg::kSmsSendTimeoutMs, true);
+  const String &resp = r2.resp;
+  bool cmgs = resp.indexOf("+CMGS") >= 0;
+  bool ok = resp.indexOf("OK") >= 0;
+  bool error = resp.indexOf("ERROR") >= 0;
+  // 成功判定：OK > 见过 +CMGS（模组已入队）> 失败
+  if (ok || (cmgs && !error)) return true;
+  if (error) {
+    err = "模组返回 ERROR（检查号码/信号/SIM）";
+    return false;
+  }
+  err = "发送超时";
+  return false;
+}
+
+// 处理一条收到的 PDU
+void SmsService::handleCmt(uint8_t port, const String &pduHex) {
+  String sender, ts, text;
+  int concat[3] = {0, 0, 0};
+  if (!_codec.decode(pduHex, sender, ts, text, concat)) {
+    Serial.printf("[sms] port%u PDU decode failed (%u chars)\r\n", (unsigned)port,
+                  (unsigned)pduHex.length());
+    return;
+  }
+
+  uint32_t epoch = SmsCodec::sctsToEpoch(ts);
+  if (concat[2] > 0) {
+    // 长短信：喂入重组槽位，未收齐直接返回
+    String full, fullTs;
+    if (!_codec.reassemble(_concat, sender, ts, text, concat[0], concat[1],
+                           concat[2], full, fullTs)) {
+      return;
+    }
+    text = full;
+    ts = fullTs;
+    epoch = SmsCodec::sctsToEpoch(ts);
+    Serial.printf("[sms] port%u long sms assembled (%u parts)\r\n",
+                  (unsigned)port, (unsigned)concat[2]);
+  }
+
+  SmsMessage msg;
+  msg.incoming = true;
+  msg.phone = sender;
+  msg.content = text;
+  msg.ts = epoch ? epoch : (uint32_t)(millis() / 1000);
+  msg.modem = port;
+  uint32_t id = _store.add(msg);
+  if (id) {
+    lock();
+    _lastSmsId = id;
+    unlock();
+    Serial.printf("[sms] port%u received #%u from %s (%u bytes)\r\n",
+                  (unsigned)port, (unsigned)id, sender.c_str(),
+                  (unsigned)text.length());
+  }
+}
+
+// 最新一条短信的摘要 JSON
+String SmsService::latestJson() {
+  SmsMessage m;
+  if (!_store.detail(_lastSmsId, m)) return "{}";
+  return String("{\"id\":") + m.id + ",\"incoming\":" +
+         (m.incoming ? "true" : "false") + ",\"phone\":\"" + m.phone +
+         "\",\"ts\":" + m.ts + ",\"modem\":" + m.modem + "}";
+}
+
+// 载入 NVS 配置
+bool SmsService::loadConfig() {
+  // 默认：两个模组都启用（本设备即为双 AT 模组桥接设计）
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    _modems[p].enabled = true;
+    _modems[p].csmsRef = 1;
+  }
+  _max = cfg::kSmsStoreMax;
+
+  Preferences prefs;
+  String json;
+  if (prefs.begin(cfg::kNvsNamespace, true)) {
+    json = prefs.getString(cfg::kNvsKeySms, "");
+    prefs.end();
+  }
+  if (!json.length()) return false;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) return false;
+  if (doc["max"].is<int>()) {
+    _max = (uint16_t)constrain(doc["max"].as<int>(), 10, 1000);
+  }
+  for (JsonObject o : doc["modems"].as<JsonArray>()) {
+    int port = o["port"] | 0;
+    if (port >= 1 && port <= cfg::kSmsMaxModems) {
+      _modems[port].enabled = o["enabled"] | true;
+    }
+  }
+  Serial.printf("[sms] config loaded: max=%u modems=[%d,%d]\r\n", (unsigned)_max,
+                (int)_modems[1].enabled, (int)_modems[2].enabled);
+  return true;
+}
+
+// 保存 NVS 配置
+bool SmsService::saveConfig() {
+  JsonDocument doc;
+  doc["ver"] = 1;
+  doc["max"] = _max;
+  JsonArray arr = doc["modems"].to<JsonArray>();
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = p;
+    o["enabled"] = _modems[p].enabled;
+  }
+  String out;
+  serializeJson(doc, out);
+
+  Preferences prefs;
+  if (!prefs.begin(cfg::kNvsNamespace, false)) return false;
+  size_t written = prefs.putString(cfg::kNvsKeySms, out);
+  prefs.end();
+  return written == out.length();
+}

@@ -10,6 +10,7 @@
 #include "net/WifiManager.h"
 #include "net/WebPanel.h"
 #include "serial/SerialBridge.h"
+#include "sms/SmsService.h"
 
 // 应用层：持有各模块，负责装配与主循环调度
 class App {
@@ -17,7 +18,7 @@ class App {
   // 初始化所有子模块，成功返回 true
   bool begin();
 
-  // 主循环调度：推进 WiFi 重连、SSE 状态推送、按周期刷新屏幕
+  // 主循环调度：推进 WiFi 重连、SSE 状态推送、短信重组超时、按周期刷新屏幕
   void tick();
 
  private:
@@ -28,9 +29,10 @@ class App {
   Display _display;         // ST7789 屏幕
   WifiManager _wifi;        // WiFi 连接管理 + NVS 配网
   SerialBridge _bridge;     // 双串口 AT 透传桥
-  StatusBus _events{_wifi, _bridge, _led, _display};  // SSE 状态推送总线
+  SmsService _sms{_bridge}; // 短信服务（4G 模组收发 + 文件存储）
+  StatusBus _events{_wifi, _bridge, _led, _display, _sms};  // SSE 状态推送总线
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events};  // 短信转发器 Web 控制台（依赖上述模块）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };

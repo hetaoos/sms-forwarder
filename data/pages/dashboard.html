@@ -11,7 +11,7 @@
   <div class="stats">
     <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
     <div class="stat"><div class="k">剩余堆内存</div><div class="v" x-text="fmtBytes(st.heap)"></div></div>
-    <div class="stat"><div class="k">信号强度</div>
+    <div class="stat"><div class="k">WiFi 信号</div>
       <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
     <div class="stat"><div class="k">当前 IP</div>
       <div class="v" style="font-size:15px" x-text="st.ip || '-'"></div></div>
@@ -45,42 +45,53 @@
     </div>
   </div>
 
-  <!-- 串口状态 -->
+  <!-- 4G 模组状态 -->
   <div class="card">
-    <h3>串口状态 <span class="sub">AT 透传 · 双串口</span></h3>
-    <template x-for="s in stats" :key="s.port">
-      <div class="row">
-        <span class="k">串口 <span x-text="s.port"></span>
-          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
-        <span class="v" x-text="s.baud + ' 波特率 · RX ' + fmtBytes(s.rx) + ' / TX ' + fmtBytes(s.tx)"></span>
+    <h3>4G 模组状态 <span class="sub">信号 · 运营商 · 注册</span></h3>
+    <template x-for="m in modems" :key="m.port">
+      <div class="row" style="align-items:flex-start">
+        <span class="k">
+          <span class="badge" :class="m.enabled ? 'ok' : 'err'" x-text="m.enabled ? '启用' : '禁用'"></span>
+          <span class="badge" :class="modemStateClass(m)" x-text="modemStateText(m)"></span>
+        </span>
+        <span class="v">
+          <span x-text="modemName(m.port) + ' · 串口' + m.port"></span>
+          <template x-if="m.enabled && m.ready">
+            <div style="margin-top:4px;color:#6f7885;font-size:12px;line-height:1.7">
+              <div>
+                <span x-text="csqBars(m.csq) + ' ' + csqDbm(m.csq)"></span>
+                <span x-text="' · ' + (m.oper || '未知运营商')"></span>
+                <span x-text="' · ' + (m.reg || '-')"></span>
+                <span x-show="m.act" x-text="' · ' + actText(m.act)"></span>
+              </div>
+              <div>手机号：<b x-text="m.num || '未知号码'"></b></div>
+            </div>
+          </template>
+          <template x-if="m.enabled && !m.ready">
+            <span style="margin-left:0;color:#6f7885"
+                  x-text="'（' + (m.simReady ? 'SIM 就绪' : '等待 SIM') + '）'"></span>
+          </template>
+        </span>
       </div>
     </template>
     <div class="bar" style="margin-top:12px">
-      <button class="btn ghost" @click="go('serial')">进入 AT 控制台</button>
-    </div>
-  </div>
-
-  <!-- 最近动态 -->
-  <div class="card">
-    <h3>最近 AT 动态 <span class="sub">最新 5 条</span></h3>
-    <div class="console" style="height:auto;max-height:260px">
-      <template x-for="e in recent" :key="e.id">
-        <div class="entry">
-          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
-          <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
-          <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
-        </div>
-      </template>
-      <div class="hint" style="color:#6f7885" x-show="!recent.length">暂无记录</div>
+      <button class="btn ghost sm" @click="go('modem')">模组管理</button>
     </div>
   </div>
 
   <!-- API 访问令牌 -->
   <div class="card" x-show="token">
-    <h3>API 访问令牌 <span class="sub">Bearer Token</span></h3>
-    <div class="row"><span class="k">令牌</span><span class="v" style="word-break:break-all" x-text="token"></span></div>
+    <h3>API 访问令牌 <span class="sub">Bearer Token · 持久化</span></h3>
+    <div class="row"><span class="k">令牌</span>
+      <span class="v" style="word-break:break-all;font-family:monospace" x-text="tokenMasked"></span>
+    </div>
+    <div class="bar" style="margin-top:8px">
+      <button class="btn ghost sm" @click="tokenShown = !tokenShown" x-text="tokenShown ? '隐藏' : '显示完整'"></button>
+      <button class="btn ghost sm" @click="resetToken()" x-text="'重置令牌'"></button>
+    </div>
     <div class="hint">供脚本 / 第三方客户端调用，无需 Cookie：<br>
       <code>curl -H "Authorization: Bearer &lt;令牌&gt;" http://设备IP/api/status</code><br>
-      令牌仅存于当前浏览器会话，设备重启后失效，重新登录可获取新令牌。</div>
+      令牌持久化于设备 NVS，重启不失效；点击「重置令牌」可使其立即作废并生成新令牌。
+    </div>
   </div>
 </div>

@@ -38,6 +38,8 @@ constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（�
 constexpr const char *kNvsNamespace = "appcfg";  // NVS 命名空间
 constexpr const char *kNvsKeyWifi = "wifi";      // WiFi 配置键（JSON 对象）
 constexpr const char *kNvsKeyAuth = "auth";      // 管理账号键（JSON 对象，{"ver":1,"user":"..","pass":".."}）
+constexpr const char *kNvsKeySms = "sms";        // 短信配置键（{"ver":1,"max":n,"modems":[{"port":1,"enabled":true},..]}）
+constexpr const char *kNvsKeyToken = "apitoken"; // API 访问令牌键（持久化，重启不失效，用于脚本/第三方客户端）
 
 // ---------------- 外部串口（AT 模块）----------------
 // 串口1：TX -> 模块 RX，RX <- 模块 TX
@@ -69,5 +71,34 @@ constexpr uint32_t kUiRefreshMs = 500;  // 屏幕刷新周期
 constexpr const char *kSsePath = "/api/sse";  // SSE 事件流路径（需认证，同 /api/）
 constexpr uint32_t kSsePushMs = 1000;         // 状态采集/比对的周期（ms）
 constexpr uint8_t kSseMaxClients = 8;         // 并发 SSE 客户端上限（超出顶掉最旧）
+
+// ---------------- 短信（4G 模组） ----------------
+constexpr uint8_t kSmsMaxModems = 2;          // 可接模组数（与双串口一一对应）
+constexpr uint16_t kSmsStoreMax = 1000;       // 短信存储条数上限（FIFO 淘汰）
+constexpr uint8_t kSmsConcatSlots = 5;        // 并发长短信重组槽位
+constexpr uint8_t kSmsConcatMaxParts = 20;    // 单条长短信最多分段
+constexpr uint32_t kSmsConcatTimeoutMs = 30000;  // 长短信重组超时（收到最后一段后 30s）
+constexpr uint32_t kSmsSendTimeoutMs = 20000;     // 单段 CMGS 发送超时
+constexpr uint32_t kSmsCmdTimeoutMs = 1500;       // AT 配置类命令超时
+constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
+
+// ---------------- 模组初始化状态机（适配 esp32-sms-forwarding 健壮流程）-
+// 全部非阻塞：每个状态的动作经 tick() 节流驱动，单个动作最多持端口锁 1.5s，
+// 抽数任务对忙端口 try-lock 跳过——故障/未连接模组绝不阻塞另一模组与 Web。
+constexpr uint32_t kModemAtPollMs = 1000;       // 等 AT 就绪轮询间隔
+constexpr uint8_t  kModemAtReadyMax = 20;      // AT 就绪最大尝试(~20s)后转故障
+constexpr uint32_t kModemCpinPollMs = 1500;    // 等待 SIM 就绪轮询间隔
+constexpr uint8_t  kModemCpinMax = 15;         // SIM 就绪最大尝试(~22s)后转故障
+constexpr uint32_t kModemRegPollMs = 2000;     // 网络注册轮询间隔
+constexpr uint8_t  kModemRegMaxAttempts = 45;  // 注册最大尝试(~90s)后转故障
+constexpr uint32_t kModemConfigStepMs = 400;   // 配置逐条下发间隔（避免一次持锁过久）
+constexpr uint32_t kModemLivenessMs = 30000;   // 就绪后心跳间隔（探活）
+constexpr uint8_t  kModemLivenessMaxFail = 3;  // 连续心跳失败转重初始化
+constexpr uint32_t kModemFaultRetryMs = 15000; // 故障态重试间隔
+constexpr uint32_t kModemTeleMs = 4000;        // 就绪后遥测轮询周期（信号/运营商/注册/IMEI）
+// 模组硬复位（EN 引脚）：-1 表示不控制（沿用模组自身上电时序）
+constexpr int8_t   kModemEnPin1 = -1;
+constexpr int8_t   kModemEnPin2 = -1;
+constexpr bool     kModemEnActiveLow = true;   // true: EN 拉低=关机；false: 拉高=关机
 
 }  // namespace cfg

@@ -11,6 +11,7 @@
 #include "hal/RgbLed.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
+#include "sms/SmsService.h"
 
 // 状态推送总线：通过 SSE（cfg::kSsePath）向所有已连接浏览器实时广播
 // 设备状态，取代前端对各状态接口的定时轮询。
@@ -26,8 +27,9 @@
 //      不另做鉴权；事件 id 递增，为 Last-Event-ID 续传预留。
 class StatusBus {
  public:
-  // wifi/bridge/led/display：各模块引用（不持有所有权）
-  StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led, Display &display);
+  // wifi/bridge/led/display/sms：各模块引用（不持有所有权）
+  StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led, Display &display,
+            SmsService &sms);
 
   // 把 SSE handler 注册到服务器（由 WebPanel::begin 调用，需在 server.begin 前）
   void begin(AsyncWebServer &server);
@@ -55,6 +57,7 @@ class StatusBus {
   SerialBridge &_bridge;   // AT 串口桥引用
   RgbLed &_led;            // RGB 灯引用
   Display &_display;       // 屏幕引用
+  SmsService &_sms;        // 短信服务引用
 
   AsyncEventSource _events{cfg::kSsePath};
   std::vector<AsyncEventSourceClient *> _clients;  // 客户端列表（按接入顺序）
@@ -70,4 +73,6 @@ class StatusBus {
   String _lastSaved;
   String _lastRgb;
   String _lastDisp;
+  uint32_t _lastSmsId = 0;   // 上次已推送的最新短信 ID
+  String _lastSmsPorts;      // 上次已推送的模组配置 JSON
 };
