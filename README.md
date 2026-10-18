@@ -22,6 +22,8 @@
   - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
     两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
     形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
+  - 出厂管理账号可编译期注入（`-DWEB_AUTH_USER_DEFAULT` / `-DWEB_AUTH_PASS_DEFAULT`），
+    两者必须同时有值才采用，任一为空/缺失则整体回落 `admin` / `admin123`
   - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连
   - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
 - **Web 控制台**（`net/WebPanel`，端口 80）：Alpine.js 多页应用，打包进
@@ -129,6 +131,19 @@ build_flags =
     -DLGFX_USE_V1=1
     -DWIFI_SSID_DEFAULT=\"MyWiFi\"
     -DWIFI_PASS_DEFAULT=\"MyPass\"
+```
+
+### 出厂 Web 管理账号（可选）
+
+同上，在 `build_flags` 中修改。**用户名与密码必须同时有值**才采用编译期值；
+任一为空/缺失（或长度超限：用户名 >32、密码 >64 字符）则整体回落 `admin` / `admin123`
+（在启动时初始化 NVS 账号时判定，见 `AdminStore::begin`）。
+仅在 NVS 中无有效账号记录时生效（首次启动写入 NVS，之后以 NVS 为准，可在网页修改）：
+
+```ini
+build_flags =
+    -DWEB_AUTH_USER_DEFAULT=\"admin\"
+    -DWEB_AUTH_PASS_DEFAULT=\"admin123\"
 ```
 
 ## 首次配网流程

@@ -23,11 +23,26 @@ constexpr uint8_t kWifiAttemptRounds = 3;      // 全部候选都连失败的轮
 constexpr uint32_t kWifiConnectTimeoutMs = 8000;  // 单个候选的连接等待上限（ms）
 constexpr uint32_t kWifiLostRetryMs = 5000;    // STA 掉线后多久开始重连（ms）
 
+// ---------------- Web 管理账号（编译期可注入）----------------
+// 在 platformio.ini 的 build_flags 里用 -DWEB_AUTH_USER_DEFAULT=\"xxx\" 覆盖；
+// 未设置时为空串，表示未注入。
+// 生效规则（见 AdminStore::begin 的 NVS 初始化）：用户名与密码必须同时非空才
+// 采用编译期值，否则整体回落出厂默认 admin / admin123，避免出现无法登录的账号。
+// 仅在 NVS 无有效账号记录时生效（首次启动写入 NVS，之后以 NVS 为准，网页可改）
+#ifndef WEB_AUTH_USER_DEFAULT
+#define WEB_AUTH_USER_DEFAULT ""
+#endif
+#ifndef WEB_AUTH_PASS_DEFAULT
+#define WEB_AUTH_PASS_DEFAULT ""
+#endif
+constexpr const char *kWebAuthUserDefault = WEB_AUTH_USER_DEFAULT;  // 编译期注入的用户名（可为空）
+constexpr const char *kWebAuthPassDefault = WEB_AUTH_PASS_DEFAULT;  // 编译期注入的密码（可为空）
+// 出厂兜底账号：编译期注入不完整（任一为空/超长）时使用
+constexpr const char *kWebAuthUserFallback = "admin";
+constexpr const char *kWebAuthPassFallback = "admin123";
+
 // ---------------- AP 配网模式 ----------------
 constexpr const char *kApSsid = "SMS-Forwarder-Setup";  // AP 热点名（开放无密码，仅配网用）
-// 管理账号：NVS 无有效记录时的默认值（首次启动会写入 NVS，之后以 NVS 为准）
-constexpr const char *kWebAuthUser = "admin";
-constexpr const char *kWebAuthPass = "admin123";
 constexpr const char *kCookieName = "sid";        // 登录会话 Cookie 名（HttpOnly + SameSite=Strict）
 constexpr uint8_t kMaxSessions = 8;               // 内存中同时有效的会话 / 访问令牌数上限
 constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（秒，7 天）

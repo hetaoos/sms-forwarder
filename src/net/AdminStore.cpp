@@ -7,6 +7,8 @@
 
 #include <Arduino.h>
 
+#include <cstring>
+
 namespace {
 
 // 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
@@ -18,15 +20,23 @@ constexpr size_t kPassMaxLen = 64;
 
 }  // namespace
 
-// 从 NVS 加载；无有效记录时用编译期默认值并持久化
+// 从 NVS 加载；无有效记录时确定出厂账号并持久化
 void AdminStore::begin() {
   if (loadFromNvs()) {
     _log.addf(LogLevel::kInfo, "auth", "已从 NVS 载入管理账号：%s", _user.c_str());
     return;
   }
-  // 无有效记录：落入编译期默认值并落盘，之后所有修改都基于它
-  _user = cfg::kWebAuthUser;
-  _pass = cfg::kWebAuthPass;
+  // 无有效记录：优先用编译期注入的账号，但必须用户名与密码同时有效
+  // （非空且长度合规），否则整体回落出厂默认 admin / admin123，
+  // 避免只配了用户名/密码之一导致设备无法登录。
+  const size_t userLen = strlen(cfg::kWebAuthUserDefault);
+  const size_t passLen = strlen(cfg::kWebAuthPassDefault);
+  const bool useBuildIn = userLen > 0 && userLen <= kUserMaxLen &&
+                          passLen > 0 && passLen <= kPassMaxLen;
+  _user = useBuildIn ? cfg::kWebAuthUserDefault : cfg::kWebAuthUserFallback;
+  _pass = useBuildIn ? cfg::kWebAuthPassDefault : cfg::kWebAuthPassFallback;
+  _log.addf(LogLevel::kInfo, "auth", "出厂管理账号：%s（%s）", _user.c_str(),
+            useBuildIn ? "编译期注入" : "内置默认 admin/admin123");
   if (persist()) {
     _log.addf(LogLevel::kInfo, "auth", "默认管理账号已写入 NVS");
   } else {
