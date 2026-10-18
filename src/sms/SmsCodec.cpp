@@ -202,8 +202,14 @@ int64_t SmsCodec::daysFromCivil(int y, int m, int d) {
   return era * 146097 + (int64_t)doe - 719468;
 }
 
-// SCTS（pdulib 的 14 字符原文 "YYMMDDHHMMSS" + 时区半字节）转纪元秒。
-// 时区信息忽略（设备无时区配置），按模组上报的当地时间解析。
+// SCTS（pdulib 的 14 字符原文 "YYMMDDHHMMSS" + 两位时区）转纪元秒。
+// 时区字节规则（GSM 03.40 §9.2.3.11，与参考项目 esp32-sms-forwarding 的
+// formatSmsTimestamp 一致：两位时区、单位为 15 分钟）：
+//   低半字节存十位，且 bit 3 为符号位（置位 = 西/负）；高半字节存个位。
+//   pdulib 逐字节输出 (低 nibble)(高 nibble)，负时区的符号位会把十位字符
+//   变成非数字（如 0x4A -> ":4"），故按「字符 - '0' = nibble」还原而非isdigit。
+// 最终 epoch = 当地数字时间(按 UTC 解释) - 时区偏移，前端按浏览器本地时区
+// 渲染即为真实当地时间（设备自身无 RTC/NTP，不参与此换算）。
 uint32_t SmsCodec::sctsToEpoch(const String &scts) {
   if (scts.length() < 12) return 0;
   for (int i = 0; i < 12; i++) {
@@ -218,6 +224,21 @@ uint32_t SmsCodec::sctsToEpoch(const String &scts) {
   }
   int64_t days = daysFromCivil(year, mo, dd);
   int64_t secs = days * 86400 + (int64_t)hh * 3600 + mi * 60 + ss;
+
+  // 时区偏移：第 13~14 字符，15 分钟为单位，东正西负（缺失/异常按 0 处理）
+  int tzSecs = 0;
+  if (scts.length() >= 14) {
+    int tens = scts[12] - '0';   // pdulib 对负时区此处为非数字，按 nibble 值还原
+    int units = scts[13] - '0';
+    if (tens >= 0 && tens <= 15 && units >= 0 && units <= 9) {
+      int quarters = (tens & 0x07) * 10 + units;  // 十位 nibble 的 bit 3 是符号位
+      if (quarters <= 96) {                        // 防御：最大 ±24h
+        tzSecs = quarters * 900;
+        if (tens & 0x08) tzSecs = -tzSecs;         // 符号位置位 = 西/负
+      }
+    }
+  }
+  secs -= tzSecs;
   if (secs < 0 || secs > 4000000000LL) return 0;
   return (uint32_t)secs;
 }

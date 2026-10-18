@@ -34,7 +34,9 @@ class SmsCodec {
   // 判断字符串是否含多字节字符（决定 UCS-2 / GSM-7 编码与分段容量）
   static bool hasMultibyte(const String &text);
 
-  // SCTS 半八位组时间戳（pdulib getTimeStamp() 的 14 字符原文）转纪元秒；
+  // SCTS 半八位组时间戳（pdulib getTimeStamp() 的 14 字符原文
+  // "YYMMDDHHMMSS" + 两位时区）转纪元秒；时区按 GSM 03.40 规则换算
+  // （15 分钟/单位、低半字节十位 + bit 3 符号位），东正西负。
   // 年份不在 2020-2099 视为不可信，返回 0（调用方回退到开机秒数）
   static uint32_t sctsToEpoch(const String &scts);
 
