@@ -5,10 +5,11 @@
 #include "app/Config.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
+#include "net/AdminStore.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
 
-// HTTP 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网管理
+// HTTP 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
 // 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
 // URL 划分：页面与静态资源在根路径（公开，不含敏感数据），
 // 全部 API 统一在 /api/ 前缀下（除登录/登出/会话探测外均需认证）。
@@ -20,11 +21,14 @@
 //   2. 访问令牌：Authorization: Bearer <token> 头，登录响应体返回，
 //      供脚本 / 第三方客户端使用。
 // 会话与令牌均为服务端随机生成（esp_random），仅存内存，重启全部失效。
+// 账号密码存于 NVS（AdminStore），修改后全部会话/令牌作废。
 class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
-  // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕
-  WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display);
+  // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
+  // auth：管理账号存储（NVS）
+  WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
+           AdminStore &auth);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -37,9 +41,18 @@ class WebPanel {
   // req：请求对象；json：JSON 文本
   void sendJson(AsyncWebServerRequest *req, const String &json);
 
+  // 组装屏幕状态 JSON：{"ok":true,"on":bool,"bright":0-100}
+  String dispStateJson() const;
+
+  // 组装 RGB 状态 JSON：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
+  String rgbStateJson() const;
+
   // 判断请求是否已认证：会话 Cookie（sid）或 Bearer 访问令牌任一有效即可
   // req：请求对象
   bool authorized(AsyncWebServerRequest *req);
+
+  // 作废全部会话与访问令牌（账号密码变更后调用，强制重新登录）
+  void invalidateAllSessions();
 
   // 生成 32 位十六进制随机凭证（esp_random 硬件熵源，用于 sid / Bearer 令牌）
   static String genSecret();
@@ -58,4 +71,5 @@ class WebPanel {
   RgbLed &_led;            // RGB 灯引用
   WifiManager &_wifi;      // WiFi 管理器引用
   Display &_display;       // 屏幕引用
+  AdminStore &_auth;       // 管理账号存储引用（NVS）
 };

@@ -18,6 +18,9 @@ class Display {
   // percent：背光亮度百分比（0-100，超出自动钳制）
   void setBrightness(uint8_t percent);
 
+  // 当前背光亮度百分比（0-100）
+  uint8_t brightness() const;
+
   // 内容有变化才刷新帧缓冲比较后的实际重绘
   // info：待渲染的状态快照
   void render(const StatusInfo &info);

@@ -20,20 +20,31 @@ class RgbLed {
   // 直接按索引设置颜色（越界自动回绕）
   void set(uint8_t index);
 
-  // 设置任意 RGB 值（不走预设）
+  // 设置任意 RGB 值（不走预设；color() 的 name 为 "CUSTOM"）
   void setRaw(uint8_t r, uint8_t g, uint8_t b);
 
-  // 当前颜色索引
+  // percent：亮度百分比（0-100，超出自动钳制），对当前颜色实时生效
+  void setBrightness(uint8_t percent);
+
+  // 当前亮度百分比（0-100）
+  uint8_t brightness() const;
+
+  // 当前颜色索引（setRaw 不影响）
   uint8_t index() const { return _index; }
 
-  // 当前颜色（预设表项引用）
-  const Color &color() const { return kPalette[_index]; }
+  // 当前颜色（setRaw 后 name 为 "CUSTOM"，r/g/b 为设置值）
+  const Color &color() const { return _cur; }
 
   // 预设颜色总数
   static uint8_t count() { return kCount; }
 
  private:
-  static const uint8_t kCount = 5;          // 预设颜色数量
-  static const Color kPalette[kCount];      // 预设颜色表
-  uint8_t _index = 1;                       // 当前颜色索引
+  // 按当前颜色与亮度写硬件（折算：out = ch * bright / 100）
+  void apply();
+
+  static const uint8_t kCount = 5;      // 预设颜色数量
+  static const Color kPalette[kCount];  // 预设颜色表
+  uint8_t _index = 1;                   // 当前颜色索引
+  Color _cur = kPalette[0];             // 当前颜色（预设或自定义）
+  uint8_t _bright = 100;                // 亮度百分比（100 = 原色）
 };

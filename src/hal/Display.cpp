@@ -213,6 +213,7 @@ struct Display::Impl {
   uint16_t rowColors[kRowCount];    // 各行当前文字颜色缓存
   String atCache;                   // AT 区上一次渲染的 key
   bool screenOn = true;             // 屏幕点亮状态
+  uint8_t bright = cfg::kTftBacklight;  // 当前背光亮度百分比（重启复位为默认）
 };
 
 Display::Display() : _impl(nullptr) {}
@@ -237,8 +238,12 @@ bool Display::begin() {
 void Display::setBrightness(uint8_t percent) {
   if (!_impl) return;
   if (percent > 100) percent = 100;
+  _impl->bright = percent;
   _impl->lcd.setBrightness((uint8_t)((uint32_t)percent * 255 / 100));
 }
+
+// 当前背光亮度百分比（0-100）
+uint8_t Display::brightness() const { return _impl ? _impl->bright : 0; }
 
 // on：true 唤醒并补画全部字段；false 熄灭背光并让面板睡眠
 void Display::setScreenOn(bool on) {
@@ -247,6 +252,7 @@ void Display::setScreenOn(bool on) {
 
   if (on) {
     _impl->lcd.wakeup();
+    setBrightness(_impl->bright);   // 唤醒后恢复当前亮度（睡眠会关掉 PWM 输出）
     paintChrome(_impl->lcd);          // 重新铺静态框架
     for (uint8_t i = 0; i < kRowCount; i++) {
       _impl->rows[i] = String();      // 清缓存，下一帧补画所有字段

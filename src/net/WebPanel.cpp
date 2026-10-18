@@ -26,21 +26,27 @@ String stringParam(AsyncWebServerRequest *req, const char *name) {
 }
 
 // 从 LittleFS 发送页面资源：优先同名 .gz（省 flash，浏览器自动解压），
-// 否则原文件；都不存在返回 404
+// 否则原文件；都不存在返回 404。
+// 一律附 Cache-Control: no-store：设备会频繁重烧页面，禁缓存可避免
+// 浏览器拿到旧的 index.html / app.js / login.html 导致行为不一致
+// （如旧 app.js 缺少新增组件、旧登录页仍发表单编码数据）
 // req：请求对象；path：LittleFS 内的路径（如 "/index.html"）；mime：MIME 类型
 void sendFile(AsyncWebServerRequest *req, const char *path, const char *mime) {
   String gz = String(path) + ".gz";
   if (LittleFS.exists(gz.c_str())) {
     AsyncWebServerResponse *resp = req->beginResponse(LittleFS, gz, mime);
     resp->addHeader("Content-Encoding", "gzip");
+    resp->addHeader("Cache-Control", "no-store");
     req->send(resp);
     return;
   }
   if (LittleFS.exists(path)) {
-    req->send(LittleFS, path, mime);
+    AsyncWebServerResponse *resp = req->beginResponse(LittleFS, path, mime);
+    resp->addHeader("Cache-Control", "no-store");
+    req->send(resp);
     return;
   }
-  req->send(404, "text/plain", "404 Not Found");
+  req->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
 }
 
 // 从 Cookie 头中解析指定名称的值；不存在返回空串
@@ -86,12 +92,53 @@ void sendOk(AsyncWebServerRequest *req, const char *extra = "") {
   req->send(200, "application/json", String("{\"ok\":true") + extra + "}");
 }
 
+// 从 JSON 变体取整数：兼容 int 与数字字符串
+// （部分客户端/表单序列化会把数值发成字符串，宽松处理避免静默失败）
+// v：JSON 变体；out：输出；解析成功返回 true
+bool jsonInt(const JsonVariant &v, int &out) {
+  if (v.is<int>()) {
+    out = v.as<int>();
+    return true;
+  }
+  if (v.is<float>()) {  // 50.0 也接受，截断取整
+    out = (int)v.as<float>();
+    return true;
+  }
+  if (v.is<const char *>()) {
+    String s = v.as<String>();
+    s.trim();
+    if (!s.length()) return false;
+    for (size_t i = 0; i < s.length(); i++) {
+      char c = s[i];
+      bool ok = (c >= '0' && c <= '9') || (i == 0 && (c == '-' || c == '+'));
+      if (!ok) return false;
+    }
+    out = s.toInt();
+    return true;
+  }
+  return false;
+}
+
+// 从 JSON 变体取布尔：兼容 bool 与 "true"/"1"/"false"/"0" 字符串
+bool jsonBool(const JsonVariant &v, bool &out) {
+  if (v.is<bool>()) {
+    out = v.as<bool>();
+    return true;
+  }
+  if (v.is<const char *>()) {
+    String s = v.as<String>();
+    if (s == "true" || s == "1") { out = true; return true; }
+    if (s == "false" || s == "0") { out = false; return true; }
+  }
+  return false;
+}
+
 }  // namespace
 
-// bridge/led/wifi/display：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
-                   Display &display)
-    : _bridge(bridge), _led(led), _wifi(wifi), _display(display) {}
+                   Display &display, AdminStore &auth)
+    : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -139,6 +186,13 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
   return false;
 }
 
+// 作废全部会话与访问令牌（账号密码变更后调用，所有客户端需重新登录）
+void WebPanel::invalidateAllSessions() {
+  _sessionCount = 0;
+  _tokenCount = 0;
+  Serial.println("[http] all sessions and tokens invalidated");
+}
+
 // 凭证表新增：store 数组；count：数量引用；v：凭证值；满返回 false
 bool WebPanel::storeAdd(String *store, uint8_t &count, const String &v) {
   if (!v.length() || count >= cfg::kMaxSessions) return false;
@@ -170,6 +224,22 @@ void WebPanel::sendJson(AsyncWebServerRequest *req, const String &json) {
   req->send(200, "application/json", json);
 }
 
+// 组装屏幕状态 JSON：{"ok":true,"on":bool,"bright":0-100}
+String WebPanel::dispStateJson() const {
+  return String("{\"ok\":true,\"on\":") + (_display.screenOn() ? "true" : "false") +
+         ",\"bright\":" + String(_display.brightness()) + "}";
+}
+
+// 组装 RGB 状态 JSON：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
+// rgb 为未折算亮度的原始颜色值；实际输出 = rgb * bright / 100
+String WebPanel::rgbStateJson() const {
+  const RgbLed::Color &c = _led.color();
+  String rgb = "[" + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
+  return String("{\"ok\":true,\"color\":\"") + c.name + "\",\"rgb\":" + rgb +
+         ",\"index\":" + String(_led.index()) +
+         ",\"bright\":" + String(_led.brightness()) + "}";
+}
+
 // 注册全部路由：
 // 1. 认证中间件：/api/ 前缀统一要求登录（Cookie 或 Bearer 令牌），
 //    登录/登出/会话探测三个端点放行；页面与静态资源公开（不含敏感数据）；
@@ -183,7 +253,7 @@ void WebPanel::setupRoutes() {
       return;
     }
     if (url.startsWith("/api/") && !authorized(req)) {
-      req->send(401, "application/json", "{\"error\":\"unauthorized\"}");
+      sendErr(req, 401, "unauthorized");
       return;
     }
     next();
@@ -199,8 +269,8 @@ void WebPanel::setupRoutes() {
     sendFile(req, "/login.html", "text/html; charset=utf-8");
   });
   // 其余静态资源（css/js/图标等）直接映射到 LittleFS 根目录；
-  // serveStatic 会自动探测同名 .gz 文件
-  _server.serveStatic("/", LittleFS, "/");
+  // serveStatic 会自动探测同名 .gz 文件；no-store 防浏览器缓存旧版本
+  _server.serveStatic("/", LittleFS, "/", "no-store");
 
   // ---- 认证 ----
   // 登录：JSON 请求体 {"user":"..","pass":".."} -> 下发 sid Cookie +
@@ -219,7 +289,7 @@ void WebPanel::setupRoutes() {
                }
                String user = json["user"].as<String>();
                String pass = json["pass"].as<String>();
-               if (user != cfg::kWebAuthUser || pass != cfg::kWebAuthPass) {
+               if (!_auth.check(user, pass)) {
                  sendErr(req, 401, "bad credentials");
                  return;
                }
@@ -255,29 +325,97 @@ void WebPanel::setupRoutes() {
   // 会话探测：前端据此判断是否已登录（未认证返回 401）
   _server.on("/api/session", HTTP_GET, [this](AsyncWebServerRequest *req) {
     if (!authorized(req)) {
-      req->send(401, "application/json", "{\"error\":\"unauthorized\"}");
+      sendErr(req, 401, "unauthorized");
       return;
     }
-    sendJson(req, "{\"ok\":1,\"user\":\"" + String(cfg::kWebAuthUser) + "\"}");
+    sendJson(req, "{\"ok\":true,\"user\":\"" + _auth.user() + "\"}");
   });
+
+  // ---- 管理账号 ----
+  // 查询当前用户名（密码不回传）
+  _server.on("/api/auth", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, "{\"ok\":true,\"user\":\"" + _auth.user() + "\"}");
+  });
+
+  // 修改用户名 / 密码：JSON {"user":"新用户","pass":"新密码","passOld":"当前密码"}
+  // 需验证当前密码（防登录态被冒用）；成功后作废全部会话与令牌，
+  // 所有客户端（含当前浏览器）需用新账号重新登录
+  _server.on("/api/auth", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               if (!json.is<JsonObject>() || !json["user"].is<const char *>() ||
+                   !json["pass"].is<const char *>() ||
+                   !json["passOld"].is<const char *>()) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               String user = json["user"].as<String>();
+               String pass = json["pass"].as<String>();
+               String passOld = json["passOld"].as<String>();
+               Serial.printf("[auth] change: new user=%s, stored user=%s\r\n",
+                             user.c_str(), _auth.user().c_str());
+               if (!_auth.check(_auth.user(), passOld)) {
+                 Serial.println("[auth] change rejected: current password mismatch");
+                 sendErr(req, 403, "当前密码不正确");
+                 return;
+               }
+               String err;
+               if (!_auth.update(user, pass, &err)) {
+                 Serial.printf("[auth] change failed: %s\r\n", err.c_str());
+                 sendErr(req, 400, err.c_str());
+                 return;
+               }
+               invalidateAllSessions();  // 账号变更，全部登录态作废
+               sendOk(req);
+             });
 
   // ---- RGB ----
-  // 切换到下一个颜色，返回 {"color":"颜色名"}
+  // 切换到下一个预设颜色，返回最新 RGB 状态
   _server.on("/api/led", HTTP_GET, [this](AsyncWebServerRequest *req) {
     _led.next();
-    sendJson(req, String("{\"color\":\"") + _led.color().name + "\"}");
+    sendJson(req, rgbStateJson());
   });
 
-  // 设置颜色：?c=索引 走预设，?r=&g=&b= 走任意 RGB
-  _server.on("/api/set", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    if (req->hasParam("c")) {
-      _led.set(paramInt(req, "c", 0));
-    } else if (req->hasParam("r") && req->hasParam("g") && req->hasParam("b")) {
-      _led.setRaw(paramInt(req, "r", 0), paramInt(req, "g", 0),
-                  paramInt(req, "b", 0));
-    }
-    sendOk(req);
+  // 查询 RGB 状态：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
+  _server.on("/api/rgb", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, rgbStateJson());
   });
+
+  // 设置 RGB：JSON，三个维度可任意组合（都可选）：
+  //   {"c":索引}        走预设（0-4，越界 400）
+  //   {"r":n,"g":n,"b":n}  任意颜色（0-255，越界钳制）
+  //   {"bright":0-100}  亮度百分比（越界钳制，实时折算输出）
+  _server.on("/api/rgb", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               if (!json.is<JsonObject>()) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               int c;
+               if (jsonInt(json["c"], c)) {
+                 if (c < 0 || c >= RgbLed::count()) {
+                   sendErr(req, 400, "invalid preset index");
+                   return;
+                 }
+                 _led.set((uint8_t)c);
+               } else {
+                 int r, g, b;
+                 if (jsonInt(json["r"], r) && jsonInt(json["g"], g) &&
+                     jsonInt(json["b"], b)) {
+                   auto clamp255 = [](int v) -> int {
+                     return v < 0 ? 0 : (v > 255 ? 255 : v);
+                   };
+                   _led.setRaw((uint8_t)clamp255(r), (uint8_t)clamp255(g),
+                               (uint8_t)clamp255(b));
+                 }
+               }
+               int br;
+               if (jsonInt(json["bright"], br)) {
+                 if (br < 0) br = 0;
+                 if (br > 100) br = 100;
+                 _led.setBrightness((uint8_t)br);
+               }
+               sendJson(req, rgbStateJson());
+             });
 
   // ---- 串口 AT ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
@@ -325,13 +463,32 @@ void WebPanel::setupRoutes() {
     sendJson(req, _bridge.statsJson());
   });
 
-  // ---- 屏幕开关 ----
-  // ?on=1 点亮，?on=0 熄灭；返回 {"on":bool}
+  // ---- 屏幕开关 / 亮度 ----
+  // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    bool on = paramInt(req, "on", 1) != 0;
-    _display.setScreenOn(on);
-    sendJson(req, String("{\"on\":") + (_display.screenOn() ? "true" : "false") + "}");
+    sendJson(req, dispStateJson());
   });
+
+  // 设置屏幕：JSON {"on":bool?,"bright":0-100?}，两个字段都可选
+  // （只传其一即可；bright 越界自动钳制）；返回最新状态
+  _server.on("/api/disp", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               if (!json.is<JsonObject>()) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               bool on;
+               if (jsonBool(json["on"], on)) {
+                 _display.setScreenOn(on);
+               }
+               int b;
+               if (jsonInt(json["bright"], b)) {
+                 if (b < 0) b = 0;
+                 if (b > 100) b = 100;
+                 _display.setBrightness((uint8_t)b);
+               }
+               sendJson(req, dispStateJson());
+             });
 
   // 查询默认波特率（供前端下拉框初始化）
   _server.on("/api/at/baud", HTTP_GET, [this](AsyncWebServerRequest *req) {
@@ -354,6 +511,8 @@ void WebPanel::setupRoutes() {
     rgb.add(c.g);
     rgb.add(c.b);
     doc["disp"] = _display.screenOn();          // 屏幕开关
+    doc["dispBright"] = _display.brightness();  // 屏幕背光亮度百分比
+    doc["rgbBright"] = _led.brightness();       // RGB 灯亮度百分比
     doc["connected"] = _wifi.connected();       // STA 是否已连接
     doc["mode"] = _wifi.apMode() ? "ap" : (_wifi.connected() ? "sta" : "connecting");
     String out;
@@ -400,8 +559,8 @@ void WebPanel::setupRoutes() {
                String ssid = json["ssid"].as<String>();
                String pass = json["pass"].is<const char *>()
                                  ? json["pass"].as<String>() : String();
-               bool connect = json["connect"].is<bool>()
-                                  ? json["connect"].as<bool>() : true;
+               bool connect = true;
+               jsonBool(json["connect"], connect);  // 缺省 true
                if (!ssid.length()) {
                  sendErr(req, 400, "ssid required");
                  return;
@@ -416,12 +575,12 @@ void WebPanel::setupRoutes() {
   // 删除配置：JSON {"index":列表下标}
   _server.on("/api/wifi/delete", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) {
-               if (!json.is<JsonObject>() || !json["index"].is<int>()) {
+               int index;
+               if (!json.is<JsonObject>() || !jsonInt(json["index"], index)) {
                  sendErr(req, 400, "invalid index");
                  return;
                }
-               uint8_t index = (uint8_t)json["index"].as<int>();
-               if (!_wifi.remove(index)) {
+               if (!_wifi.remove((uint8_t)index)) {
                  sendErr(req, 400, "invalid index");
                  return;
                }
@@ -431,13 +590,12 @@ void WebPanel::setupRoutes() {
   // 调整顺序：JSON {"from":原下标,"to":新下标}
   _server.on("/api/wifi/move", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) {
-               if (!json.is<JsonObject>() || !json["from"].is<int>() ||
-                   !json["to"].is<int>()) {
+               int from, to;
+               if (!json.is<JsonObject>() || !jsonInt(json["from"], from) ||
+                   !jsonInt(json["to"], to)) {
                  sendErr(req, 400, "invalid move");
                  return;
                }
-               int from = json["from"].as<int>();
-               int to = json["to"].as<int>();
                if (from < 0 || to < 0 || !_wifi.move((uint8_t)from, (uint8_t)to)) {
                  sendErr(req, 400, "invalid move");
                  return;

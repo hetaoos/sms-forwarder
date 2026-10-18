@@ -2,7 +2,7 @@
   <div class="page-head">
     <div>
       <h2>屏幕显示</h2>
-      <p class="page-desc">ST7789 240x320 · 背光 PWM 控制</p>
+      <p class="page-desc">ST7789 240x320 · 背光 PWM 控制（GPIO8）</p>
     </div>
     <button class="btn ghost sm" @click="refresh()">刷新</button>
   </div>
@@ -10,12 +10,25 @@
   <div class="card">
     <h3>屏幕开关</h3>
     <div class="row"><span class="k">当前状态</span>
-      <span class="v"><span class="badge" :class="st.disp ? 'ok' : 'err'" x-text="st.disp ? '已开启' : '已关闭'"></span></span></div>
+      <span class="v"><span class="badge" :class="st.on ? 'ok' : 'err'" x-text="st.on ? '已开启' : '已关闭'"></span></span></div>
     <div class="row"><span class="k">面板</span><span class="v">ST7789 240x320 · SPI 40MHz</span></div>
-    <div class="row"><span class="k">背光</span><span class="v">GPIO8 · PWM 默认 80%</span></div>
+    <div class="row"><span class="k">背光</span><span class="v">GPIO8 · PWM 44.1kHz</span></div>
     <div class="bar" style="margin-top:14px">
-      <button class="btn" @click="toggle()" x-text="st.disp ? '关闭屏幕' : '打开屏幕'"></button>
+      <button class="btn" @click="toggle()" x-text="st.on ? '关闭屏幕' : '打开屏幕'"></button>
     </div>
-    <div class="hint">关闭屏幕仅熄灭背光，显示内容与刷新逻辑不中断；适合夜间省电或避免漏光。</div>
+    <div class="hint">关闭屏幕仅熄灭背光并让面板睡眠，显示内容与刷新逻辑不中断；适合夜间省电或避免漏光。</div>
+  </div>
+
+  <div class="card">
+    <h3>背光亮度</h3>
+    <div class="row"><span class="k">当前亮度</span>
+      <span class="v" x-text="(st.bright || 0) + '%'"></span></div>
+    <div class="bar" style="margin-top:10px">
+      <input type="range" min="0" max="100" step="1" style="flex:1"
+             x-model.number="bright" @input="touched = true" @change="applyBright()">
+      <span class="v" style="min-width:46px;text-align:right" x-text="bright + '%'"></span>
+    </div>
+    <div class="hint">拖动滑块松开后生效；0% 等效熄屏（背光关闭，面板仍在后台刷新）。
+      亮度为运行时设置，重启后恢复默认 80%。</div>
   </div>
 </div>

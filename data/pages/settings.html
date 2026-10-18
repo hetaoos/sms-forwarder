@@ -1,31 +1,45 @@
 <div class="page-head">
   <div>
     <h2>系统设置</h2>
-    <p class="page-desc">管理账号、定时任务与配置导入导出</p>
+    <p class="page-desc">管理登录账号；账号密码保存到 NVS，重启后仍有效</p>
   </div>
-  <span class="badge warn">规划中</span>
+  <span class="badge warn">部分规划中</span>
 </div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#9881;&#65039;</div>
-    <h3>功能规划中</h3>
-    <p>设置项将随功能扩展逐步开放；当前设备行为由编译期配置与 NVS 决定。</p>
-  </div>
+<!-- 管理账号（已实现） -->
+<div class="card" x-data="pageAuth()" x-init="init()">
+  <h3>管理账号</h3>
+  <div class="row"><span class="k">当前用户名</span><span class="v" x-text="user || '-'"></span></div>
+  <div class="row"><span class="k">存储位置</span><span class="v">NVS · appcfg/auth（JSON）</span></div>
+  <!-- form 提交：点击按钮与任意输入框回车都走 save()（submit 只触发一次） -->
+  <form @submit.prevent="save()">
+    <div class="bar" style="margin-top:14px">
+      <div class="field" style="flex:1;min-width:130px"><label>新用户名（1-32 字符）</label>
+        <input x-model="newUser" autocomplete="off" maxlength="32"></div>
+      <div class="field" style="flex:1;min-width:130px"><label>新密码（1-64 字符）</label>
+        <input x-model="newPass" type="password" autocomplete="new-password" maxlength="64"></div>
+      <div class="field" style="flex:1;min-width:130px"><label>当前密码（验证身份）</label>
+        <input x-model="oldPass" type="password" autocomplete="current-password" maxlength="64"></div>
+      <div class="field"><label>&nbsp;</label>
+        <button type="submit" class="btn" :disabled="saving" x-text="saving ? '保存中…' : '保存修改'"></button></div>
+    </div>
+  </form>
+  <div class="hint" :class="{ err: isErr }" x-text="hint"></div>
+  <div class="hint">保存成功后全部登录会话与访问令牌立即作废，需使用新账号重新登录；
+    未认证的 API 调用将返回 401。请妥善保管新密码，忘记后需擦除 NVS 才能恢复默认账号。</div>
 </div>
 
 <div class="grid cols2">
   <div class="card">
+    <h3>当前信息</h3>
+    <div class="row"><span class="k">登录账号</span><span class="v">以 NVS 保存值为准</span></div>
+    <div class="row"><span class="k">WiFi 凭据</span><span class="v">NVS 命名空间 appcfg / 键 wifi</span></div>
+    <div class="row"><span class="k">会话有效期</span><span class="v">Cookie 7 天，重启后全部失效</span></div>
+  </div>
+  <div class="card">
     <h3>计划能力</h3>
-    <div class="row"><span class="k">管理账号</span><span class="v">修改网页登录用户名 / 密码</span></div>
     <div class="row"><span class="k">定时重启</span><span class="v">按计划自动重启（保活）</span></div>
     <div class="row"><span class="k">定时通知</span><span class="v">周期推送设备状态</span></div>
     <div class="row"><span class="k">导入导出</span><span class="v">整体配置 JSON 备份与恢复</span></div>
-  </div>
-  <div class="card">
-    <h3>当前信息</h3>
-    <div class="row"><span class="k">登录账号</span><span class="v">admin（编译期固定，见 Config.h）</span></div>
-    <div class="row"><span class="k">WiFi 凭据</span><span class="v">NVS 命名空间 appcfg / 键 wifi</span></div>
-    <div class="row"><span class="k">会话有效期</span><span class="v">Cookie 7 天，重启后全部失效</span></div>
   </div>
 </div>

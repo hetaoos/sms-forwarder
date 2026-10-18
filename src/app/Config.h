@@ -25,8 +25,9 @@ constexpr uint32_t kWifiLostRetryMs = 5000;    // STA 掉线后多久开始重�
 
 // ---------------- AP 配网模式 ----------------
 constexpr const char *kApSsid = "SMS-FWD-Setup";  // AP 热点名（开放无密码，仅配网用）
-constexpr const char *kWebAuthUser = "admin";     // 管理账号用户名（STA/AP 所有模式生效）
-constexpr const char *kWebAuthPass = "admin123";  // 管理账号密码（STA/AP 所有模式生效）
+// 管理账号：NVS 无有效记录时的默认值（首次启动会写入 NVS，之后以 NVS 为准）
+constexpr const char *kWebAuthUser = "admin";
+constexpr const char *kWebAuthPass = "admin123";
 constexpr const char *kCookieName = "sid";        // 登录会话 Cookie 名（HttpOnly + SameSite=Strict）
 constexpr uint8_t kMaxSessions = 8;               // 内存中同时有效的会话 / 访问令牌数上限
 constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（秒，7 天）
@@ -36,6 +37,7 @@ constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（�
 // {"ver":1,"list":[{"ssid":"...","pass":"..."}, ...]}
 constexpr const char *kNvsNamespace = "appcfg";  // NVS 命名空间
 constexpr const char *kNvsKeyWifi = "wifi";      // WiFi 配置键（JSON 对象）
+constexpr const char *kNvsKeyAuth = "auth";      // 管理账号键（JSON 对象，{"ver":1,"user":"..","pass":".."}）
 
 // ---------------- 外部串口（AT 模块）----------------
 // 串口1：TX -> 模块 RX，RX <- 模块 TX

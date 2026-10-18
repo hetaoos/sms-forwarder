@@ -13,14 +13,15 @@
 - **ST7789 240x320 屏幕**（`hal/Display`）
   - LovyanGFX 驱动，静态框架只画一次，数值行局部重绘（无整屏闪烁）
   - 显示 WIFI / IP / RSSI / UPTIME / HEAP / RGB 与最近一条 AT 命令
-  - 支持 Web 远程开关屏
-- **板载 RGB 灯**（`hal/RgbLed`）：WS2812，5 组预设 + 任意 RGB 值
+  - 支持 Web 远程开关屏与背光亮度调节（0-100%）
+- **板载 RGB 灯**（`hal/RgbLed`）：WS2812，5 组预设 + 任意 RGB 值 + 亮度调节（0-100%）
 - **WiFi 管理 + 配网**（`net/WifiManager`）
   - 编译期内置默认账号密码（`-DWIFI_SSID_DEFAULT` / `-DWIFI_PASS_DEFAULT`，不设置则为空）
   - NVS 按功能存 JSON 配置，最多 5 组，启动时按顺序依次尝试
   - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-FWD-Setup`，开放热点）
-  - 网页与 API 在所有模式下统一认证（`admin` / `admin123`），支持
-    **Cookie 会话**与 **Bearer 访问令牌**两种方式，详见「HTTP API」一节
+  - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
+    两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
+    形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
   - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连
   - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
 - **Web 控制台**（`net/WebPanel`，端口 80）：Alpine.js 多页应用，打包进
@@ -110,7 +111,8 @@ build_flags =
    输入密码 → **保存并连接**
 4. 连接成功后页面持续可用（双栈模式）；重启后将按保存的顺序自动连接
 
-已保存配置存放在 NVS：命名空间 `appcfg`，键 `wifi`，值为 JSON 对象：
+已保存配置存放在 NVS：命名空间 `appcfg`，键 `wifi`，值为 JSON 对象（管理账号
+另存于同命名空间的键 `auth`：`{"ver":1,"user":"..","pass":".."}`）：
 
 ```json
 {
@@ -155,6 +157,8 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 | `POST /api/login` | `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密错 401 |
 | `POST /api/logout` | 无 | `{"ok":true}` + 清除 Cookie，作废当前会话/令牌 |
 | `GET /api/session` | 无 | 已登录 `{"ok":true,"user":"admin"}`，否则 401 |
+| `GET /api/auth` | 无 | 当前用户名 `{"ok":true,"user":"admin"}`（密码不回传） |
+| `POST /api/auth` | `{"user":"新用户","pass":"新密码","passOld":"当前密码"}` | `{"ok":true}`；当前密码不符 403、长度超限 400、NVS 写入失败 500；成功后全部会话/令牌作废 |
 
 ### 系统 / 屏幕 / RGB
 
@@ -162,10 +166,12 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 |-----------|------|
 | `GET /` | 控制台页面（公开） |
 | `GET /login` | 独立登录页（公开，已登录自动跳回） |
-| `GET /api/led` | 切换下一个 RGB 颜色，返回 `{"color":"颜色名"}` |
-| `GET /api/set?c=索引` 或 `?r=&g=&b=` | 设置 RGB（预设索引或任意 RGB），返回 `{"ok":true}` |
-| `GET /api/disp?on=0\|1` | 屏幕开关，返回 `{"on":bool}` |
-| `GET /api/status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/mode/connected） |
+| `GET /api/led` | 切换下一个预设颜色，返回最新 RGB 状态 |
+| `GET /api/rgb` | 查询 RGB 状态：`{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}` |
+| `POST /api/rgb` | JSON `{"c":索引}` / `{"r":n,"g":n,"b":n}` / `{"bright":0-100}`，三者可组合（`c` 越界 400），返回最新状态 |
+| `GET /api/disp` | 查询屏幕状态，返回 `{"ok":true,"on":bool,"bright":0-100}` |
+| `POST /api/disp` | JSON `{"on":bool?,"bright":0-100?}`（字段可选，越界钳制），返回最新状态 |
+| `GET /api/status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/dispBright/rgbBright/mode/connected） |
 
 ### 串口 AT
 
@@ -223,6 +229,7 @@ src/
 │   └── RgbLed.h/.cpp     WS2812 RGB 灯
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
+│   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
 │   └── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
 └── serial/               串口层
     ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈）
@@ -234,14 +241,14 @@ data/
 │   ├── dashboard.html    仪表盘：状态指标 / 屏幕 / RGB / 串口 / 最近动态 / API 令牌
 │   ├── serial.html       串口 AT：命令发送 / 历史日志 / 统计 / 复位
 │   ├── wifi.html         WiFi：扫描 / 保存 / 排序 / 删除
-│   ├── rgb.html          RGB 灯：预设 / 自定义颜色
-│   ├── display.html      屏幕显示开关
+│   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
+│   ├── display.html      屏幕显示：开关 / 背光亮度调节
 │   ├── sms.html          短信记录（规划中）
 │   ├── push.html         推送通道（规划中，13 种方式）
 │   ├── mqtt.html         MQTT（规划中）
 │   ├── blacklist.html    黑名单（规划中）
 │   ├── logs.html         运行日志（规划中）
-│   ├── settings.html     系统设置（规划中）
+│   ├── settings.html     系统设置：管理账号修改（用户名/密码存 NVS）
 │   └── tools.html        系统工具（规划中）
 └── assets/               静态资源（改后需重新 uploadfs）
     ├── app.css           设计系统与布局样式

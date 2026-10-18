@@ -122,7 +122,7 @@ const MENU = [
     { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
   ]},
   { group: '系统', items: [
-    { id: 'settings', title: '系统设置', icon: 'settings', todo: true },
+    { id: 'settings', title: '系统设置', icon: 'settings' },
     { id: 'tools', title: '系统工具', icon: 'tools', todo: true },
   ]},
 ];
@@ -267,7 +267,7 @@ function pageDashboard() {
       } catch (e) {}
     },
     async toggleDisp() {
-      const r = await apiFetch('/api/disp?on=' + (this.st.disp ? 0 : 1));
+      const r = await postJson('/api/disp', { on: !this.st.disp });
       if (r.ok) this.st.disp = (await r.json()).on === true;
     },
     async nextLed() {
@@ -472,7 +472,7 @@ const RGB_PRESETS = [
 function pageRgb() {
   return {
     presets: RGB_PRESETS,
-    st: {}, r: 255, g: 0, b: 0,
+    st: {}, r: 255, g: 0, b: 0, bright: 100, touched: false,
     async init() {
       await this.refresh();
       const t = setInterval(() => this.refresh(), 2000);
@@ -480,8 +480,12 @@ function pageRgb() {
     },
     async refresh() {
       try {
-        const r = await apiFetch('/api/status');
-        if (r.ok) this.st = await r.json();
+        const r = await apiFetch('/api/rgb');
+        if (r.ok) {
+          const j = await r.json();
+          this.st = j;
+          if (!this.touched) this.bright = j.bright;  // 拖动中不被轮询回抢
+        }
       } catch (e) {}
     },
     currentRgb() { return this.st.rgb || [0, 0, 0]; },
@@ -489,9 +493,17 @@ function pageRgb() {
       const c = this.currentRgb();
       return c[0] === p.rgb[0] && c[1] === p.rgb[1] && c[2] === p.rgb[2];
     },
-    swatchCss(p) { return 'rgb(' + p.rgb.join(',') + ')'; },
+    // 色块按当前亮度衰减不透明度，直观反映实际发光强度
+    currentSwatchStyle() {
+      return 'background:rgb(' + this.currentRgb().join(',') +
+             ');opacity:' + (0.25 + 0.75 * (this.st.bright || 0) / 100);
+    },
+    swatchStyle(p) {
+      return 'background:rgb(' + p.rgb.join(',') +
+             ');opacity:' + (0.25 + 0.75 * (this.st.bright || 0) / 100);
+    },
     async applyPreset(i) {
-      await apiFetch('/api/set?c=' + i);
+      await postJson('/api/rgb', { c: i });
       this.refresh();
     },
     async next() {
@@ -499,18 +511,24 @@ function pageRgb() {
       this.refresh();
     },
     async applyRaw() {
-      const q = new URLSearchParams(
-        { r: Math.min(255, this.r | 0), g: Math.min(255, this.g | 0), b: Math.min(255, this.b | 0) });
-      await apiFetch('/api/set?' + q.toString());
+      const clamp = v => Math.max(0, Math.min(255, v | 0));
+      await postJson('/api/rgb',
+        { r: clamp(this.r), g: clamp(this.g), b: clamp(this.b) });
       this.refresh();
     },
     async off() {
-      await apiFetch('/api/set?c=0');
+      await postJson('/api/rgb', { c: 0 });
       this.refresh();
     },
-    previewCss() {
-      return 'rgb(' + Math.min(255, this.r | 0) + ',' + Math.min(255, this.g | 0) + ',' +
-             Math.min(255, this.b | 0) + ')';
+    async applyBright() {
+      const r = await postJson('/api/rgb', { bright: this.bright });
+      if (r.ok) this.st = await r.json();
+      this.touched = false;
+    },
+    previewStyle() {
+      const clamp = v => Math.max(0, Math.min(255, v | 0));
+      return 'background:rgb(' + clamp(this.r) + ',' + clamp(this.g) + ',' +
+             clamp(this.b) + ')';
     },
   };
 }
@@ -518,7 +536,7 @@ function pageRgb() {
 /* ---------- 屏幕显示 ---------- */
 function pageDisplay() {
   return {
-    st: {},
+    st: {}, bright: 80, touched: false,
     async init() {
       await this.refresh();
       const t = setInterval(() => this.refresh(), 2000);
@@ -526,13 +544,75 @@ function pageDisplay() {
     },
     async refresh() {
       try {
-        const r = await apiFetch('/api/status');
-        if (r.ok) this.st = await r.json();
+        const r = await apiFetch('/api/disp');
+        if (r.ok) {
+          const j = await r.json();
+          this.st = j;
+          if (!this.touched) this.bright = j.bright;  // 用户拖动中不被轮询回抢
+        }
       } catch (e) {}
     },
     async toggle() {
-      const r = await apiFetch('/api/disp?on=' + (this.st.disp ? 0 : 1));
-      if (r.ok) this.st.disp = (await r.json()).on === true;
+      const r = await postJson('/api/disp', { on: !this.st.on });
+      if (r.ok) this.st = await r.json();
+    },
+    async applyBright() {
+      const r = await postJson('/api/disp', { bright: this.bright });
+      if (r.ok) {
+        this.st = await r.json();
+        this.bright = this.st.bright;
+      }
+      this.touched = false;
+    },
+  };
+}
+
+/* ---------- 系统设置 · 管理账号 ---------- */
+function pageAuth() {
+  return {
+    user: '', newUser: '', newPass: '', oldPass: '',
+    saving: false, hint: '', isErr: false,
+    async init() {
+      try {
+        const r = await apiFetch('/api/auth');
+        if (r.ok) { const j = await r.json(); this.user = j.user || ''; this.newUser = this.user; }
+      } catch (e) {}
+    },
+    async save() {
+      this.isErr = false;
+      this.hint = '';
+      // 整个函数体包在 try 内：任何异常都要给出可见提示，不能静默失败
+      // （曾经的教训：校验代码在 try 外抛 TypeError，用户点击毫无反应）
+      try {
+        const u = (this.newUser || '').trim();
+        if (!u.length) { this.fail('新用户名不能为空'); return; }
+        if (u.length > 32) { this.fail('用户名最长 32 字符'); return; }
+        if (!this.newPass.length) { this.fail('新密码不能为空'); return; }
+        if (this.newPass.length > 64) { this.fail('密码最长 64 字符'); return; }
+        if (!this.oldPass.length) { this.fail('请输入当前密码以验证身份'); return; }
+        this.saving = true;
+        console.log('[auth] submitting change request');
+        const r = await postJson('/api/auth',
+          { user: u, pass: this.newPass, passOld: this.oldPass });
+        console.log('[auth] response status:', r.status);
+        if (r.ok) {
+          this.hint = '已保存，全部登录态已作废，即将跳转登录页…';
+          this.isErr = false;
+          toast('账号已保存，请重新登录', 'ok');
+          setTimeout(() => { location.replace('/login.html'); }, 1500);
+          return;
+        }
+        this.fail(await errText(r));
+      } catch (e) {
+        console.error('[auth] save failed:', e);
+        this.fail('请求失败：' + (e && e.message ? e.message : e));
+      }
+      this.saving = false;
+    },
+    fail(msg) {
+      this.isErr = true;
+      this.hint = msg;
+      this.saving = false;
     },
   };
 }

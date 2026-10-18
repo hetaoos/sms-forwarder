@@ -28,6 +28,7 @@ bool App::begin() {
 
   _display.render(collectStatus());    // 先出一帧，避免开机黑屏
   _wifi.begin();                       // 读 NVS 配置并启动连接状态机（非阻塞）
+  _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
   _panel.begin();                      // 启动 HTTP 服务
 
   Serial.println("[app] ready");

@@ -5,6 +5,7 @@
 #include "app/StatusInfo.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
+#include "net/AdminStore.h"
 #include "net/WifiManager.h"
 #include "net/WebPanel.h"
 #include "serial/SerialBridge.h"
@@ -26,7 +27,8 @@ class App {
   Display _display;         // ST7789 屏幕
   WifiManager _wifi;        // WiFi 连接管理 + NVS 配网
   SerialBridge _bridge;     // 双串口 AT 透传桥
-  WebPanel _panel{_bridge, _led, _wifi, _display};  // HTTP 控制台（依赖上述模块）
+  AdminStore _auth;         // 管理账号存储（NVS，JSON）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };
