@@ -100,6 +100,123 @@ function goLogin() {
   location.replace('/login.html?next=' + encodeURIComponent(next || '/'));
 }
 
+/* ---------- SSE 实时推送 ----------
+ * 连接建在外壳作用域：bootstrap() 只调用一次，切换页面（哈希路由换
+ * 内容区）不重建、不断开——同一浏览器内所有页面共享同一条连接。
+ * 所有页面组件只读 Alpine.store('live')，不再自行轮询状态接口；
+ * REST 接口原样保留给第三方客户端使用。 */
+let es = null;
+let pollTimer = null;
+
+// 全局实时状态仓：SSE 事件写入，各页面组件只读绑定
+Alpine.store('live', {
+  conn: 'connecting',   // connecting | online | reconnecting | offline
+  status: {},           // 同 GET /api/status
+  stats: [],            // 同 GET /api/uart/stats
+  wifi: {},             // 同 GET /api/wifi/status
+  saved: [],            // 同 GET /api/wifi/list 的 list
+  rgb: {},              // 同 GET /api/rgb
+  disp: {},             // 同 GET /api/disp
+  at: [],               // AT 日志（全页面共享，300 条上限）
+  // 追加 AT 记录：按 id 去重（SSE 重推/自身回显/REST 兜底三种来源安全合并），
+  // 非数字 id（本地占位）直接入列
+  pushAt(entries) {
+    if (!Array.isArray(entries) || !entries.length) return;
+    let maxId = -1;
+    for (const e of this.at) if (typeof e.id === 'number' && e.id > maxId) maxId = e.id;
+    for (const e of entries) {
+      if (typeof e.id !== 'number' || e.id > maxId) {
+        this.at.push(e);
+        if (typeof e.id === 'number') maxId = e.id;
+      }
+    }
+    if (this.at.length > 300) this.at.splice(0, this.at.length - 300);
+  },
+});
+
+function setConn(s) { Alpine.store('live').conn = s; }
+
+// 顶栏连接指示灯文案
+function connTitle() {
+  const c = Alpine.store('live').conn;
+  return { online: 'Real-time push: connected',
+           reconnecting: 'Real-time push: reconnecting...',
+           connecting: 'Real-time push: connecting...',
+           offline: 'Real-time push: disconnected (polling fallback)' }[c] || '';
+}
+
+// REST 兜底快照：SSE 建立时补拉一次（断线期记录也借此补齐），
+// 同时作为不支持 EventSource 时的定时轮询降级
+async function restSnapshot() {
+  const live = Alpine.store('live');
+  try { const r = await fetch('/api/status'); if (r.ok) live.status = await r.json(); } catch (e) {}
+  try { const r = await fetch('/api/uart/stats'); if (r.ok) live.stats = await r.json(); } catch (e) {}
+  try { const r = await fetch('/api/wifi/status'); if (r.ok) live.wifi = await r.json(); } catch (e) {}
+  try {
+    const r = await fetch('/api/wifi/list');
+    if (r.ok) { const j = await r.json(); live.saved = j.list || []; }
+  } catch (e) {}
+  try { const r = await fetch('/api/rgb'); if (r.ok) live.rgb = await r.json(); } catch (e) {}
+  try { const r = await fetch('/api/disp'); if (r.ok) live.disp = await r.json(); } catch (e) {}
+  try {
+    const r = await fetch('/api/at/hist?after=-1&n=50');
+    if (r.ok) live.pushAt(await r.json());
+  } catch (e) {}
+}
+
+// 降级轮询（SSE 不可用/持续失败时）
+function fallbackPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(restSnapshot, 2000);
+}
+
+// 建立 SSE 连接（外壳级单例）
+function connectSSE() {
+  if (!window.EventSource) {
+    setConn('offline');
+    toast('Browser does not support real-time push, switched to polling', 'warn');
+    fallbackPolling();
+    return;
+  }
+  const live = Alpine.store('live');
+  setConn('connecting');
+  es = new EventSource('/api/sse');
+  const on = (name, fn) => es.addEventListener(name, e => {
+    try { fn(JSON.parse(e.data)); } catch (err) {}
+  });
+  on('status', d => { live.status = d; });
+  on('stats', d => { live.stats = d; });
+  on('wifi', d => { live.wifi = d; });
+  on('saved', d => { live.saved = d.list || []; });
+  on('rgb', d => { live.rgb = d; });
+  on('disp', d => { live.disp = d; });
+  on('at', d => { live.pushAt(d); });
+  es.onopen = () => {
+    setConn('online');
+    restSnapshot();   // 兜底快照：补齐建连前数据与断线期记录
+  };
+  es.onerror = async () => {
+    if (es.readyState === EventSource.CLOSED) {
+      // 服务端关闭了连接：先探测会话，401 回登录页，否则降级轮询
+      try {
+        const r = await fetch('/api/session', { cache: 'no-store' });
+        if (r.status === 401) { goLogin(); return; }
+      } catch (e) {}
+      setConn('offline');
+      toast('Real-time push connection failed, switched to polling', 'warn');
+      fallbackPolling();
+    } else {
+      setConn('reconnecting');   // 其余情况浏览器会自动重连
+    }
+  };
+}
+
+// 关闭 SSE 连接（仅登出/会话失效时调用）
+function closeSSE() {
+  if (es) { es.close(); es = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
 /* ---------- Toast / 确认框 ---------- */
 // 右上角滑入提示；type: ''|'ok'|'err'|'warn'；duration: 停留 ms（错误默认 5s，其余 3s）
 function toast(msg, type, duration) {
@@ -218,6 +335,7 @@ async function loadUser() {
 
 async function logout() {
   if (!await confirmDialog('退出登录', '确定要退出当前登录会话吗？')) return;
+  closeSSE();                                    // 先断推送连接
   await fetch('/api/logout', { method: 'POST' }).catch(() => {});
   goLogin();
 }
@@ -263,6 +381,7 @@ async function bootstrap() {
   $('#mask').addEventListener('click', closeSidebar);
   window.addEventListener('hashchange', route);
   if (!location.hash) location.hash = '#/dashboard';
+  connectSSE();     // SSE 连接（外壳级单例，跨页面共享）
   route();
 }
 
@@ -273,35 +392,26 @@ document.addEventListener('DOMContentLoaded', bootstrap);
 /* ---------- 仪表盘 ---------- */
 function pageDashboard() {
   return {
-    st: {}, stats: [], recent: [],
     token: '',
-    async init() {
-      this.token = sessionStorage.getItem('apiToken') || '';
-      await this.refresh();
-      const t = setInterval(() => this.refresh(), 2000);
-      onCleanup(() => clearInterval(t));
+    // 全部数据来自 SSE 实时仓（外壳级共享），本页不做任何轮询
+    get st() { return Alpine.store('live').status; },
+    get stats() { return Alpine.store('live').stats; },
+    get recent() {
+      const at = Alpine.store('live').at;
+      return at.slice(-5).reverse();
     },
-    async refresh() {
-      try {
-        const r = await apiFetch('/api/status');
-        if (r.ok) this.st = await r.json();
-      } catch (e) {}
-      try {
-        const r = await apiFetch('/api/uart/stats');
-        if (r.ok) this.stats = await r.json();
-      } catch (e) {}
-      try {
-        const r = await apiFetch('/api/at/hist?after=-1&n=5');
-        if (r.ok) this.recent = (await r.json()).slice().reverse();
-      } catch (e) {}
+    init() {
+      this.token = sessionStorage.getItem('apiToken') || '';
+      // 仓库还是空（SSE 尚未送达）时兜底拉一次
+      const live = Alpine.store('live');
+      if (!Object.keys(live.status).length) restSnapshot();
     },
     async toggleDisp() {
       const r = await postOp('/api/disp', { on: !this.st.disp });
       if (r) this.st.disp = (await r.json()).on === true;
     },
     async nextLed() {
-      await apiOp('/api/led');
-      this.refresh();
+      await apiOp('/api/led');   // 新状态由 SSE rgb 事件推送
     },
     rgbCss() {
       const c = this.st.rgb || [0, 0, 0];
@@ -316,34 +426,17 @@ function pageDashboard() {
 function pageSerial() {
   return {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
-    cmd: '', entries: [], lastId: -1, stats: [],
-    localHist: [], localIdx: -1,
+    cmd: '', localHist: [], localIdx: -1,
+    // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
+    get entries() { return Alpine.store('live').at; },
+    get stats() { return Alpine.store('live').stats; },
     async init() {
       try {
         const r = await apiFetch('/api/at/baud');
         if (r.ok) this.baud = String((await r.json()).default || 115200);
       } catch (e) {}
-      await this.poll();
-      const t = setInterval(() => this.poll(), 1000);
-      onCleanup(() => clearInterval(t));
-    },
-    async poll() {
-      try {
-        const r = await apiFetch('/api/at/hist?after=' + this.lastId + '&n=30');
-        if (r.ok) {
-          const arr = await r.json();
-          arr.forEach(e => {
-            this.entries.push(e);
-            this.lastId = Math.max(this.lastId, e.id);
-          });
-          if (this.entries.length > 300) this.entries.splice(0, this.entries.length - 300);
-          this.scrollBottom();
-        }
-      } catch (e) {}
-      try {
-        const r = await apiFetch('/api/uart/stats');
-        if (r.ok) this.stats = await r.json();
-      } catch (e) {}
+      // 仓库为空（SSE 尚未送达）时兜底拉一次历史
+      if (!Alpine.store('live').at.length) restSnapshot();
     },
     scrollBottom() {
       this.$nextTick(() => {
@@ -360,16 +453,17 @@ function pageSerial() {
       this.localIdx = this.localHist.length;
       const q = new URLSearchParams(
         { port: this.port, baud: this.baud, eol: this.eol, t: this.tmo, cmd: cmd });
-      const r = await apiOp('/api/at/send?' + q.toString());  // 失败 toast + 日志留痕
+      const r = await apiOp('/api/at/send?' + q.toString());  // 失败 toast
       if (r) {
         const j = await r.json();
         if (j.id !== undefined) {
-          this.entries.push(j);
-          this.lastId = Math.max(this.lastId, j.id);
+          // 立即回显；SSE 的 at 事件到达同一 id 时会自动去重
+          Alpine.store('live').pushAt([j]);
           this.scrollBottom();
         }
       } else {
-        this.entries.push({ id: '-', port: '-', cmd: cmd, resp: '请求失败，详见右上角提示' });
+        Alpine.store('live').at.push(
+          { id: '-', port: '-', cmd: cmd, resp: '请求失败，详见右上角提示' });
       }
       this.cmd = '';
     },
@@ -377,8 +471,7 @@ function pageSerial() {
       if (!await confirmDialog('清空历史', '确定清空全部 AT 历史记录吗？')) return;
       const r = await apiOp('/api/at/clear', null, '已清空历史');
       if (!r) return;
-      this.entries = [];
-      this.lastId = -1;
+      Alpine.store('live').at = [];
     },
     async reset() {
       const p = parseInt(this.port, 10);
@@ -405,14 +498,19 @@ function pageSerial() {
 /* ---------- WiFi 设置 ---------- */
 function pageWifi() {
   return {
-    wifi: {}, nets: [], saved: [], scanHint: '', scanning: false,
+    nets: [], scanHint: '', scanning: false,
     ssid: '', pass: '', saving: false, wifiHint: '', wifiIsErr: false,
     scanTimer: null,
+    // 状态与已保存列表来自 SSE 实时仓
+    get wifi() { return Alpine.store('live').wifi; },
+    get saved() { return Alpine.store('live').saved; },
     async init() {
-      await this.refresh();
-      await this.loadSaved();
-      const t = setInterval(() => this.refresh(), 3000);
-      onCleanup(() => { clearInterval(t); if (this.scanTimer) clearInterval(this.scanTimer); });
+      // 仓库为空（SSE 尚未送达）时兜底拉一次
+      const live = Alpine.store('live');
+      if (!Object.keys(live.wifi).length) this.refresh();
+      if (!live.saved.length) this.loadSaved();
+      // 扫描轮询计时器随切页清理
+      onCleanup(() => { if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; } });
     },
     /* 提示区辅助：错误走红底错误条，普通信息走灰字 */
     wifiErr(msg) { this.wifiHint = msg; this.wifiIsErr = true; },
@@ -420,13 +518,13 @@ function pageWifi() {
     async refresh() {
       try {
         const r = await apiFetch('/api/wifi/status');
-        if (r.ok) this.wifi = await r.json();
+        if (r.ok) Alpine.store('live').wifi = await r.json();
       } catch (e) {}
     },
     async loadSaved() {
       try {
         const r = await apiFetch('/api/wifi/list');
-        if (r.ok) { const j = await r.json(); this.saved = j.list || []; }
+        if (r.ok) { const j = await r.json(); Alpine.store('live').saved = j.list || []; }
       } catch (e) {}
     },
     async scan() {
@@ -505,19 +603,22 @@ const RGB_PRESETS = [
 function pageRgb() {
   return {
     presets: RGB_PRESETS,
-    st: {}, r: 255, g: 0, b: 0, bright: 100, touched: false,
+    r: 255, g: 0, b: 0, bright: 100, touched: false,
+    // 状态来自 SSE 实时仓
+    get st() { return Alpine.store('live').rgb; },
     async init() {
-      await this.refresh();
-      const t = setInterval(() => this.refresh(), 2000);
-      onCleanup(() => clearInterval(t));
+      const live = Alpine.store('live');
+      if (typeof live.rgb.bright === 'number') this.bright = live.rgb.bright;
+      // 仓库为空（SSE 尚未送达）时兜底拉一次
+      if (!Object.keys(live.rgb).length) this.refresh();
     },
     async refresh() {
       try {
         const r = await apiFetch('/api/rgb');
         if (r.ok) {
           const j = await r.json();
-          this.st = j;
-          if (!this.touched) this.bright = j.bright;  // 拖动中不被轮询回抢
+          Alpine.store('live').rgb = j;
+          if (!this.touched) this.bright = j.bright;  // 拖动中不被回抢
         }
       } catch (e) {}
     },
@@ -572,30 +673,33 @@ function pageRgb() {
 /* ---------- 屏幕显示 ---------- */
 function pageDisplay() {
   return {
-    st: {}, bright: 80, touched: false,
+    bright: 80, touched: false,
+    // 状态来自 SSE 实时仓
+    get st() { return Alpine.store('live').disp; },
     async init() {
-      await this.refresh();
-      const t = setInterval(() => this.refresh(), 2000);
-      onCleanup(() => clearInterval(t));
+      const live = Alpine.store('live');
+      if (typeof live.disp.bright === 'number') this.bright = live.disp.bright;
+      // 仓库为空（SSE 尚未送达）时兜底拉一次
+      if (!Object.keys(live.disp).length) this.refresh();
     },
     async refresh() {
       try {
         const r = await apiFetch('/api/disp');
         if (r.ok) {
           const j = await r.json();
-          this.st = j;
-          if (!this.touched) this.bright = j.bright;  // 用户拖动中不被轮询回抢
+          Alpine.store('live').disp = j;
+          if (!this.touched) this.bright = j.bright;  // 用户拖动中不被回抢
         }
       } catch (e) {}
     },
     async toggle() {
       const r = await postOp('/api/disp', { on: !this.st.on });
-      if (r) this.st = await r.json();
+      if (r) Alpine.store('live').disp = await r.json();
     },
     async applyBright() {
       const r = await postOp('/api/disp', { bright: this.bright });
       if (r) {
-        this.st = await r.json();
+        Alpine.store('live').disp = await r.json();
         this.bright = this.st.bright;
       }
       this.touched = false;

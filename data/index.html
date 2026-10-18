@@ -24,6 +24,8 @@
       </button>
       <div class="topbar-title" id="pageTitle">仪表盘</div>
       <div class="topbar-right">
+        <!-- SSE 连接状态：绿=已连接 黄=连接/重连中 红=断开（降级轮询） -->
+        <i class="conn" x-data="$store.live" :class="'conn-' + conn" :title="connTitle()"></i>
         <span class="chip" id="userChip"></span>
         <button class="btn ghost sm" id="logoutBtn">退出登录</button>
       </div>

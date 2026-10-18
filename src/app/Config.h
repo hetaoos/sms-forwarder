@@ -65,4 +65,9 @@ constexpr uint8_t  kTftBacklight = 80;      // 默认亮度 %
 constexpr uint16_t kHttpPort = 80;      // HTTP 控制台端口
 constexpr uint32_t kUiRefreshMs = 500;  // 屏幕刷新周期
 
+// ---------------- SSE 实时推送 ----------------
+constexpr const char *kSsePath = "/api/sse";  // SSE 事件流路径（需认证，同 /api/）
+constexpr uint32_t kSsePushMs = 1000;         // 状态采集/比对的周期（ms）
+constexpr uint8_t kSseMaxClients = 8;         // 并发 SSE 客户端上限（超出顶掉最旧）
+
 }  // namespace cfg

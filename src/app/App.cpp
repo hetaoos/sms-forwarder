@@ -63,10 +63,12 @@ StatusInfo App::collectStatus() {
 
 // 主循环调度逻辑：
 // 1. 推进 WiFi 断线重连
-// 2. 每 kUiRefreshMs 毫秒重绘一次屏幕（内容变化才会实际刷新）
-// 3. 短暂延时让出 CPU
+// 2. SSE 状态推送（diff 比对，无客户端时几乎零开销）
+// 3. 每 kUiRefreshMs 毫秒重绘一次屏幕（内容变化才会实际刷新）
+// 4. 短暂延时让出 CPU
 void App::tick() {
   _wifi.tick();
+  _events.tick();
 
   if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
     _lastUiMs = millis();

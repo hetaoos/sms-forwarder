@@ -6,6 +6,7 @@
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/AdminStore.h"
+#include "net/StatusBus.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
 
@@ -26,9 +27,9 @@ class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
-  // auth：管理账号存储（NVS）
+  // auth：管理账号存储（NVS）；events：SSE 状态推送总线
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
-           AdminStore &auth);
+           AdminStore &auth, StatusBus &events);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -40,12 +41,6 @@ class WebPanel {
   // 以 200 + application/json 发送响应体
   // req：请求对象；json：JSON 文本
   void sendJson(AsyncWebServerRequest *req, const String &json);
-
-  // 组装屏幕状态 JSON：{"ok":true,"on":bool,"bright":0-100}
-  String dispStateJson() const;
-
-  // 组装 RGB 状态 JSON：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
-  String rgbStateJson() const;
 
   // 判断请求是否已认证：会话 Cookie（sid）或 Bearer 访问令牌任一有效即可
   // req：请求对象
@@ -72,4 +67,5 @@ class WebPanel {
   WifiManager &_wifi;      // WiFi 管理器引用
   Display &_display;       // 屏幕引用
   AdminStore &_auth;       // 管理账号存储引用（NVS）
+  StatusBus &_events;      // SSE 状态推送总线引用
 };

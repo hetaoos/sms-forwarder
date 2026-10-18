@@ -30,6 +30,9 @@
   左右布局：左侧分组菜单，右侧按 hash 路由懒加载内容页；
   全部接口统一在 `/api/` 前缀下，页面与静态资源公开，接口需登录
   （Cookie 会话或 Bearer 令牌），防止第三方盗用
+- **SSE 实时推送**（`net/StatusBus`，`/api/sse`）：状态变化时主动推送给
+  全部已连接浏览器（1 秒 diff 比对，只推变化），网页端不再轮询状态接口；
+  REST 接口原样保留供第三方客户端使用
 
 ## 硬件与引脚
 
@@ -173,6 +176,28 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 | `POST /api/disp` | JSON `{"on":bool?,"bright":0-100?}`（字段可选，越界钳制），返回最新状态 |
 | `GET /api/status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/dispBright/rgbBright/mode/connected） |
 
+### SSE 实时推送
+
+| 方法与路径 | 说明 |
+|-----------|------|
+| `GET /api/sse` | SSE 事件流（需认证，`Accept: text/event-stream`）。浏览器端 `EventSource` 自动携带会话 Cookie；Bearer 令牌客户端无法使用 SSE（无法自定义头），请继续用上面的 REST 接口轮询 |
+
+事件列表（data 均为对应 GET 接口同款 JSON）：
+
+| 事件名 | 内容 | 推送时机 |
+|--------|------|---------|
+| `status` | 同 `/api/status` | 每秒比对，变化才推 |
+| `stats` | 同 `/api/uart/stats` | 变化才推 |
+| `at` | 新 AT 记录数组 | 有新记录才推（增量） |
+| `wifi` | 同 `/api/wifi/status` | 变化才推 |
+| `saved` | 同 `/api/wifi/list` | 变化才推 |
+| `rgb` | 同 `/api/rgb` | 变化才推 |
+| `disp` | 同 `/api/disp` | 变化才推 |
+
+新客户端接入立即收到全量快照；断线由浏览器自动重连，重连后前端会做一次
+REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine.store('live')`）
+由此驱动，不再定时轮询；SSE 不可用时自动降级为 2 秒轮询。
+
 ### 串口 AT
 
 | 方法与路径 | 说明 |
@@ -230,6 +255,8 @@ src/
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
 │   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
+│   ├── StatusBus.h/.cpp   SSE 实时推送（/api/sse，diff 比对只推变化）
+│   ├── StateJson.h        状态快照 JSON 序列化（REST 与 SSE 共用）
 │   └── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
 └── serial/               串口层
     ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈）

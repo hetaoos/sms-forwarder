@@ -39,6 +39,12 @@ a{color:var(--primary);text-decoration:none}
   backdrop-filter:blur(8px);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:12px;padding:0 20px}
 .topbar-title{font-size:16px;font-weight:700}
+/* SSE 连接指示灯：绿=已连接 黄=连接/重连中 红=断开（降级轮询） */
+.conn{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none;background:#8a919f;cursor:help}
+.conn-online{background:var(--success);box-shadow:0 0 6px rgba(31,175,111,.55)}
+.conn-connecting,.conn-reconnecting{background:var(--warn);animation:conn-pulse 1.2s ease-in-out infinite}
+.conn-offline{background:var(--danger)}
+@keyframes conn-pulse{50%{opacity:.35}}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .chip{font-size:12px;color:var(--muted);background:#fff;border:1px solid var(--border);
   border-radius:20px;padding:4px 12px;display:flex;align-items:center;gap:6px}

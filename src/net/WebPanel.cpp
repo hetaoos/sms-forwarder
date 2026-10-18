@@ -5,6 +5,8 @@
 
 #include <Arduino.h>
 
+#include "net/StateJson.h"
+
 namespace {
 
 // 取字符串参数；req：请求对象；name：参数名；def：缺省值
@@ -135,10 +137,11 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
-                   Display &display, AdminStore &auth)
-    : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth) {}
+                   Display &display, AdminStore &auth, StatusBus &events)
+    : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
+      _events(events) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -150,6 +153,7 @@ void WebPanel::begin() {
   }
 
   setupRoutes();
+  _events.begin(_server);   // 注册 SSE 事件流（/api/sse，复用上面的认证中间件）
   _server.begin();
   Serial.printf("[http] server on :%u\r\n", cfg::kHttpPort);
 }
@@ -222,22 +226,6 @@ bool WebPanel::storeHas(const String *store, uint8_t count, const String &v) {
 // req：请求对象；json：要发送的 JSON 文本
 void WebPanel::sendJson(AsyncWebServerRequest *req, const String &json) {
   req->send(200, "application/json", json);
-}
-
-// 组装屏幕状态 JSON：{"ok":true,"on":bool,"bright":0-100}
-String WebPanel::dispStateJson() const {
-  return String("{\"ok\":true,\"on\":") + (_display.screenOn() ? "true" : "false") +
-         ",\"bright\":" + String(_display.brightness()) + "}";
-}
-
-// 组装 RGB 状态 JSON：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
-// rgb 为未折算亮度的原始颜色值；实际输出 = rgb * bright / 100
-String WebPanel::rgbStateJson() const {
-  const RgbLed::Color &c = _led.color();
-  String rgb = "[" + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
-  return String("{\"ok\":true,\"color\":\"") + c.name + "\",\"rgb\":" + rgb +
-         ",\"index\":" + String(_led.index()) +
-         ",\"bright\":" + String(_led.brightness()) + "}";
 }
 
 // 注册全部路由：
@@ -372,12 +360,12 @@ void WebPanel::setupRoutes() {
   // 切换到下一个预设颜色，返回最新 RGB 状态
   _server.on("/api/led", HTTP_GET, [this](AsyncWebServerRequest *req) {
     _led.next();
-    sendJson(req, rgbStateJson());
+    sendJson(req, stateRgbJson(_led));
   });
 
   // 查询 RGB 状态：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
   _server.on("/api/rgb", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, rgbStateJson());
+    sendJson(req, stateRgbJson(_led));
   });
 
   // 设置 RGB：JSON，三个维度可任意组合（都可选）：
@@ -414,7 +402,7 @@ void WebPanel::setupRoutes() {
                  if (br > 100) br = 100;
                  _led.setBrightness((uint8_t)br);
                }
-               sendJson(req, rgbStateJson());
+               sendJson(req, stateRgbJson(_led));
              });
 
   // ---- 串口 AT ----
@@ -466,7 +454,7 @@ void WebPanel::setupRoutes() {
   // ---- 屏幕开关 / 亮度 ----
   // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, dispStateJson());
+    sendJson(req, stateDispJson(_display));
   });
 
   // 设置屏幕：JSON {"on":bool?,"bright":0-100?}，两个字段都可选
@@ -487,7 +475,7 @@ void WebPanel::setupRoutes() {
                  if (b > 100) b = 100;
                  _display.setBrightness((uint8_t)b);
                }
-               sendJson(req, dispStateJson());
+               sendJson(req, stateDispJson(_display));
              });
 
   // 查询默认波特率（供前端下拉框初始化）
@@ -496,28 +484,10 @@ void WebPanel::setupRoutes() {
   });
 
   // ---- 系统 ----
-  // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染）
+  // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
+  // 浏览器端同时经 /api/sse 实时推送，序列化共用 StateJson.h）
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    const RgbLed::Color &c = _led.color();
-    JsonDocument doc;
-    doc["ssid"] = _wifi.ssid();        // 当前网络名（AP 模式为 AP 名）
-    doc["ip"] = _wifi.ip();            // 本机 IP
-    doc["rssi"] = _wifi.rssi();        // 信号强度 dBm
-    doc["uptime"] = millis() / 1000;   // 运行秒数
-    doc["heap"] = ESP.getFreeHeap();   // 剩余堆内存
-    doc["color"] = c.name;             // RGB 颜色名
-    JsonArray rgb = doc["rgb"].to<JsonArray>();
-    rgb.add(c.r);                      // RGB 三通道（前端画色块）
-    rgb.add(c.g);
-    rgb.add(c.b);
-    doc["disp"] = _display.screenOn();          // 屏幕开关
-    doc["dispBright"] = _display.brightness();  // 屏幕背光亮度百分比
-    doc["rgbBright"] = _led.brightness();       // RGB 灯亮度百分比
-    doc["connected"] = _wifi.connected();       // STA 是否已连接
-    doc["mode"] = _wifi.apMode() ? "ap" : (_wifi.connected() ? "sta" : "connecting");
-    String out;
-    serializeJson(doc, out);
-    sendJson(req, out);
+    sendJson(req, stateStatusJson(_wifi, _led, _display));
   });
 
   // ================= WiFi 配网 =================
