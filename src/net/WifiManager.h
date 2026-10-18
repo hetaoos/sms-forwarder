@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <functional>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
@@ -35,6 +36,12 @@ class WifiManager {
 
   // 推进连接/重连状态机；由主循环周期调用
   void tick();
+
+  // ---------------- 事件回调 ----------------
+  // STA 连接成功（含掉线后重新连上）时触发一次。App 用它启动 NTP 同步。
+  // 在 kConnecting -> kSta 转换时于锁外调用，回调内可执行耗时网络操作。
+  using OnConnectCb = std::function<void()>;
+  void setOnConnectCb(OnConnectCb cb) { _onConnect = cb; }
 
   // ---------------- 状态查询 ----------------
   WifiMode mode() const { return _mode; }
@@ -139,4 +146,5 @@ class WifiManager {
   bool _explicitTry = false;               // 是否为网页显式试连（失败回退而非进 AP）
 
   SemaphoreHandle_t _mutex = nullptr;      // 共享状态互斥量
+  OnConnectCb _onConnect;                  // STA 连接成功回调（NTP 同步等）
 };

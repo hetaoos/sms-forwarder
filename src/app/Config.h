@@ -83,6 +83,15 @@ constexpr uint32_t kSmsSendTimeoutMs = 30000;     // 单段 CMGS 发送超时（
 constexpr uint32_t kSmsCmdTimeoutMs = 1500;       // AT 配置类命令超时
 constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
 
+// ---------------- 时间同步（NTP 为主，SIM NITZ 兜底）----------------
+constexpr int32_t  kNtpGmtOffsetSec = 8 * 3600;                 // 时区偏移：UTC+8
+constexpr uint32_t kNtpTimeoutMs    = 10000;                    // NTP 启动后等待首次同步的上限
+constexpr uint32_t kNtpResyncMs     = 24UL * 3600UL * 1000UL;   // SNTP 后台周期校准间隔
+constexpr uint32_t kSimTimeRetryMs  = 30000;                    // NTP 不可用时 SIM NITZ 重试间隔
+constexpr uint32_t kSimTimeCmdMs    = 3000;                     // AT+CCLK? 响应收集超时
+constexpr uint32_t kTimePersistMs   = 10UL * 60UL * 1000UL;     // 时间落盘周期（10 分钟）
+constexpr const char *kNvsKeyLastTs = "lastts";                 // NVS 键：最后已知纪元时间（秒）
+
 // ---------------- 模组初始化状态机（适配 esp32-sms-forwarding 健壮流程）-
 // 全部非阻塞：每个状态的动作经 tick() 节流驱动，单个动作最多持端口锁 1.5s，
 // 抽数任务对忙端口 try-lock 跳过——故障/未连接模组绝不阻塞另一模组与 Web。

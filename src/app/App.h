@@ -11,6 +11,7 @@
 #include "net/WebPanel.h"
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
+#include "time/TimeSync.h"
 
 // 应用层：持有各模块，负责装配与主循环调度
 class App {
@@ -30,9 +31,10 @@ class App {
   WifiManager _wifi;        // WiFi 连接管理 + NVS 配网
   SerialBridge _bridge;     // 双串口 AT 透传桥
   SmsService _sms{_bridge}; // 短信服务（4G 模组收发 + 文件存储）
-  StatusBus _events{_wifi, _bridge, _led, _display, _sms};  // SSE 状态推送总线
+  TimeSync _time;           // 时间同步（NTP 为主，SIM NITZ 兜底；依赖 _bridge/_sms）
+  StatusBus _events{_wifi, _bridge, _led, _display, _sms, _time};  // SSE 状态推送总线
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms};  // HTTP 控制台（依赖上述模块）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };

@@ -4,10 +4,11 @@
 
 #include <Arduino.h>
 
-// wifi/bridge/led/display/sms：各模块引用，保存供 tick 采集使用
+// wifi/bridge/led/display/sms/time：各模块引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
-                     Display &display, SmsService &sms)
-    : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _sms(sms) {}
+                     Display &display, SmsService &sms, TimeSync &time)
+    : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _sms(sms),
+      _time(time) {}
 
 // 注册 SSE handler；onConnect/onDisconnect 用于维护客户端列表与上限
 void StatusBus::begin(AsyncWebServer &server) {
@@ -34,7 +35,7 @@ void StatusBus::tick() {
   // ---- 六类状态：与上次快照字符串比对，变化才推 ----
   String js;
 
-  js = stateStatusJson(_wifi, _led, _display);
+  js = stateStatusJson(_wifi, _led, _display, _time);
   if (!_baseline || js != _lastStatus) {
     publish("status", js);
     _lastStatus = js;
@@ -93,6 +94,13 @@ void StatusBus::tick() {
     _lastSmsPorts = ports;
   }
 
+  // ---- 短信存储统计：变化才推 ----
+  js = _sms.store().statsJson();
+  if (!_baseline || js != _lastSmsStats) {
+    publish("smsstats", js);
+    _lastSmsStats = js;
+  }
+
   _baseline = true;
 }
 
@@ -144,14 +152,15 @@ void StatusBus::publishTo(AsyncEventSourceClient *client, const char *event,
   if (client) client->send(json.c_str(), event, ++_eventId);
 }
 
-// 全量快照：六类状态 + 最近的 AT 历史
+// 全量快照：六类状态 + 短信统计 + 最近的 AT 历史
 void StatusBus::publishSnapshot(AsyncEventSourceClient *client) {
-  publishTo(client, "status", stateStatusJson(_wifi, _led, _display));
+  publishTo(client, "status", stateStatusJson(_wifi, _led, _display, _time));
   publishTo(client, "stats", _bridge.statsJson());
   publishTo(client, "wifi", _wifi.statusJson());
   publishTo(client, "saved", _wifi.listJson());
   publishTo(client, "rgb", stateRgbJson(_led));
   publishTo(client, "disp", stateDispJson(_display));
+  publishTo(client, "smsstats", _sms.store().statsJson());
   // 历史从较大的一端给：要么断点续传点，要么当前最新
   uint32_t from = _lastHistId;
   String json = _bridge.historyJson((int32_t)from, 50);

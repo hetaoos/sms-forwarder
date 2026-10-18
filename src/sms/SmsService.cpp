@@ -268,7 +268,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   msg.incoming = false;
   msg.phone = num;
   msg.content = text;
-  msg.ts = millis() / 1000;  // 设备无 RTC/NTP，记开机秒数
+  msg.ts = nowTs();  // 已同步为纪元秒，未同步为开机秒数（前端按 >=1.6e9 区分）
   msg.modem = port;
   bool storedOk = false;
   uint32_t id = _store.add(msg);
@@ -336,6 +336,12 @@ bool SmsService::reinitPort(uint8_t port) {
   _modems[port].needReinit = true;
   Serial.printf("[sms] port%u 请求重新初始化（等待抽数任务重跑）\r\n", (unsigned)port);
   return true;
+}
+
+// 模组是否已就绪（启用且初始化状态机到达 kReady）
+bool SmsService::modemReady(uint8_t port) const {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  return _modems[port].initState == ModemInitState::kReady;
 }
 
 // 启动异步初始化：仅置初始态与计数，真正的 AT 交互由 pollInit（抽数任务轮询）驱动
@@ -584,6 +590,9 @@ void SmsService::pollInit(uint8_t port) {
         m.nextPollMs = now + cfg::kModemLivenessMs;
         Serial.printf("[sms] port%u 模组就绪（PDU 模式 + 短信直投已配置）\r\n",
                       (unsigned)port);
+        // 通知上层（如时间同步立即尝试 SIM NITZ）。回调运行于抽数任务上下文，
+        // 仅允许置标记等轻量操作
+        if (_onReady) _onReady(port);
       } else {
         m.nextPollMs = now + cfg::kModemConfigStepMs;
       }
@@ -780,7 +789,7 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
   msg.incoming = true;
   msg.phone = sender;
   msg.content = text;
-  msg.ts = epoch ? epoch : (uint32_t)(millis() / 1000);
+  msg.ts = epoch ? epoch : nowTs();
   msg.modem = port;
   uint32_t id = _store.add(msg);
   if (id) {

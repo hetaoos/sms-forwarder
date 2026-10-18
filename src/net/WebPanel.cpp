@@ -141,9 +141,9 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 // bridge/led/wifi/display/auth/events/sms：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, AdminStore &auth, StatusBus &events,
-                   SmsService &sms)
+                   SmsService &sms, TimeSync &time)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events), _sms(sms) {}
+      _events(events), _sms(sms), _time(time) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -538,7 +538,7 @@ void WebPanel::setupRoutes() {
   // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
   // 浏览器端同时经 /api/sse 实时推送，序列化共用 StateJson.h）
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *req) {
-    sendJson(req, stateStatusJson(_wifi, _led, _display));
+    sendJson(req, stateStatusJson(_wifi, _led, _display, _time));
   });
 
   // ================= WiFi 配网 =================
@@ -697,6 +697,11 @@ void WebPanel::setupRoutes() {
   // 存储统计：{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}
   _server.on("/api/sms/stats", HTTP_GET, [this](AsyncWebServerRequest *req) {
     sendJson(req, _sms.store().statsJson());
+  });
+
+  // 最新一条短信摘要（仪表盘用；与 SSE sms 事件同格式），无记录返回 {}
+  _server.on("/api/sms/latest", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _sms.latestJson());
   });
 
   // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}

@@ -2,7 +2,7 @@
   <div class="page-head">
     <div>
       <h2>仪表盘</h2>
-      <p class="page-desc">设备运行状态总览 · 每 2 秒自动刷新</p>
+      <p class="page-desc">设备运行状态总览 · SSE 实时推送</p>
     </div>
     <button class="btn ghost sm" @click="restSnapshot()">刷新</button>
   </div>
@@ -10,11 +10,42 @@
   <!-- 关键指标 -->
   <div class="stats">
     <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
+    <div class="stat"><div class="k">当前时间</div>
+      <div class="v" style="font-size:16px" x-text="st.timeSynced ? st.time : '未同步'"></div></div>
     <div class="stat"><div class="k">剩余堆内存</div><div class="v" x-text="fmtBytes(st.heap)"></div></div>
     <div class="stat"><div class="k">WiFi 信号</div>
       <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
     <div class="stat"><div class="k">当前 IP</div>
       <div class="v" style="font-size:15px" x-text="st.ip || '-'"></div></div>
+  </div>
+
+  <div class="grid cols2">
+    <!-- 时间同步 -->
+    <div class="card">
+      <h3>时间同步 <span class="badge" :class="timeSrcClass()" x-text="timeSrcText()"></span></h3>
+      <div style="font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;margin:2px 0 10px"
+           x-text="st.timeSynced ? st.time : '--:--:--'"></div>
+      <div class="row"><span class="k">时间来源</span><span class="v" x-text="timeSrcText()"></span></div>
+      <div class="row"><span class="k">校准方式</span>
+        <span class="v" style="font-size:12px" x-text="calibText()"></span></div>
+      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由 4G 模组 AT+CCLK? 兜底。时间每 10 分钟写入 NVS，重启后恢复近似值。</div>
+    </div>
+
+    <!-- 短信存储 -->
+    <div class="card">
+      <h3>短信存储 <span class="sub" x-text="'上限 ' + (smsstats.max || 0) + ' 条'"></span></h3>
+      <div class="row"><span class="k">已存短信</span>
+        <span class="v" x-text="(smsstats.total || 0) + ' 条'"></span></div>
+      <div class="row"><span class="k">存储占用</span>
+        <span class="v" x-text="fmtBytes(smsstats.used) + ' / ' + fmtBytes(smsstats.fsTotal)"></span></div>
+      <div class="row"><span class="k">最新短信</span>
+        <span class="v" x-text="lastSms.phone ? (lastSms.phone + (lastSms.incoming ? '（收到）' : '（发出）')) : '-'"></span></div>
+      <div class="row"><span class="k">时间</span>
+        <span class="v" x-text="lastSms.ts ? fmtTs(lastSms.ts) : '-'"></span></div>
+      <div class="bar" style="margin-top:12px">
+        <button class="btn ghost sm" @click="go('sms')">短信管理</button>
+      </div>
+    </div>
   </div>
 
   <div class="grid cols2">
@@ -42,6 +73,26 @@
         <button class="btn" @click="nextLed()">切换颜色</button>
         <button class="btn ghost" @click="go('rgb')">颜色设置</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 串口流量 -->
+  <div class="card">
+    <h3>串口流量 <span class="sub">AT 透传 · 双 4G 模组</span></h3>
+    <template x-for="s in stats" :key="s.port">
+      <div class="row">
+        <span class="k">串口 <span x-text="s.port"></span>
+          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
+        <span class="v">
+          <span x-text="'RX ' + fmtBytes(s.rx)"></span>
+          <span x-text="' · TX ' + fmtBytes(s.tx)"></span>
+          <span x-show="s.err" x-text="' · 错误 ' + s.err"></span>
+          <span x-show="s.recovers" x-text="' · 自愈 ' + s.recovers"></span>
+        </span>
+      </div>
+    </template>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost sm" @click="go('serial')">AT 控制台</button>
     </div>
   </div>
 
@@ -78,6 +129,25 @@
     </template>
     <div class="bar" style="margin-top:12px">
       <button class="btn ghost sm" @click="go('modem')">模组管理</button>
+    </div>
+  </div>
+
+  <!-- 最近 AT 交互 -->
+  <div class="card">
+    <h3>最近 AT 交互 <span class="sub">最近 5 条控制台记录</span></h3>
+    <template x-for="e in recent" :key="e.id">
+      <div class="row" style="align-items:flex-start">
+        <span class="k">串口 <span x-text="e.port"></span></span>
+        <span class="v" style="text-align:left;font-weight:400">
+          <div x-text="e.cmd"></div>
+          <div style="color:#6f7885;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px"
+               x-text="e.resp || '(无响应)'"></div>
+        </span>
+      </div>
+    </template>
+    <div class="hint" x-show="!recent.length">暂无 AT 交互记录</div>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost sm" @click="go('serial')">AT 控制台</button>
     </div>
   </div>
 

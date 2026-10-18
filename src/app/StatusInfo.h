@@ -8,6 +8,7 @@ struct StatusInfo {
   bool wifiUp = false;        // WiFi 是否已连接（STA）
   bool apMode = false;        // 是否处于 AP 配网模式
   const char *ip = "-";       // 本机 IP 地址字符串（AP 模式为 192.168.4.1）
+  const char *time = "--:--:--";  // 当前时间 "HH:MM:SS"（时钟未同步为 --:--:--）
   int8_t rssi = 0;            // WiFi 信号强度，单位 dBm（未连接时为 0）
   uint32_t uptimeSec = 0;     // 系统运行秒数
   uint32_t freeHeap = 0;      // 剩余堆内存，单位字节

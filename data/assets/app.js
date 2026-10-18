@@ -192,6 +192,7 @@ Alpine.store('live', {
   at: [],               // AT 日志（全页面共享，300 条上限）
   sms: {},              // 最新一条短信摘要（SSE sms 事件）
   smsports: [],         // 模组配置 [{port,enabled}]（SSE smsports 事件）
+  smsstats: {},         // 短信存储统计（SSE smsstats 事件）
   // 追加 AT 记录：按 id 去重（SSE 重推/自身回显/REST 兜底三种来源安全合并），
   // 非数字 id（本地占位）直接入列
   pushAt(entries) {
@@ -240,6 +241,14 @@ async function restSnapshot() {
     const r = await fetch('/api/sms/ports');
     if (r.ok) { const j = await r.json(); live.smsports = j.modems || []; }
   } catch (e) {}
+  try {
+    const r = await fetch('/api/sms/stats');
+    if (r.ok) live.smsstats = await r.json();
+  } catch (e) {}
+  try {
+    const r = await fetch('/api/sms/latest');
+    if (r.ok) live.sms = await r.json();
+  } catch (e) {}
 }
 
 // 降级轮询（SSE 不可用/持续失败时）
@@ -271,6 +280,7 @@ function connectSSE() {
   on('at', d => { live.pushAt(d); });
   on('sms', d => { live.sms = d; });
   on('smsports', d => { live.smsports = d.modems || []; });
+  on('smsstats', d => { live.smsstats = d; });
   es.onopen = () => {
     setConn('online');
     restSnapshot();   // 兜底快照：补齐建连前数据与断线期记录
@@ -486,6 +496,33 @@ function pageDashboard() {
     get recent() {
       const at = Alpine.store('live').at;
       return at.slice(-5).reverse();
+    },
+    get smsstats() { return Alpine.store('live').smsstats; },
+    get lastSms() { return Alpine.store('live').sms; },
+    // 时间格式化：纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则按开机时长
+    fmtTs(ts) {
+      if (!ts) return '-';
+      if (ts >= 1600000000) {
+        const d = new Date(ts * 1000);
+        const p = n => (n < 10 ? '0' : '') + n;
+        return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+               p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      }
+      return '开机 ' + fmtUptime(ts);
+    },
+    timeSrcText() {
+      return { ntp: 'NTP', sim: 'SIM NITZ', nvs: 'NVS 恢复', none: '未同步' }[this.st.timeSrc] || '未同步';
+    },
+    timeSrcClass() {
+      return { ntp: 'ok', sim: 'warn', nvs: 'info', none: 'err' }[this.st.timeSrc] || 'err';
+    },
+    calibText() {
+      switch (this.st.timeSrc) {
+        case 'ntp': return 'SNTP 每 24h 自动校准';
+        case 'sim': return '模组 NITZ，NTP 恢复后覆盖';
+        case 'nvs': return '重启恢复值，等待 NTP / SIM 校准';
+        default: return '等待 WiFi 连接或模组就绪';
+      }
     },
     // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
     get tokenMasked() {

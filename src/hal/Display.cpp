@@ -109,7 +109,7 @@ void paintChrome(lgfx::LGFX_Device &lcd) {
   // 标题栏
   lcd.fillRect(0, 0, lcd.width(), kHeaderH, kHeaderBg);
   lcd.setTextColor(kValue);
-  lcd.drawString("ESP32-S3 SMS FWD", kPad, 8);
+  lcd.drawString("SMS Forwarder", kPad, 8);
 
   // 状态行标签
   lcd.setTextColor(kLabel);
@@ -143,6 +143,21 @@ void updateRow(lgfx::LGFX_Device &lcd, uint8_t idx, const String &value,
   lcd.fillRect(kValueX, y - 2, w, kRowH, kBlack);
   lcd.setTextColor(color);
   lcd.drawRightString(value.c_str(), lcd.width() - kPad, y);
+}
+
+// ---------- 局部重绘：标题栏时钟 ----------
+// 只在时钟文本变化时重绘标题栏右端（约每秒一次），固定区域擦除避免残留。
+// 时钟串恒为 8 字符（"HH:MM:SS" / "--:--:--"），沿用标题栏同款字体与颜色。
+// lcd：设备引用；time：时钟串；cache：旧值，用于跳过无变化的重绘
+void updateClock(lgfx::LGFX_Device &lcd, const String &time, String &cache) {
+  if (cache == time) return;
+  cache = time;
+
+  const int16_t tw = lcd.textWidth(time.c_str());
+  const int16_t x = lcd.width() - kPad - tw;
+  lcd.fillRect(x - 2, 6, tw + 4, kHeaderH - 12, kHeaderBg);
+  lcd.setTextColor(kValue);
+  lcd.drawString(time.c_str(), x, 8);
 }
 
 // 按 maxW 宽度对 text 做软换行绘制，最多画 maxLines 行
@@ -212,6 +227,7 @@ struct Display::Impl {
   String rows[kRowCount];           // 各行当前显示的文本缓存
   uint16_t rowColors[kRowCount];    // 各行当前文字颜色缓存
   String atCache;                   // AT 区上一次渲染的 key
+  String clockCache;                // 标题栏时钟上一次渲染的文本
   bool screenOn = true;             // 屏幕点亮状态
   uint8_t bright = cfg::kTftBacklight;  // 当前背光亮度百分比（重启复位为默认）
 };
@@ -259,6 +275,7 @@ void Display::setScreenOn(bool on) {
       _impl->rowColors[i] = 0;
     }
     _impl->atCache = String();
+    _impl->clockCache = String();     // 唤醒后补画标题栏时钟
     Serial.println("[disp] screen on");
   } else {
     _impl->lcd.sleep();               // 关背光 + 面板睡眠
@@ -273,6 +290,9 @@ bool Display::screenOn() const { return _impl && _impl->screenOn; }
 void Display::render(const StatusInfo &info) {
   if (!_impl || !_impl->screenOn) return;   // 熄屏时完全不推数据
   St7789Panel &lcd = _impl->lcd;
+
+  // 标题栏右端：当前时钟（变化才重绘，约每秒一次）
+  updateClock(lcd, info.time, _impl->clockCache);
 
   // 第 0 行：WiFi 状态（UP=已连 / AP=配网模式 / DOWN=未连接）
   updateRow(lcd, 0, info.wifiUp ? "UP" : (info.apMode ? "AP" : "DOWN"),

@@ -13,6 +13,10 @@ bool App::begin() {
   // 该分区刷固件后仍保留，短信等业务数据持久化在这里（路径以 /data 开头）
   userfs::begin();
 
+  // 时间同步：先恢复 NVS 里的上次已知时间（近似值），随后由 WiFi 连接（NTP）
+  // 与模组就绪（SIM NITZ）事件驱动校准
+  _time.begin(_bridge, _sms);
+
   _led.begin(1);                       // RGB 灯默认点亮索引 1（RED）
   _display.begin();                    // 屏幕 + 静态框架
   _bridge.begin();                     // 启动串口抽数任务
@@ -22,9 +26,17 @@ bool App::begin() {
   });
 
   _display.render(collectStatus());    // 先出一帧，避免开机黑屏
+  // WiFi 连上（含重连）即启动 NTP 同步；须在 _wifi.begin() 前注册
+  _wifi.setOnConnectCb([this] { _time.syncNTP(); });
   _wifi.begin();                       // 读 NVS 配置并启动连接状态机（非阻塞）
   _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
+  // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
+  // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
+  _sms.setOnModemReadyCb([this](uint8_t port) { _time.requestSimSync(port); });
+  // 短信时间戳供给：已同步返回纪元秒，未同步返回开机秒数
+  // （前端按 >=1.6e9 区分「真实时间 / 开机时长」，无需改动）
+  _sms.setTimeProvider([this] { return _time.epochOrUptime(); });
   _panel.begin();                      // 启动 HTTP 服务
 
   Serial.println("[app] ready");
@@ -44,9 +56,11 @@ StatusInfo App::collectStatus() {
   s.rssi = s.wifiUp ? _wifi.rssi() : 0;
 
   static String sIp;         // 需要持有字符串，供 const char* 引用
-  static String sCmd, sResp;
+  static String sCmd, sResp, sTime;
   sIp = _wifi.ip();
   s.ip = sIp.c_str();
+  sTime = _time.clockStr();  // LCD 标题栏时钟（未同步显示 --:--:--）
+  s.time = sTime.c_str();
 
   uint8_t port = 0;
   if (_bridge.lastEntry(port, sCmd, sResp)) {
@@ -65,6 +79,7 @@ StatusInfo App::collectStatus() {
 // 5. 短暂延时让出 CPU
 void App::tick() {
   _wifi.tick();
+  _time.tick();                        // NTP 超时判定 / SIM NITZ 重试 / 时间落盘
   _events.tick();
   _sms.tick();
 

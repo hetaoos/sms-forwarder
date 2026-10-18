@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <functional>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -41,6 +42,24 @@ class SmsService {
   bool setModemAlias(uint8_t port, const String &alias);
   // 触发模组重新初始化（仅启用态有效；置 needReinit 由抽数任务状态机重跑）
   bool reinitPort(uint8_t port);
+
+  // ---------------- 事件回调 / 时间供给 ----------------
+  // 模组就绪事件：初始化状态机进入 kReady 时于抽数任务上下文触发。
+  // 回调内只应置标记或做轻量操作，禁止阻塞式 AT（时间同步等由 App 转 loop 任务执行）。
+  using ModemReadyFn = std::function<void(uint8_t port)>;
+  void setOnModemReadyCb(ModemReadyFn fn) { _onReady = fn; }
+
+  // 模组是否已就绪（启用且初始化完成，可收发短信）；port 越界返回 false
+  bool modemReady(uint8_t port) const;
+
+  // 时间戳供给：设备已同步时间时返回纪元秒，否则返回开机秒数。
+  // 由 App 注入 TimeSync 的实现；未注入时退化为开机秒数。
+  // 短信记录时间戳统一经此获取（前端按 >=1.6e9 区分真实时间/开机时长）。
+  using TimeProviderFn = std::function<uint32_t()>;
+  void setTimeProvider(TimeProviderFn fn) { _timeFn = fn; }
+  uint32_t nowTs() const {
+    return _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
+  }
   // 模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
   String modemsJson() const;
 
@@ -161,4 +180,7 @@ class SmsService {
   uint16_t _max = cfg::kSmsStoreMax;           // 存储条数上限
   uint32_t _lastSmsId = 0;                     // 最新记录 ID（SSE diff）
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护 _lastSmsId / 配置读写
+
+  ModemReadyFn _onReady;    // 模组就绪回调（抽数任务上下文触发）
+  TimeProviderFn _timeFn;   // 时间戳供给（App 注入；为空则开机秒数）
 };

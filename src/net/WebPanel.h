@@ -31,9 +31,10 @@ class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
-  // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务
+  // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
+  // time：时间同步（状态 JSON 输出当前时间/来源）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
-           AdminStore &auth, StatusBus &events, SmsService &sms);
+           AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -79,4 +80,5 @@ class WebPanel {
   AdminStore &_auth;       // 管理账号存储引用（NVS）
   StatusBus &_events;      // SSE 状态推送总线引用
   SmsService &_sms;        // 短信服务引用
+  TimeSync &_time;         // 时间同步引用
 };

@@ -147,6 +147,7 @@ void WifiManager::tick() {
         _lostMs = millis();
         Serial.printf("[wifi] up, ip=%s\r\n", ip().c_str());
         unlock();
+        if (_onConnect) _onConnect();  // 锁外触发：回调可能启动 NTP 等耗时操作
         return;
       }
       if (millis() - _attemptMs >= cfg::kWifiConnectTimeoutMs) {
