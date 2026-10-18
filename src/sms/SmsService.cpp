@@ -81,54 +81,79 @@ void SmsService::tick() {
   _codec.pruneTimeouts(_concat);
 }
 
-// 串口自发数据消费（抽数任务上下文，持锁运行——禁止回调 SerialBridge）
+// 判断一行是否为 PDU 十六进制串（偶数长度、全为 hex 字符）
+static bool isPduLine(const String &s) {
+  if (!s.length() || (s.length() & 1)) return false;
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+          (c >= 'a' && c <= 'f')))
+      return false;
+  }
+  return true;
+}
+
+// 串口自发数据消费（抽数任务上下文，持锁运行——禁止回调 SerialBridge）。
+// 逐行扫描整段（而非只看首行）：一段 pend 可能含多行（+CMT 头 + PDU，或
+// +CMT 与其它行同段到达）。只认首行时，只要 +CMT 不在段首（段内混入
+// 前一条命令的尾巴/空行/其它 URC），整段会被判为「非短信流量」交回 AT
+// 历史——短信静默丢失，这正是日志里出现 +CMT: 记录的原因。
+// 参考 esp32-sms-forwarding 的 SimDispatcher：按行路由，+CMT: 置
+// waitingPdu，下一行即 PDU（可同段也可跨段）。
 bool SmsService::onUnsolicited(uint8_t port, const String &text) {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   ModemState &m = _modems[port];
 
   String t = text;
   t.replace("\r", "");
-  // 取第一行（一段 pend 可能含多行）
-  int nl = t.indexOf('\n');
-  String line = nl >= 0 ? t.substring(0, nl) : t;
-  line.trim();
+  bool consumed = false;
 
-  // 运行时模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化
-  // （故障/未连接模组不会误触发；区别于初始化阶段模组自身上报的 RDY/CPIN）
-  if (m.initState == ModemInitState::kReady) {
-    if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY") ||
-        line == "+CPIN: READY") {
-      m.needReinit = true;
-      return true;  // 消费，不进 AT 历史
-    }
-  }
+  int pos = 0;
+  while (pos <= (int)t.length()) {
+    int nl = t.indexOf('\n', pos);
+    String line = (nl >= 0) ? t.substring(pos, nl) : t.substring(pos);
+    pos = (nl >= 0) ? nl + 1 : (int)t.length() + 1;
+    line.trim();
+    if (!line.length()) continue;  // 跳过空行（段首空行曾导致 +CMT 漏判）
 
-  if (line.startsWith("+CMT:")) {
-    // PDU 可能紧跟在同一段后续行，也可能在下一段
-    if (nl >= 0) {
-      int nl2 = t.indexOf('\n', nl + 1);
-      String pdu = nl2 >= 0 ? t.substring(nl + 1, nl2) : t.substring(nl + 1);
-      pdu.trim();
-      if (pdu.length()) {
-        handleCmt(port, pdu);
+    // 等待中的 PDU 行优先归属上一条 +CMT
+    if (m.waitingPdu) {
+      m.waitingPdu = false;
+      if (isPduLine(line)) {
+        handleCmt(port, line);
       } else {
-        m.waitingPdu = true;  // 头行已到，PDU 在后续段（头/PDU 跨 flush 时）
+        Serial.printf("[sms] port%u expected PDU after +CMT, got: %s\r\n",
+                      (unsigned)port, line.c_str());
       }
-    } else {
-      m.waitingPdu = true;  // 等下一段
+      consumed = true;
+      continue;
     }
-    return true;  // +CMT 头行也消费掉，不进 AT 历史
+
+    // 运行时模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化
+    if (m.initState == ModemInitState::kReady) {
+      if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY") ||
+          line == "+CPIN: READY") {
+        m.needReinit = true;
+        consumed = true;
+        continue;
+      }
+    }
+
+    if (line.startsWith("+CMT:")) {
+      // PDU 可能在同段后续行，也可能在下一段（头/PDU 跨 flush 时）
+      m.waitingPdu = true;
+      consumed = true;
+      continue;
+    }
+    // 其它短信相关 URC（CNMI=2,2 模式下正常不会出现）：消费但不处理，
+    // 避免模组索引通知类流量冲刷 AT 历史
+    if (line.startsWith("+CMTI:") || line.startsWith("+CDS:")) {
+      consumed = true;
+      continue;
+    }
+    // 非短信流量：不消费（由调用方决定是否入 AT 历史）
   }
-  if (m.waitingPdu) {
-    m.waitingPdu = false;
-    String pdu = line;  // 该段第一行即 PDU（后续行忽略）
-    if (pdu.length()) handleCmt(port, pdu);
-    return true;
-  }
-  // 其它短信相关 URC（CNMI=2,2 模式下正常不会出现）：消费但不处理，
-  // 避免模组索引通知类流量冲刷 AT 历史
-  if (line.startsWith("+CMTI:") || line.startsWith("+CDS:")) return true;
-  return false;  // 非短信流量：交回 AT 历史
+  return consumed;
 }
 
 // ---------------- 模组管理 ----------------
@@ -178,7 +203,7 @@ String SmsService::modemsJson() const {
 
 // ---------------- 发送 ----------------
 uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
-                          String &err) {
+                          String &err, bool *storedPtr) {
   if (port < 1 || port > cfg::kSmsMaxModems) {
     err = "模组不存在";
     return 0;
@@ -245,21 +270,24 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   msg.content = text;
   msg.ts = millis() / 1000;  // 设备无 RTC/NTP，记开机秒数
   msg.modem = port;
+  bool storedOk = false;
   uint32_t id = _store.add(msg);
   if (id) {
     lock();
     _lastSmsId = id;
     unlock();
+    storedOk = true;
     Serial.printf("[sms] port%u sent #%u to %s (%d part(s))\r\n", (unsigned)port,
                   (unsigned)id, num.c_str(), n);
   } else {
-    // 模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）：
-    // 必须给出明确原因，否则调用方只收到空 error，无法判断短信到底发没发出去
-    err = "模组已发出，但记录存储失败（检查 userdata 分区是否挂载）";
+    // 模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）。
+    // 不判失败——短信确实已发出；通过 stored 出参告知调用方（参考实现同款语义：
+    // 存储失败不影响发送结果），避免「界面报失败但其实已发送成功」的误判。
     Serial.printf("[sms] port%u sent to %s but store failed\r\n", (unsigned)port,
                   num.c_str());
   }
-  return id;
+  if (storedPtr) *storedPtr = storedOk;
+  return storedOk ? id : kIdSentUnstored;
 }
 
 // ---------------- AT 控制台 ----------------
@@ -386,9 +414,11 @@ void SmsService::pollInit(uint8_t port) {
   }
   uint32_t now = millis();
   // 发送窗口内让行：避免心跳/初始化 AT 在多段发送的两个段之间（端口锁短暂释放）
-  // 插入，破坏正在进行的 CMGS 握手。窗口覆盖整段发送（含 20s 等待），之后恢复。
-  // 仅在确有发送记录（lastSendMs != 0）时生效，避免开机 0 值误判屏蔽初始化。
-  if (m.lastSendMs != 0 && (now - m.lastSendMs) < cfg::kSmsSendTimeoutMs + 3000) return;
+  // 插入，破坏正在进行的 CMGS 握手。窗口覆盖整段发送（等 > 5s + PDU 响应 30s），
+  // 之后恢复。仅在确有发送记录（lastSendMs != 0）时生效，避免开机 0 值误判。
+  if (m.lastSendMs != 0 &&
+      (now - m.lastSendMs) < cfg::kSmsCmgsPromptMs + cfg::kSmsSendTimeoutMs + 3000)
+    return;
   // 节流：就绪态心跳(30s)与遥测(4s)各有计时，取较早者决定本轮是否动作
   uint32_t nextAt = m.nextPollMs;
   if (m.initState == ModemInitState::kReady && m.nextTeleMs && m.nextTeleMs < nextAt)
@@ -705,34 +735,20 @@ void SmsService::pollInit(uint8_t port) {
   }
 }
 
-// 发送一段 PDU：AT+CMGS=<len> -> 等 '>' -> 发 PDU(内嵌 0x1A) -> 等 +CMGS/OK
+// 发送一段 PDU：AT+CMGS=<len> -> 等 '>' -> 发 PDU(内嵌 0x1A) -> 等 +CMGS/OK。
+// 握手细节（等 > 5s / 响应 30s / +CMGS 确认即成功）在 SerialBridge::sendSmsPdu，
+// 流程与 esp32-sms-forwarding 一致：模组回包慢或只回 +CMGS 时不会误报失败。
 bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) {
   if (part.tpduLen <= 0) {
     err = "PDU 长度异常";
     return false;
   }
-  // 1) 报长度
-  auto r1 = _bridge.send(port, cfg::kUartBaud, "AT+CMGS=" + String(part.tpduLen),
-                         SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs, true);
-  if (r1.resp.indexOf('>') < 0) {
-    err = "模组未返回 > 提示（无响应或拒绝）";
+  auto r = _bridge.sendSmsPdu(port, cfg::kUartBaud, part.tpduLen, part.hex, err);
+  if (!r.ok) {
+    if (!err.length()) err = "invalid port";
     return false;
   }
-  // 2) 发 PDU 十六进制（末尾已内嵌 0x1A，不再追加行尾）
-  auto r2 = _bridge.send(port, cfg::kUartBaud, part.hex, SerialBridge::kNone,
-                         cfg::kSmsSendTimeoutMs, true);
-  const String &resp = r2.resp;
-  bool cmgs = resp.indexOf("+CMGS") >= 0;
-  bool ok = resp.indexOf("OK") >= 0;
-  bool error = resp.indexOf("ERROR") >= 0;
-  // 成功判定：OK > 见过 +CMGS（模组已入队）> 失败
-  if (ok || (cmgs && !error)) return true;
-  if (error) {
-    err = "模组返回 ERROR（检查号码/信号/SIM）";
-    return false;
-  }
-  err = "发送超时";
-  return false;
+  return err.length() == 0;  // sendSmsPdu 用 err 表达失败原因（含模组响应）
 }
 
 // 处理一条收到的 PDU

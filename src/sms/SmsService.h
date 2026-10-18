@@ -52,9 +52,14 @@ class SmsService {
                               SerialBridge::Eol eol, uint32_t timeoutMs, String &err);
 
   // ---------------- 发送 ----------------
-  // 发送短信（自动拆分长短信并逐段 CMGS）；成功返回入库记录 ID，
-  // 失败返回 0 并在 err 写入原因
-  uint32_t send(uint8_t port, const String &phone, const String &text, String &err);
+  // 发送短信（自动拆分长短信并逐段 CMGS）。
+  // 返回值：0 = 模组未发出（失败，err 有原因）；入库记录 ID = 成功；
+  //   kIdSentUnstored = 模组已发出但记录未入库（userdata 异常）——不算失败，
+  //   此时 stored 出参为 false，短信确实已发出，只是列表不会显示本条。
+  // 参考实现同款语义：存储失败不影响发送结果。
+  static constexpr uint32_t kIdSentUnstored = 0xFFFFFFFEu;
+  uint32_t send(uint8_t port, const String &phone, const String &text, String &err,
+                bool *stored = nullptr);
 
   // ---------------- 存储 ----------------
   SmsStore &store() { return _store; }

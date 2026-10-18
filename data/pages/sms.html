@@ -7,6 +7,9 @@
     <button class="btn" @click="openSend()" x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用模组）'"></button>
   </div>
 
+  <!-- 存储不可用提示（userdata 分区异常时常驻） -->
+  <div class="form-err" x-show="storeErr" x-text="storeErr" style="margin-bottom:12px"></div>
+
   <!-- 短信记录 -->
   <div class="card">
     <div class="bar" style="margin-bottom:12px">

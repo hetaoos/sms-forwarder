@@ -14,7 +14,13 @@ void SmsStore::begin(uint16_t max) {
     return;
   }
   if (!userfs::fs().exists(_dir.c_str())) {
-    userfs::fs().mkdir(_dir.c_str());
+    // mkdir 失败必须发现：父目录不存在时后续 open(create=false) 全部 ENOENT，
+    // 表现为「短信收发正常但记录存不进去」。这里显式报错并关闭存储。
+    if (!userfs::fs().mkdir(_dir.c_str())) {
+      _enabled = false;
+      Serial.printf("[sms] store disabled: mkdir %s failed\r\n", _dir.c_str());
+      return;
+    }
   }
   _enabled = true;
 
@@ -39,8 +45,8 @@ void SmsStore::begin(uint16_t max) {
   }
   if (_count == 0) _minId = 0;
   unlock();
-  Serial.printf("[sms] store ready: %d records, max id %u, limit %u\r\n", _count,
-                (unsigned)_maxId, (unsigned)_max);
+  Serial.printf("[sms] store ready: %s (actual: /data%s), %d records, max id %u, limit %u\r\n",
+                _dir.c_str(), _dir.c_str(), _count, (unsigned)_maxId, (unsigned)_max);
 }
 
 // 写入一条记录（FIFO 淘汰最旧）

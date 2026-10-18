@@ -58,6 +58,18 @@ class SerialBridge {
   bool trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
                uint32_t timeoutMs, bool quiet, Result &out);
 
+  // 短信发送专用：AT+CMGS=<len> 两段式握手（全程持端口锁，流程参照
+  // esp32-sms-forwarding 的成熟实现）：
+  //   1) 先抽干 RX 缓冲（残留 URC 碎片会污染 >/OK 判定；抽出的字节交回 pend，
+  //      不丢弃，避免顺带吞掉刚到的新短信 URC）
+  //   2) 发 AT+CMGS=<len>，逐字节等 '>' 提示符（上限 kSmsCmgsPromptMs）
+  //   3) 发 PDU 十六进制（末尾已内嵌 0x1A），逐字节收集响应（上限 kSmsSendTimeoutMs）：
+  //      见 OK 即成功；未见 +CMGS 先见 ERROR 即失败；+CMGS 已确认但 2s 内无 OK
+  //      也算成功（模组已入队，OK 可能迟至或不到）
+  // 返回 Result{true, 0, resp}（ok=false 仅表示 port 越界）；成功与否看 err 是否为空
+  Result sendSmsPdu(uint8_t port, uint32_t baud, int tpduLen, const String &pduHex,
+                    String &err);
+
   // 未请求上报（URC）消费回调：抽数任务每归档一段模组自发数据前调用，
   // 返回 true 表示已被消费（不再记入 AT 历史）。
   // 注意：该回调在抽数任务上下文调用，不持任何桥锁（端口锁已先释放），

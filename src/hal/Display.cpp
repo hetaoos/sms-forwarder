@@ -109,7 +109,7 @@ void paintChrome(lgfx::LGFX_Device &lcd) {
   // 标题栏
   lcd.fillRect(0, 0, lcd.width(), kHeaderH, kHeaderBg);
   lcd.setTextColor(kValue);
-  lcd.drawString("ESP32-S3 AT BRIDGE", kPad, 8);
+  lcd.drawString("ESP32-S3 SMS FWD", kPad, 8);
 
   // 状态行标签
   lcd.setTextColor(kLabel);

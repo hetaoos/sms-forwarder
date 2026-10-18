@@ -908,6 +908,7 @@ function pageSms() {
     sendHint: '', sendErr: false, sendOpen: false,
     q: '', portFilter: -1, page: 1, pageSize: 20,
     total: 0, messages: [], stats: {}, loading: false,
+    storeErr: '',
     detail: null,
 
     init() {
@@ -960,9 +961,11 @@ function pageSms() {
       this.sendErr = false;
       let r;
       try {
-        // 带 30s 超时（发送可能耗时较久），失败精确回显状态码与原因
+        // 带 120s 超时（单段握手最坏 5s 等 > + 30s 等响应，长短信多段累加；
+        // 参考项目无此前端超时——掐断请求时服务端仍在发送，模组已把短信发出，
+        // 会造成「界面报失败但其实发送成功」的误判）
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 30000);
+        const timer = setTimeout(() => ctrl.abort(), 120000);
         try {
           r = await apiFetch('/api/sms/send', {
             method: 'POST',
@@ -978,13 +981,15 @@ function pageSms() {
       }
       this.sending = false;
       if (r.ok) {
-        this.sendHint = '发送成功';
-        this.sendErr = false;
         this.phone = '';
         this.content = '';
         this.sendOpen = false;
         this.reload();
         this.loadStats();
+        // 模组已发出但记录未入库：后端返回 warn，提示但不判失败
+        let warn = '';
+        try { warn = (await r.json()).warn || ''; } catch (e) {}
+        if (warn) toast('发送成功，但' + warn, 'warn');
       } else {
         // 精确回显：HTTP 状态码 + 后端错误原因（如「模组尚未就绪」「号码格式不正确」）
         const msg = await errText(r);
@@ -1012,7 +1017,14 @@ function pageSms() {
     async loadStats() {
       try {
         const r = await apiFetch('/api/sms/stats');
-        if (r.ok) this.stats = await r.json();
+        if (r.ok) {
+          const j = await r.json();
+          this.stats = j;
+          // 存储不可用时在页面顶部常驻提示（否则只会看到「暂无记录」）
+          this.storeErr = j.ok ? ''
+              : ('短信记录存储不可用（' + (j.error || 'unknown') +
+                 '）：收发不受影响，但记录不会保存，请检查串口日志中的 [fs]/[sms] 输出');
+        }
       } catch (e) {}
     },
     search() { this.page = 1; this.reload(); },

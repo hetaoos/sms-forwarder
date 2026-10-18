@@ -287,6 +287,108 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
   return true;
 }
 
+// 短信发送专用：AT+CMGS=<len> 两段式握手（流程参照 esp32-sms-forwarding）。
+// 与通用 send() 的区别：不用 80ms 静默判停（模组回包慢/分片时会误判超时），
+// 改为逐字节持续收集，并以「+CMGS 已确认」作为成功条件之一——模组经常先回
+// +CMGS:<ref> 再回 OK，个别模组甚至只回 +CMGS，按 OK 判定会把已发出的短信
+// 误报为失败。
+SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
+                                              int tpduLen, const String &pduHex,
+                                              String &err) {
+  if (port < 1 || port > 2) {
+    err = "invalid port";
+    return Result{false, (uint32_t)-1, String()};
+  }
+  lockPort(port - 1);
+  Port &p = _ports[port - 1];
+  ensureOpen(p, baud);
+
+  // 1) 抽干 RX：上一条命令/URC 的残留字节若留在缓冲，会混进本次握手响应，
+  //    使 >/OK 判定失真。抽出的字节交回 pend（不丢弃）：其中若含刚到的新短信
+  //    URC，抽数任务会按自发上报正常归档，不会顺手吞掉来信。
+  String stale;
+  for (int i = 0; i < 1024; i++) {
+    int c = p.dev->read();
+    if (c < 0) break;
+    p.rxBytes++;
+    appendPrintable(stale, (char)c);
+  }
+  if (stale.length()) {
+    p.pend += stale;
+    p.pendMs = millis();
+  }
+  p.timeouts = 0;
+
+  // 2) 报长度，逐字节等 '>' 提示符（不用静默判停：'>' 前无其它内容可依赖）
+  String cmd = "AT+CMGS=" + String(tpduLen);
+  p.dev->write((const uint8_t *)cmd.c_str(), cmd.length());
+  p.dev->write("\r\n", 2);
+  p.txBytes += cmd.length() + 2;
+  p.dev->flush();
+
+  String pre;
+  bool gotPrompt = false;
+  uint32_t start = millis();
+  while (millis() - start < cfg::kSmsCmgsPromptMs) {
+    int c = p.dev->read();
+    if (c >= 0) {
+      p.rxBytes++;
+      p.lastRxMs = millis();
+      appendPrintable(pre, (char)c);
+      if (c == '>') { gotPrompt = true; break; }
+      if (pre.indexOf("ERROR") >= 0) break;  // 模组直接拒绝，不必等满超时
+    } else {
+      delay(2);  // 让出 CPU：本方法运行于 HTTP(async_tcp) 任务上下文，不能自旋
+    }
+  }
+  if (!gotPrompt) {
+    err = pre.length() ? ("模组未返回 > 提示（响应: " + pre + "）")
+                       : "模组未返回 > 提示（无响应）";
+    unlockPort(port - 1);
+    return Result{true, 0, pre};
+  }
+
+  // 3) 发 PDU 十六进制（末尾已内嵌 0x1A，不再追加行尾），逐字节收集响应
+  p.dev->write((const uint8_t *)pduHex.c_str(), pduHex.length());
+  p.txBytes += pduHex.length();
+  p.dev->flush();
+
+  String resp;
+  bool cmgs = false, error = false;
+  uint32_t cmgsAt = 0;
+  start = millis();
+  while (millis() - start < cfg::kSmsSendTimeoutMs) {
+    int c = p.dev->read();
+    if (c >= 0) {
+      p.rxBytes++;
+      p.lastRxMs = millis();
+      appendPrintable(resp, (char)c);
+      if (!cmgs && resp.indexOf("+CMGS") >= 0) {
+        cmgs = true;
+        cmgsAt = millis();
+      }
+      if (resp.indexOf("OK") >= 0) break;               // 事务完成
+      if (!cmgs && resp.indexOf("ERROR") >= 0) {        // 未见 +CMGS 先见 ERROR 才是真失败
+        error = true;
+        break;
+      }
+    } else {
+      // +CMGS 已确认但 2s 内没等到 OK：模组已入队，按成功处理
+      if (cmgs && millis() - cmgsAt >= 2000) break;
+      delay(2);  // 让出 CPU（同上）
+    }
+  }
+  unlockPort(port - 1);
+
+  if (resp.indexOf("OK") >= 0 || (cmgs && !error)) {
+    return Result{true, 0, resp};
+  }
+  err = error ? "模组返回 ERROR（检查号码/信号/SIM）"
+              : (resp.length() ? ("发送超时（响应: " + resp + "）")
+                               : "发送超时（模组无响应）");
+  return Result{true, 0, resp};
+}
+
 // 手动复位串口：port 为 1-2，越界忽略
 void SerialBridge::reset(uint8_t port) {
   if (port < 1 || port > 2) return;

@@ -752,7 +752,8 @@ void WebPanel::setupRoutes() {
              });
 
   // 发送短信：JSON {"port":1,"phone":"..","content":".."}
-  // 成功返回 {"ok":true,"id":记录ID}；失败 {"ok":false,"error":"原因"}
+  // 成功返回 {"ok":true,"id":记录ID}；失败 {"ok":false,"error":"原因"}。
+  // 模组已发出但记录未入库（userdata 异常）时仍算成功，附带 warn 提示。
   _server.on("/api/sms/send", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) {
                int port;
@@ -765,9 +766,16 @@ void WebPanel::setupRoutes() {
                String phone = json["phone"].as<String>();
                String content = json["content"].as<String>();
                String err;
-               uint32_t id = _sms.send((uint8_t)port, phone, content, err);
+               bool stored = true;
+               uint32_t id = _sms.send((uint8_t)port, phone, content, err, &stored);
                if (!id) {
                  sendErr(req, 400, err.c_str());
+                 return;
+               }
+               if (!stored) {
+                 sendJson(req,
+                          "{\"ok\":true,\"stored\":false,\"warn\":"
+                          "\"记录存储失败（userdata 分区异常），本条不会出现在列表中\"}");
                  return;
                }
                sendOk(req, String(",\"id\":") + id);

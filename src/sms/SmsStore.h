@@ -17,6 +17,11 @@
 //   第 3 行起: 短信正文（UTF-8，可含换行）
 // 列表无内存索引，每次请求扫描目录逐条读取（与参考实现同策略）；
 // 所有 FS 操作在互斥锁内，抽数任务（写入）与 HTTP 任务（查询）并发安全。
+//
+// 路径注意（Arduino-ESP32 的 FS 行为，参考项目 sms_store.h 同款坑）：
+// VFS 会把「挂载点 + 传入路径」拼成完整路径，因此这里的目录必须相对挂载点
+// （userdata 挂载于 /data）。若写成 "/data/sms"，实际路径会变成 /data/data/sms，
+// 其父目录 /data/data 不存在，mkdir 与 open(create=false) 全部失败，存储静默不可用。
 class SmsStore {
  public:
   // 确保目录存在；max 为条数上限（FIFO 淘汰）
@@ -68,7 +73,7 @@ class SmsStore {
   void lock() const { xSemaphoreTake(_mutex, portMAX_DELAY); }
   void unlock() const { xSemaphoreGive(_mutex); }
 
-  String _dir = "/data/sms";      // 存储目录（挂载点下）
+  String _dir = "/sms";           // 存储目录（相对挂载点：实际为 /data/sms）
   uint16_t _max = 100;            // 条数上限
   bool _enabled = false;          // 分区是否可用
   int _count = 0;                 // 当前条数（内存计数）

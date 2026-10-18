@@ -13,11 +13,20 @@ static bool g_mounted = false;
 // 挂载用户数据分区；重复调用返回首次的结果
 bool begin() {
   if (g_mounted) return true;
-  g_mounted = g_fs.begin(true, "/data", 5, "userdata");
+  // formatOnFail=true 只在注册返回 ESP_FAIL（分区存在但无有效 FS）时自动格式化；
+  // 若仍失败（如全新分区首挂偶发失败），再显式格式化重试一次兜底。
+  g_mounted = g_fs.begin(true, "/data", 10, "userdata");
+  if (!g_mounted) {
+    Serial.println("[fs] userdata mount failed, formatting and retrying");
+    if (g_fs.format()) {
+      g_mounted = g_fs.begin(false, "/data", 10, "userdata");
+    }
+  }
   if (g_mounted) {
-    Serial.println("[fs] userdata mounted at /data");
+    Serial.printf("[fs] userdata mounted at /data (%u bytes)\r\n",
+                  (unsigned)userfs::totalBytes());
   } else {
-    Serial.println("[fs] userdata mount failed");
+    Serial.println("[fs] userdata mount failed (check partition table has 'userdata')");
   }
   return g_mounted;
 }
