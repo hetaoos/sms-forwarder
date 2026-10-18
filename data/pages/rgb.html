@@ -1,0 +1,53 @@
+<div x-data="pageRgb()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>RGB 氛围灯</h2>
+      <p class="page-desc">板载 WS2812（GPIO48）· 预设颜色或任意 RGB 值</p>
+    </div>
+    <button class="btn ghost sm" @click="refresh()">刷新</button>
+  </div>
+
+  <!-- 当前状态 -->
+  <div class="card">
+    <h3>当前颜色</h3>
+    <div class="row"><span class="k">颜色</span>
+      <span class="v"><i class="swatch" :style="'background:rgb(' + currentRgb().join(',') + ')'"></i><span x-text="st.color || '-'"></span></span></div>
+    <div class="row"><span class="k">RGB 值</span>
+      <span class="v" x-text="currentRgb().join(', ')"></span></div>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn" @click="next()">切换到下一个</button>
+      <button class="btn ghost" @click="off()">关闭</button>
+    </div>
+  </div>
+
+  <!-- 预设 -->
+  <div class="card">
+    <h3>预设颜色</h3>
+    <div class="palette">
+      <template x-for="(p, i) in presets" :key="p.name">
+        <div class="sw" :class="{ on: isOn(p) }" @click="applyPreset(i)">
+          <i :style="'background:' + swatchCss(p)"></i>
+          <span x-text="p.name"></span>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- 自定义 -->
+  <div class="card">
+    <h3>自定义颜色</h3>
+    <div class="bar">
+      <div class="field" style="width:90px"><label>R (0-255)</label>
+        <input type="number" min="0" max="255" x-model.number="r"></div>
+      <div class="field" style="width:90px"><label>G (0-255)</label>
+        <input type="number" min="0" max="255" x-model.number="g"></div>
+      <div class="field" style="width:90px"><label>B (0-255)</label>
+        <input type="number" min="0" max="255" x-model.number="b"></div>
+      <div class="field"><label>预览</label>
+        <i class="swatch" style="width:34px;height:34px;margin:0" :style="'background:' + previewCss()"></i></div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="applyRaw()">应用</button></div>
+    </div>
+    <div class="hint">自定义颜色不影响预设索引；「切换到下一个」始终按预设表循环。</div>
+  </div>
+</div>

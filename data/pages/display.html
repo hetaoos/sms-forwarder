@@ -1,0 +1,21 @@
+<div x-data="pageDisplay()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>屏幕显示</h2>
+      <p class="page-desc">ST7789 240x320 · 背光 PWM 控制</p>
+    </div>
+    <button class="btn ghost sm" @click="refresh()">刷新</button>
+  </div>
+
+  <div class="card">
+    <h3>屏幕开关</h3>
+    <div class="row"><span class="k">当前状态</span>
+      <span class="v"><span class="badge" :class="st.disp ? 'ok' : 'err'" x-text="st.disp ? '已开启' : '已关闭'"></span></span></div>
+    <div class="row"><span class="k">面板</span><span class="v">ST7789 240x320 · SPI 40MHz</span></div>
+    <div class="row"><span class="k">背光</span><span class="v">GPIO8 · PWM 默认 80%</span></div>
+    <div class="bar" style="margin-top:14px">
+      <button class="btn" @click="toggle()" x-text="st.disp ? '关闭屏幕' : '打开屏幕'"></button>
+    </div>
+    <div class="hint">关闭屏幕仅熄灭背光，显示内容与刷新逻辑不中断；适合夜间省电或避免漏光。</div>
+  </div>
+</div>

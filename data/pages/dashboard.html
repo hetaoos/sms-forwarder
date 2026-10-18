@@ -1,0 +1,84 @@
+<div x-data="pageDashboard()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>仪表盘</h2>
+      <p class="page-desc">设备运行状态总览 · 每 2 秒自动刷新</p>
+    </div>
+    <button class="btn ghost sm" @click="refresh()">刷新</button>
+  </div>
+
+  <!-- 关键指标 -->
+  <div class="stats">
+    <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
+    <div class="stat"><div class="k">剩余堆内存</div><div class="v" x-text="fmtBytes(st.heap)"></div></div>
+    <div class="stat"><div class="k">信号强度</div>
+      <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
+    <div class="stat"><div class="k">当前 IP</div>
+      <div class="v" style="font-size:15px" x-text="st.ip || '-'"></div></div>
+  </div>
+
+  <div class="grid cols2">
+    <!-- 屏幕 -->
+    <div class="card">
+      <h3>屏幕显示 <span class="badge" :class="st.disp ? 'ok' : 'err'" x-text="st.disp ? '已开启' : '已关闭'"></span></h3>
+      <div class="row"><span class="k">当前网络</span><span class="v" x-text="st.ssid || '-'"></span></div>
+      <div class="row"><span class="k">连接状态</span><span class="v" x-text="st.connected ? '已连接' : '未连接'"></span></div>
+      <div class="bar" style="margin-top:12px">
+        <button class="btn" @click="toggleDisp()" x-text="st.disp ? '关闭屏幕' : '打开屏幕'"></button>
+        <button class="btn ghost" @click="go('display')">屏幕设置</button>
+      </div>
+    </div>
+
+    <!-- RGB -->
+    <div class="card">
+      <h3>RGB 氛围灯</h3>
+      <div class="row"><span class="k">当前颜色</span>
+        <span class="v"><i class="swatch" :style="'background:' + rgbCss()"></i><span x-text="st.color || '-'"></span></span></div>
+      <div class="row"><span class="k">RGB 值</span>
+        <span class="v" x-text="(st.rgb || []).join(', ')"></span></div>
+      <div class="bar" style="margin-top:12px">
+        <button class="btn" @click="nextLed()">切换颜色</button>
+        <button class="btn ghost" @click="go('rgb')">颜色设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 串口状态 -->
+  <div class="card">
+    <h3>串口状态 <span class="sub">AT 透传 · 双串口</span></h3>
+    <template x-for="s in stats" :key="s.port">
+      <div class="row">
+        <span class="k">串口 <span x-text="s.port"></span>
+          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
+        <span class="v" x-text="s.baud + ' 波特率 · RX ' + fmtBytes(s.rx) + ' / TX ' + fmtBytes(s.tx)"></span>
+      </div>
+    </template>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost" @click="go('serial')">进入 AT 控制台</button>
+    </div>
+  </div>
+
+  <!-- 最近动态 -->
+  <div class="card">
+    <h3>最近 AT 动态 <span class="sub">最新 5 条</span></h3>
+    <div class="console" style="height:auto;max-height:260px">
+      <template x-for="e in recent" :key="e.id">
+        <div class="entry">
+          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
+          <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
+          <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
+        </div>
+      </template>
+      <div class="hint" style="color:#6f7885" x-show="!recent.length">暂无记录</div>
+    </div>
+  </div>
+
+  <!-- API 访问令牌 -->
+  <div class="card" x-show="token">
+    <h3>API 访问令牌 <span class="sub">Bearer Token</span></h3>
+    <div class="row"><span class="k">令牌</span><span class="v" style="word-break:break-all" x-text="token"></span></div>
+    <div class="hint">供脚本 / 第三方客户端调用，无需 Cookie：<br>
+      <code>curl -H "Authorization: Bearer &lt;令牌&gt;" http://设备IP/api/status</code><br>
+      令牌仅存于当前浏览器会话，设备重启后失效，重新登录可获取新令牌。</div>
+  </div>
+</div>

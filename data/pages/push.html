@@ -1,0 +1,31 @@
+<div class="page-head">
+  <div>
+    <h2>推送通道</h2>
+    <p class="page-desc">设备事件（短信 / 来电 / 状态）转发到外部服务，支持多通道与策略</p>
+  </div>
+  <span class="badge warn">规划中</span>
+</div>
+
+<div class="card">
+  <div class="empty">
+    <div class="icon">&#128640;</div>
+    <h3>功能规划中</h3>
+    <p>计划支持最多 10 个推送通道，策略为广播 / 故障转移，每通道可配自定义消息格式。</p>
+  </div>
+</div>
+
+<div class="card">
+  <h3>计划支持的推送方式</h3>
+  <table class="table">
+    <thead><tr><th>方式</th><th>说明</th><th>方式</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>POST JSON</td><td>自定义 URL，JSON 报文</td><td>钉钉</td><td>机器人 Webhook</td></tr>
+      <tr><td>GET</td><td>URL 模板拼接</td><td>飞书</td><td>机器人 Webhook</td></tr>
+      <tr><td>Bark</td><td>iOS 推送</td><td>企业微信</td><td>机器人 Webhook</td></tr>
+      <tr><td>PushPlus</td><td>国内推送服务</td><td>Telegram</td><td>Bot API</td></tr>
+      <tr><td>Server 酱</td><td>微信通知</td><td>Gotify</td><td>自托管推送</td></tr>
+      <tr><td>Mailgun</td><td>邮件投递</td><td>自定义 POST</td><td>任意 HTTP 端点</td></tr>
+    </tbody>
+  </table>
+  <div class="hint">消息格式支持占位符（如号码、内容、模组序号、ICCID、时间等），每通道独立配置。</div>
+</div>

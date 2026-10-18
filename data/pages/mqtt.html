@@ -1,0 +1,32 @@
+<div class="page-head">
+  <div>
+    <h2>MQTT</h2>
+    <p class="page-desc">接入 MQTT Broker，实现事件上报与远程控制</p>
+  </div>
+  <span class="badge warn">规划中</span>
+</div>
+
+<div class="card">
+  <div class="empty">
+    <div class="icon">&#128225;</div>
+    <h3>功能规划中</h3>
+    <p>计划支持连接任意标准 MQTT Broker（TLS 可选），与 Home Assistant 等平台联动。</p>
+  </div>
+</div>
+
+<div class="grid cols2">
+  <div class="card">
+    <h3>上报（发布）</h3>
+    <div class="row"><span class="k">事件主题</span><span class="v">短信 / 来电 / 状态变化，JSON 报文</span></div>
+    <div class="row"><span class="k">在线状态</span><span class="v">LWT 遗嘱消息，掉线自动感知</span></div>
+    <div class="row"><span class="k">逐条日志</span><span class="v">运行日志实时推送</span></div>
+    <div class="row"><span class="k">QoS</span><span class="v">QoS 1，离线补发</span></div>
+  </div>
+  <div class="card">
+    <h3>控制（订阅）</h3>
+    <div class="row"><span class="k">发送短信</span><span class="v">指令指定号码与内容</span></div>
+    <div class="row"><span class="k">AT 指令</span><span class="v">远程下发任意 AT 命令</span></div>
+    <div class="row"><span class="k">串口重init</span><span class="v">远程复位串口</span></div>
+    <div class="row"><span class="k">重启设备</span><span class="v">远程重启</span></div>
+  </div>
+</div>

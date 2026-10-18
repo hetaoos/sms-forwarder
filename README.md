@@ -19,12 +19,16 @@
   - 编译期内置默认账号密码（`-DWIFI_SSID_DEFAULT` / `-DWIFI_PASS_DEFAULT`，不设置则为空）
   - NVS 按功能存 JSON 配置，最多 5 组，启动时按顺序依次尝试
   - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-FWD-Setup`，开放热点）
-  - AP 模式下网页用 `admin` / `admin123` Basic 认证保护
+  - 网页与 API 在所有模式下统一认证（`admin` / `admin123`），支持
+    **Cookie 会话**与 **Bearer 访问令牌**两种方式，详见「HTTP API」一节
   - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连
   - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
-- **Web 控制台**（`net/WebPanel`，端口 80）：单页应用打包进 LittleFS 专有分区
-  （`data/index.html`，支持 gzip），页面静态、数据全部经 `/status`、`/at/*`、
-  `/wifi/*` 等 API 动态渲染
+- **Web 控制台**（`net/WebPanel`，端口 80）：Alpine.js 多页应用，打包进
+  LittleFS 专有分区（`data/login.html` + `data/index.html` 外壳 +
+  `data/pages/*.html` 内容页 + `data/assets/` 资源，支持 gzip）。
+  左右布局：左侧分组菜单，右侧按 hash 路由懒加载内容页；
+  全部接口统一在 `/api/` 前缀下，页面与静态资源公开，接口需登录
+  （Cookie 会话或 Bearer 令牌），防止第三方盗用
 
 ## 硬件与引脚
 
@@ -100,7 +104,8 @@ build_flags =
 ## 首次配网流程
 
 1. 烧录后若无任何 WiFi 配置，设备开启热点 **`SMS-FWD-Setup`**（开放，无密码）
-2. 连接该热点，浏览器打开 **`http://192.168.4.1`**，输入 `admin` / `admin123` 登录
+2. 连接该热点，浏览器打开 **`http://192.168.4.1/login`**，在独立登录页输入
+   `admin` / `admin123` 登录（登录响应同时返回 Bearer 令牌，见仪表盘页面）
 3. 进入「WiFi 设置」卡片：**扫描附近 WiFi** → 点击扫描结果填入 SSID →
    输入密码 → **保存并连接**
 4. 连接成功后页面持续可用（双栈模式）；重启后将按保存的顺序自动连接
@@ -122,42 +127,87 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 
 ## HTTP API
 
-AP 配网模式下所有接口均需 Basic 认证（`admin` / `admin123`）。
+**统一约定：请求与响应均为 JSON**——POST 请求体为 JSON
+（`Content-Type: application/json`，非 JSON 的 POST 不匹配处理器）；
+所有响应（含错误）均为 JSON，错误形如
+`{"ok":false,"error":"描述"}` 并带合适的状态码（400 参数错 /
+401 未认证 / 413 请求体过大 / 500 服务端失败），未匹配路径返回
+`{"ok":false,"error":"not found"}`。
+
+页面与静态资源（`/`、`/login`、`/assets/*`、`/pages/*`）公开（不含敏感数据）；
+全部 API 统一在 `/api/` 前缀下，除登录/登出/会话探测外均需认证。支持两种认证方式：
+
+1. **会话 Cookie（浏览器）**：`POST /api/login` 成功后服务端下发 `sid`
+   Cookie（`HttpOnly; SameSite=Strict; Path=/`），浏览器自动携带；
+   `HttpOnly` 使 JS 读不到、`SameSite=Strict` 使 Cookie 不随跨站请求发送，
+   第三方网页无法借登录态发起 CSRF 调用。
+2. **Bearer 访问令牌（脚本/第三方客户端）**：登录响应体返回 `token`，
+   之后请求带 `Authorization: Bearer <token>` 头即可，无需 Cookie。
+
+会话与令牌均为服务端随机生成，仅存内存（上限 8 个），**重启后全部失效**。
+`POST /api/logout` 作废当前会话与令牌。未认证访问返回 401
+`{"ok":false,"error":"unauthorized"}`。
+
+### 认证
+
+| 方法与路径 | 请求体 | 响应 |
+|-----------|--------|------|
+| `POST /api/login` | `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密错 401 |
+| `POST /api/logout` | 无 | `{"ok":true}` + 清除 Cookie，作废当前会话/令牌 |
+| `GET /api/session` | 无 | 已登录 `{"ok":true,"user":"admin"}`，否则 401 |
 
 ### 系统 / 屏幕 / RGB
 
 | 方法与路径 | 说明 |
 |-----------|------|
-| `GET /` | 控制台页面 |
-| `GET /led` | 切换下一个 RGB 颜色，返回颜色名 |
-| `GET /set?c=索引` 或 `?r=&g=&b=` | 设置 RGB（预设索引或任意 RGB） |
-| `GET /disp?on=0\|1` | 屏幕开关 |
-| `GET /status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/mode/connected） |
+| `GET /` | 控制台页面（公开） |
+| `GET /login` | 独立登录页（公开，已登录自动跳回） |
+| `GET /api/led` | 切换下一个 RGB 颜色，返回 `{"color":"颜色名"}` |
+| `GET /api/set?c=索引` 或 `?r=&g=&b=` | 设置 RGB（预设索引或任意 RGB），返回 `{"ok":true}` |
+| `GET /api/disp?on=0\|1` | 屏幕开关，返回 `{"on":bool}` |
+| `GET /api/status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/mode/connected） |
 
 ### 串口 AT
 
 | 方法与路径 | 说明 |
 |-----------|------|
-| `GET /at/send?port=1\|2&baud=115200&eol=0..3&cmd=...&t=1000` | 发送 AT 命令，返回该条记录 JSON |
-| `GET /at/hist?after=-1&n=20` | 增量拉取历史（after 之后，n 条） |
-| `GET /at/clear` | 清空历史 |
-| `GET /at/reset?port=1\|2` | 手动复位串口 |
-| `GET /at/baud` | 默认波特率 |
-| `GET /uart/stats` | 两串口统计 JSON |
+| `GET /api/at/send?port=1\|2&baud=115200&eol=0..3&cmd=...&t=1000` | 发送 AT 命令，返回该条记录 JSON |
+| `GET /api/at/hist?after=-1&n=20` | 增量拉取历史（after 之后，n 条） |
+| `GET /api/at/clear` | 清空历史，返回 `{"ok":true}` |
+| `GET /api/at/reset?port=1\|2` | 手动复位串口，返回 `{"ok":true}` |
+| `GET /api/at/baud` | 默认波特率 |
+| `GET /api/uart/stats` | 两串口统计 JSON |
 
 `eol` 取值：`0`=CRLF，`1`=CR，`2`=LF，`3`=无。
 
 ### WiFi 配网
 
-| 方法与路径 | 说明 |
-|-----------|------|
-| `GET /wifi/status` | 模式（connecting/sta/ap）、连接、AP 信息、已保存数量 |
-| `GET /wifi/scan` | 扫描中返回 `{"busy":1}`；完成返回 `{"busy":0,"nets":[...]}` |
-| `GET /wifi/list` | 已保存配置（密码不回传，仅 `hasPass` 标记） |
-| `POST /wifi/save?ssid=&pass=&connect=1` | 保存（同 SSID 覆盖）并按需立即试连 |
-| `POST /wifi/delete?index=n` | 按序号删除 |
-| `POST /wifi/move?from=n&to=m` | 调整启动顺序 |
-| `POST /wifi/connect?ssid=&pass=` | 仅试连，不保存 |
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/wifi/status` | - | 模式（connecting/sta/ap）、连接、AP 信息、已保存数量 |
+| `GET /api/wifi/scan` | - | 扫描中返回 `{"busy":1}`；完成返回 `{"busy":0,"nets":[...]}` |
+| `GET /api/wifi/list` | - | 已保存配置（密码不回传，仅 `hasPass` 标记） |
+| `POST /api/wifi/save` | `{"ssid":"..","pass":"..","connect":true}` | 保存（同 SSID 覆盖）并按需立即试连；满 5 组返回 500 |
+| `POST /api/wifi/delete` | `{"index":n}` | 按序号删除；越界返回 400 |
+| `POST /api/wifi/move` | `{"from":n,"to":m}` | 调整启动顺序；越界返回 400 |
+| `POST /api/wifi/connect` | `{"ssid":"..","pass":".."}` | 仅试连，不保存 |
+
+脚本调用示例（Bearer 令牌）：
+
+```bash
+TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login \
+  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# 查询状态（GET）
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/status
+
+# 保存 WiFi（POST + JSON 请求体）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"ssid":"MyWiFi","pass":"12345678","connect":true}' \
+  http://设备IP/api/wifi/save
+```
 
 ## 目录结构
 
@@ -178,7 +228,26 @@ src/
     ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈）
     └── AtHistory.h/.cpp     AT 记录环形缓冲（JSON 导出）
 data/
-└── index.html            Web 控制台单页应用（uploadfs 打包进 LittleFS）
+├── login.html            独立登录页（POST /api/login，成功后跳回目标页）
+├── index.html            控制台外壳：左侧分组菜单 + 顶栏 + hash 路由内容区
+├── pages/                内容页片段（按菜单懒加载，纯静态无敏感数据）
+│   ├── dashboard.html    仪表盘：状态指标 / 屏幕 / RGB / 串口 / 最近动态 / API 令牌
+│   ├── serial.html       串口 AT：命令发送 / 历史日志 / 统计 / 复位
+│   ├── wifi.html         WiFi：扫描 / 保存 / 排序 / 删除
+│   ├── rgb.html          RGB 灯：预设 / 自定义颜色
+│   ├── display.html      屏幕显示开关
+│   ├── sms.html          短信记录（规划中）
+│   ├── push.html         推送通道（规划中，13 种方式）
+│   ├── mqtt.html         MQTT（规划中）
+│   ├── blacklist.html    黑名单（规划中）
+│   ├── logs.html         运行日志（规划中）
+│   ├── settings.html     系统设置（规划中）
+│   └── tools.html        系统工具（规划中）
+└── assets/               静态资源（改后需重新 uploadfs）
+    ├── app.css           设计系统与布局样式
+    ├── app.js            菜单配置 / hash 路由 / 认证封装 / 各页 Alpine 组件
+    └── vendor/
+        └── alpine.min.js Alpine.js 3.14.9 运行时（本地内置，AP 模式无外网可用）
 partitions/
 └── esp32s3_16mb.csv      16MB 分区表（含 LittleFS 专有分区）
 script/

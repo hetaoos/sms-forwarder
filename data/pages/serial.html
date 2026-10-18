@@ -1,0 +1,79 @@
+<div x-data="pageSerial()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>串口 AT 控制台</h2>
+      <p class="page-desc">向两个外接串口发送 AT 命令，实时查看响应与统计</p>
+    </div>
+    <div class="bar">
+      <button class="btn ghost sm" @click="reset()">复位串口</button>
+      <button class="btn ghost sm" @click="clear()">清空历史</button>
+    </div>
+  </div>
+
+  <!-- 参数栏 -->
+  <div class="card">
+    <div class="bar">
+      <div class="field"><label>串口</label>
+        <select x-model="port">
+          <option value="1">串口1 (TX17 / RX18)</option>
+          <option value="2">串口2 (TX41 / RX40)</option>
+        </select>
+      </div>
+      <div class="field"><label>波特率</label>
+        <select x-model="baud">
+          <option>9600</option><option>19200</option><option>38400</option>
+          <option>57600</option><option selected>115200</option><option>230400</option>
+          <option>460800</option><option>921600</option>
+        </select>
+      </div>
+      <div class="field"><label>行尾</label>
+        <select x-model="eol">
+          <option value="0">CRLF</option><option value="1">CR</option>
+          <option value="2">LF</option><option value="3">无</option>
+        </select>
+      </div>
+      <div class="field"><label>超时</label>
+        <select x-model="tmo">
+          <option value="300">300ms</option><option value="1000" selected>1s</option>
+          <option value="3000">3s</option>
+        </select>
+      </div>
+    </div>
+    <div class="cmdline bar" style="margin-top:4px">
+      <input class="mono" style="flex:1;min-width:200px" x-model="cmd"
+             placeholder="输入 AT 命令，回车发送（↑/↓ 翻历史）" @keydown="onKey($event)">
+      <button class="btn" @click="send()">发送</button>
+    </div>
+  </div>
+
+  <!-- 统计 -->
+  <div class="grid cols2">
+    <div class="card" x-for="s in stats" :key="s.port">
+      <h3>串口 <span x-text="s.port"></span>
+        <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></h3>
+      <div class="row"><span class="k">波特率</span><span class="v" x-text="s.baud"></span></div>
+      <div class="row"><span class="k">接收 / 发送</span>
+        <span class="v" x-text="fmtBytes(s.rx) + ' / ' + fmtBytes(s.tx)"></span></div>
+      <div class="row"><span class="k">错误中断 / 超时</span>
+        <span class="v" x-text="(s.err || 0) + ' / ' + (s.timeouts || 0)"></span></div>
+      <div class="row"><span class="k">自愈复位</span><span class="v" x-text="s.recovers || 0"></span></div>
+      <div class="row"><span class="k">距上次数据</span><span class="v" x-text="fmtAgo(s.idle)"></span></div>
+    </div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="card">
+    <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 300 条）'"></span></h3>
+    <div class="console" x-ref="console">
+      <template x-for="e in entries" :key="e.id">
+        <div class="entry">
+          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
+          <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
+          <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
+        </div>
+      </template>
+      <div class="hint" style="color:#6f7885" x-show="!entries.length">暂无记录，发送一条命令试试</div>
+    </div>
+    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。</div>
+  </div>
+</div>

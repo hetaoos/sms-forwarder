@@ -9,8 +9,17 @@
 #include "serial/SerialBridge.h"
 
 // HTTP 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网管理
-// 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传），
-// AP 配网模式下所有请求先过 Basic Auth（admin/admin123）中间件
+// 页面资源存放在 LittleFS 专有分区（项目 data/ 目录打包上传）。
+// URL 划分：页面与静态资源在根路径（公开，不含敏感数据），
+// 全部 API 统一在 /api/ 前缀下（除登录/登出/会话探测外均需认证）。
+//
+// 身份认证支持两种方式（任一通过即可）：
+//   1. 会话 Cookie：POST /api/login 成功后服务端下发 sid
+//      （HttpOnly + SameSite=Strict，浏览器自动携带、无法被 JS 读取，
+//      且不会随跨站请求发送，天然防 CSRF）；
+//   2. 访问令牌：Authorization: Bearer <token> 头，登录响应体返回，
+//      供脚本 / 第三方客户端使用。
+// 会话与令牌均为服务端随机生成（esp_random），仅存内存，重启全部失效。
 class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
@@ -28,7 +37,23 @@ class WebPanel {
   // req：请求对象；json：JSON 文本
   void sendJson(AsyncWebServerRequest *req, const String &json);
 
+  // 判断请求是否已认证：会话 Cookie（sid）或 Bearer 访问令牌任一有效即可
+  // req：请求对象
+  bool authorized(AsyncWebServerRequest *req);
+
+  // 生成 32 位十六进制随机凭证（esp_random 硬件熵源，用于 sid / Bearer 令牌）
+  static String genSecret();
+
+  // 内存凭证表操作：新增（满时返回 false）、移除、查找
+  static bool storeAdd(String *store, uint8_t &count, const String &v);
+  static void storeRemove(String *store, uint8_t &count, const String &v);
+  static bool storeHas(const String *store, uint8_t count, const String &v);
+
   AsyncWebServer _server{cfg::kHttpPort};  // 异步 HTTP 服务器（端口见配置）
+  String _sessions[cfg::kMaxSessions];     // 有效会话 Cookie 值（重启失效）
+  String _tokens[cfg::kMaxSessions];       // 有效 Bearer 访问令牌（重启失效）
+  uint8_t _sessionCount = 0;               // 会话表当前数量
+  uint8_t _tokenCount = 0;                 // 令牌表当前数量
   SerialBridge &_bridge;   // AT 串口桥引用
   RgbLed &_led;            // RGB 灯引用
   WifiManager &_wifi;      // WiFi 管理器引用

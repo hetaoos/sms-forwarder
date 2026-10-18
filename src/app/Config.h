@@ -25,8 +25,11 @@ constexpr uint32_t kWifiLostRetryMs = 5000;    // STA 掉线后多久开始重�
 
 // ---------------- AP 配网模式 ----------------
 constexpr const char *kApSsid = "SMS-FWD-Setup";  // AP 热点名（开放无密码，仅配网用）
-constexpr const char *kWebAuthUser = "admin";     // AP 模式下网页管理认证用户名
-constexpr const char *kWebAuthPass = "admin123";  // AP 模式下网页管理认证密码
+constexpr const char *kWebAuthUser = "admin";     // 管理账号用户名（STA/AP 所有模式生效）
+constexpr const char *kWebAuthPass = "admin123";  // 管理账号密码（STA/AP 所有模式生效）
+constexpr const char *kCookieName = "sid";        // 登录会话 Cookie 名（HttpOnly + SameSite=Strict）
+constexpr uint8_t kMaxSessions = 8;               // 内存中同时有效的会话 / 访问令牌数上限
+constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（秒，7 天）
 
 // ---------------- NVS 配置存储 ----------------
 // 按功能分区存放 JSON：WiFi 配置整体是一个 JSON 对象

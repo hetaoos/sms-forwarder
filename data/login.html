@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · ESP32-S3 控制台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="login-body">
+<div class="login-card">
+  <div class="logo">S</div>
+  <h1>ESP32-S3 控制台</h1>
+  <p class="sub">短信转发 / AT 桥接器</p>
+  <form id="loginForm" autocomplete="on">
+    <div class="field">
+      <label>用户名</label>
+      <input id="u" name="user" value="admin" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input id="p" name="pass" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="login-err" id="err"></div>
+    <button class="btn block" type="submit" id="btn">登 录</button>
+  </form>
+  <p class="login-tip">登录后服务器将下发会话 Cookie；<br>接口同时支持 Bearer 访问令牌（见仪表盘页面）</p>
+</div>
+
+<script>
+'use strict';
+// 已登录则直接进入目标页
+function goHome(){
+  const n = new URLSearchParams(location.search).get('next');
+  location.replace(n && /^\/[^/]/.test(n) ? n : '/');
+}
+fetch('/api/session', { cache: 'no-store' }).then(r => { if (r.ok) goHome(); }).catch(() => {});
+
+const form = document.getElementById('loginForm');
+const err = document.getElementById('err');
+const btn = document.getElementById('btn');
+
+form.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = '登录中…';
+  try {
+    const body = JSON.stringify(
+      { user: document.getElementById('u').value.trim(),
+        pass: document.getElementById('p').value });
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body
+    });
+    if (r.ok) {
+      // 保存访问令牌供「仪表盘」页面展示（脚本/第三方客户端用）
+      try { const j = await r.json(); if (j.token) sessionStorage.setItem('apiToken', j.token); } catch (e) {}
+      goHome(); return;
+    }
+    err.textContent = r.status === 401 ? '用户名或密码错误' : ('登录失败（' + r.status + '）');
+  } catch (e) {
+    err.textContent = '网络错误，请重试';
+  }
+  btn.disabled = false;
+  btn.textContent = '登 录';
+});
+</script>
+</body>
+</html>
