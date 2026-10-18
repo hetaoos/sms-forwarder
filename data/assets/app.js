@@ -209,7 +209,19 @@ Alpine.store('live', {
   },
 });
 
-function setConn(s) { Alpine.store('live').conn = s; }
+function setConn(s) {
+  Alpine.store('live').conn = s;
+  renderConnDot();   // 顶栏连接灯（静态元素不走 Alpine 绑定，原因见 index.html 注释）
+}
+
+// 顶栏连接指示灯：静态元素若用 Alpine 绑定，会因 start() 早于本脚本执行
+// （store 未注册）而初始化失败并永久停留在灰色默认态，故在此 imperative 刷新
+function renderConnDot() {
+  const el = document.getElementById('connDot');
+  if (!el) return;
+  el.className = 'conn conn-' + Alpine.store('live').conn;
+  el.title = connTitle();
+}
 
 // 顶栏连接指示灯文案
 function connTitle() {
@@ -357,6 +369,7 @@ const MENU = [
   ]},
   { group: '网络', items: [
     { id: 'wifi', title: 'WiFi 设置', icon: 'wifi' },
+    { id: 'email', title: '邮件通知', icon: 'email' },
     { id: 'push', title: '推送通道', icon: 'push', todo: true },
     { id: 'mqtt', title: 'MQTT', icon: 'mqtt', todo: true },
   ]},
@@ -373,6 +386,7 @@ const ICONS = {
   display: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
   rgb: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>',
   wifi: '<svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 15.8a5.5 5.5 0 0 1 7 0"/><circle cx="12" cy="19" r="1.2"/></svg>',
+  email: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3 7 12 13 21 7"/></svg>',
   push: '<svg viewBox="0 0 24 24"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l4-4"/></svg>',
   mqtt: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7 11l10-4M7 13l10 4"/></svg>',
   sms: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3.5V5z"/></svg>',
@@ -477,6 +491,7 @@ async function bootstrap() {
   window.addEventListener('hashchange', route);
   if (!location.hash) location.hash = '#/dashboard';
   connectSSE();     // SSE 连接（外壳级单例，跨页面共享）
+  renderConnDot();  // 连接灯初态；后续状态变化由 setConn 驱动
   route();
 }
 
@@ -1154,5 +1169,108 @@ function pageModem() {
       if (r) this.applyPorts((await r.json()).modems || []);
     },
     enabledPorts() { return this.modems.filter(m => m.enabled); },
+  };
+}
+
+/* ---------- 邮件通知（SMTP）----------
+ * 配置经 /api/email 读写；通知类型为位掩码（与固件 cfg::kEmailNotify* 一致）：
+ *   bit0 = 设备启动完成  bit1 = SIM 状态变更
+ *   bit2 = 收到短信      bit3 = 定时在线通知
+ * 定时在线通知支持两种排程（bit3 为总控）：固定间隔（intervalH 小时）
+ * 与每日定点（schedHour:schedMinute，依赖时间同步）。
+ * 授权码不回显：保存时留空表示不修改已保存的值。
+ */
+function pageEmail() {
+  const TYPES = [
+    { bit: 4, label: '收到短信', desc: '每收到一条短信发送一封（验证码高亮）' },
+    { bit: 2, label: 'SIM 状态变更', desc: '运行时插卡 / 拔卡各一封' },
+    { bit: 1, label: '设备启动完成', desc: '开机并就绪后发送设备信息' },
+    { bit: 8, label: '定时在线通知', desc: '按排程确认设备仍在线' },
+  ];
+  return {
+    cfg: { server: '', port: 465, user: '', pass: '', sendTo: '', notifyTypes: 15,
+           enabled: true, schedMode: '1', schedHour: 9, schedMinute: 0, intervalH: 24 },
+    configured: false,
+    hasPass: false,
+    saving: false,
+    testing: false,
+    types: TYPES,
+    init() { this.load(); },
+    async load() {
+      try {
+        const r = await apiFetch('/api/email');
+        if (r.ok) {
+          const j = await r.json();
+          this.cfg.server = j.server || '';
+          this.cfg.port = j.port || 465;
+          this.cfg.user = j.user || '';
+          this.cfg.sendTo = j.sendTo || '';
+          this.cfg.notifyTypes = j.notifyTypes ?? 0;
+          this.cfg.enabled = j.enabled ?? true;
+          // schedMode 统一存字符串，与 <input type="radio" value=".."> 精确匹配
+          this.cfg.schedMode = String(j.schedMode ?? 1);
+          this.cfg.schedHour = j.schedHour ?? 9;
+          this.cfg.schedMinute = j.schedMinute ?? 0;
+          this.cfg.intervalH = j.intervalH || 24;
+          this.cfg.pass = '';
+          this.configured = !!j.configured;
+          this.hasPass = !!j.hasPass;
+        }
+      } catch (e) {}
+    },
+    // 总开关：只翻转启用位（不动其余配置），停用时设备丢弃待发邮件
+    async toggleEnabled() {
+      const on = !!this.cfg.enabled;
+      const r = await postOp('/api/email/enabled', { enabled: on },
+                             on ? '邮件通知已启用' : '邮件通知已停用');
+      if (r) {
+        const j = await r.json();
+        this.configured = !!j.configured;
+        this.hasPass = !!j.hasPass;
+      } else {
+        this.cfg.enabled = !on;  // 失败回滚，避免界面与设备不一致
+      }
+    },
+    isOn(bit) { return (this.cfg.notifyTypes & bit) !== 0; },
+    toggle(bit) {
+      this.cfg.notifyTypes = this.isOn(bit)
+        ? (this.cfg.notifyTypes & ~bit) : (this.cfg.notifyTypes | bit);
+    },
+    onlineOn() { return this.isOn(8); },
+    isInterval() { return Number(this.cfg.schedMode) === 1; },
+    async save() {
+      this.saving = true;
+      try {
+        const r = await postOp('/api/email', {
+          server: (this.cfg.server || '').trim(),
+          port: Number(this.cfg.port) || 465,
+          user: (this.cfg.user || '').trim(),
+          pass: this.cfg.pass || '',       // 空 = 不修改已保存授权码
+          sendTo: (this.cfg.sendTo || '').trim(),
+          enabled: !!this.cfg.enabled,
+          notifyTypes: this.cfg.notifyTypes,
+          schedMode: this.isInterval() ? 1 : 0,
+          schedHour: Math.min(23, Math.max(0, Number(this.cfg.schedHour) || 0)),
+          schedMinute: Math.min(59, Math.max(0, Number(this.cfg.schedMinute) || 0)),
+          intervalH: Math.min(720, Math.max(1, Number(this.cfg.intervalH) || 24)),
+        }, '邮件配置已保存');
+        if (r) {
+          const j = await r.json();
+          this.configured = !!j.configured;
+          this.hasPass = !!j.hasPass;
+          this.cfg.pass = '';
+        }
+      } finally {
+        this.saving = false;
+      }
+    },
+    async test() {
+      this.testing = true;
+      try {
+        await postOp('/api/email/test', {}, '测试邮件已发送，请查收邮箱');
+      } finally {
+        this.testing = false;
+      }
+    },
   };
 }

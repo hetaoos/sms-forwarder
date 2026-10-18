@@ -49,6 +49,19 @@ class SmsService {
   using ModemReadyFn = std::function<void(uint8_t port)>;
   void setOnModemReadyCb(ModemReadyFn fn) { _onReady = fn; }
 
+  // 短信接收事件：PDU 解码 / 长短信重组完成后于抽数任务上下文触发
+  // （无论是否落盘成功都会触发——短信确实已收到）。
+  // 回调内只应做轻量操作（如邮件通知入队），禁止阻塞式 AT 与长时间字符串构建。
+  using SmsReceivedFn = std::function<void(const String &sender, const String &text,
+                                           uint32_t ts, int8_t modem)>;
+  void setOnSmsReceivedCb(SmsReceivedFn fn) { _onSms = fn; }
+
+  // SIM 就绪状态变更事件：运行时插卡 / 拔卡（抽数任务上下文触发）。
+  // 仅运行时切换才触发——开机首次就绪与模组重启后的重新就绪不通知
+  // （分别由启动邮件覆盖、且并非真实的插卡事件）。
+  using SimChangeFn = std::function<void(uint8_t port, bool ready)>;
+  void setOnSimChangeCb(SimChangeFn fn) { _onSim = fn; }
+
   // 模组是否已就绪（启用且初始化完成，可收发短信）；port 越界返回 false
   bool modemReady(uint8_t port) const;
 
@@ -120,6 +133,8 @@ class SmsService {
     uint32_t lastOkMs = 0;     // 上次 AT 成功响应时间（探活/诊断用）
     uint32_t lastSendMs = 0;   // 上次发送短信时间（发送窗口内 pollInit 让行，避免干扰 CMGS 握手）
     bool needReinit = false;   // 运行时检测到模组重启 -> 重新开始初始化
+    bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
+    bool simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
 
     // ---- 就绪后遥测（周期轮询，供 UI 展示）----
     int8_t  csq = -1;          // 信号质量 0..31（99=未知），-1 表示未查询
@@ -164,6 +179,11 @@ class SmsService {
   // 处理一条收到的 PDU（解码 + 重组 + 落盘）
   void handleCmt(uint8_t port, const String &pduHex);
 
+  // 设置 SIM 就绪态并检测运行时切换（插卡/拔卡通知）。
+  // 开机首次就绪（everReady=false）与模组重启后的重新就绪（未通知过拔出）
+  // 均不触发事件，避免每次开机/模组重启都误报「SIM 已插入」。
+  void setSimReady(uint8_t port, bool ready);
+
   // 载入 / 保存 NVS 配置；返回是否有有效记录
   bool loadConfig();
   bool saveConfig();
@@ -182,5 +202,7 @@ class SmsService {
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护 _lastSmsId / 配置读写
 
   ModemReadyFn _onReady;    // 模组就绪回调（抽数任务上下文触发）
+  SmsReceivedFn _onSms;     // 短信接收回调（抽数任务上下文触发）
+  SimChangeFn _onSim;       // SIM 就绪状态变更回调（抽数任务上下文触发）
   TimeProviderFn _timeFn;   // 时间戳供给（App 注入；为空则开机秒数）
 };

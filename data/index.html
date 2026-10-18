@@ -24,8 +24,10 @@
       </button>
       <div class="topbar-title" id="pageTitle">仪表盘</div>
       <div class="topbar-right">
-        <!-- SSE 连接状态：绿=已连接 黄=连接/重连中 红=断开（降级轮询） -->
-        <i class="conn" x-data="$store.live" :class="'conn-' + conn" :title="connTitle()"></i>
+        <!-- SSE 连接状态：绿=已连接 黄=连接/重连中 红=断开（降级轮询）。
+             不使用 Alpine 绑定：Alpine.start() 以微任务先于 defer 的 app.js 执行，
+             彼时 store 尚未注册、绑定会失效，故由 app.js renderConnDot() 驱动 -->
+        <i class="conn" id="connDot"></i>
         <span class="chip" id="userChip"></span>
         <button class="btn ghost sm" id="logoutBtn">退出登录</button>
       </div>

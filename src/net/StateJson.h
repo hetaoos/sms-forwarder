@@ -24,6 +24,11 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["rssi"] = wifi.rssi();
   doc["uptime"] = millis() / 1000;
   doc["heap"] = ESP.getFreeHeap();
+  doc["heapSize"] = ESP.getHeapSize();   // 内部堆总容量（与 heap 配对展示 剩余/总量）
+  // PSRAM：总量 0 表示板子无 PSRAM；注意 heap 只统计内部 DRAM，
+  // >4KB 的分配会自动走 PSRAM（CONFIG_SPIRAM_USE_MALLOC），故两者需分别展示
+  doc["psram"] = ESP.getFreePsram();
+  doc["psramSize"] = ESP.getPsramSize();
   doc["color"] = c.name;
   JsonArray rgb = doc["rgb"].to<JsonArray>();
   rgb.add(c.r);

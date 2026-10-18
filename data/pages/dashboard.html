@@ -12,7 +12,8 @@
     <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
     <div class="stat"><div class="k">当前时间</div>
       <div class="v" style="font-size:16px" x-text="st.timeSynced ? st.time : '未同步'"></div></div>
-    <div class="stat"><div class="k">剩余堆内存</div><div class="v" x-text="fmtBytes(st.heap)"></div></div>
+    <div class="stat"><div class="k">堆内存</div><div class="v" x-text="fmtBytes(st.heap) + ' / ' + fmtBytes(st.heapSize)"></div></div>
+    <div class="stat"><div class="k">剩余 PSRAM</div><div class="v" x-text="st.psramSize ? fmtBytes(st.psram) + ' / ' + fmtBytes(st.psramSize) : '无'"></div></div>
     <div class="stat"><div class="k">WiFi 信号</div>
       <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
     <div class="stat"><div class="k">当前 IP</div>

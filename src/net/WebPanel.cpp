@@ -138,12 +138,12 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events/sms：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events/sms/time/email：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, AdminStore &auth, StatusBus &events,
-                   SmsService &sms, TimeSync &time)
+                   SmsService &sms, TimeSync &time, EmailService &email)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events), _sms(sms), _time(time) {}
+      _events(events), _sms(sms), _time(time), _email(email) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -785,6 +785,103 @@ void WebPanel::setupRoutes() {
                }
                sendOk(req, String(",\"id\":") + id);
              });
+
+  // ================= 邮件通知（SMTP）=================
+  // 配置读取：{"ok":true,"configured":bool,"server":"..","port":n,"user":"..",
+  //   "sendTo":"..","hasPass":bool,"notifyTypes":n,"onlineH":n}
+  // SMTP 授权码不回显（hasPass 表示是否已保存），避免泄露
+  _server.on("/api/email", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _email.configJson());
+  });
+
+  // 配置保存：JSON {"server":"..","port":465,"user":"..","pass":"..","sendTo":"..",
+  //   "enabled":true,"notifyTypes":n,"schedMode":0|1,"schedHour":n,"schedMinute":n,
+  //   "intervalH":n}
+  // pass 为空串表示保持已保存的授权码不变（表单不回显）；enabled 为 SMTP
+  // 邮件通知总开关（缺省 true，兼容不带该字段的旧客户端）；notifyTypes 为位掩码
+  // （bit0=设备启动 bit1=SIM状态 bit2=收到短信 bit3=定时在线）；
+  // 定时在线通知排程两种模式：schedMode=1 固定间隔（intervalH 小时）/
+  // schedMode=0 每日定点（schedHour:schedMinute，依赖时间同步）。
+  _server.on("/api/email", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               if (!json.is<JsonObject>()) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               String server = json["server"] | "";
+               String user = json["user"] | "";
+               String pass = json["pass"] | "";
+               String sendTo = json["sendTo"] | "";
+               int port = 0;
+               int notifyTypes = 0;
+               int schedMode = 0;
+               int schedHour = 0;
+               int schedMinute = 0;
+               int intervalH = 0;
+               bool enabled = json["enabled"] | true;
+               jsonInt(json["port"], port);
+               jsonInt(json["notifyTypes"], notifyTypes);
+               jsonInt(json["schedMode"], schedMode);
+               jsonInt(json["schedHour"], schedHour);
+               jsonInt(json["schedMinute"], schedMinute);
+               jsonInt(json["intervalH"], intervalH);
+
+               MailSchedule sched;
+               sched.mode = (schedMode == (int)cfg::kSchedModeDaily)
+                                ? cfg::kSchedModeDaily
+                                : cfg::kSchedModeInterval;
+               sched.hour = (uint8_t)constrain(schedHour, 0, 23);
+               sched.minute = (uint8_t)constrain(schedMinute, 0, 59);
+               int ih = constrain(intervalH, (int)cfg::kMailIntervalHMin,
+                                  (int)cfg::kMailOnlineIntervalMaxH);
+               sched.intervalH = (uint16_t)(ih > 0 ? ih
+                                                   : cfg::kMailIntervalHDefault);
+
+               if (!_email.saveConfig(server, (uint16_t)port, user, pass, sendTo,
+                                      (uint32_t)notifyTypes, sched, enabled)) {
+                 sendErr(req, 500, "config save failed");
+                 return;
+               }
+               sendJson(req, _email.configJson());
+             });
+
+  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
+  // （停用时丢弃待发队列，已保存的 SMTP 参数与通知类型保留）
+  _server.on("/api/email/enabled", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               bool on = true;
+               if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
+                 sendErr(req, 400, "invalid json");
+                 return;
+               }
+               if (!_email.setEnabled(on)) {
+                 sendErr(req, 500, "config save failed");
+                 return;
+               }
+               sendJson(req, _email.configJson());
+             });
+
+  // 测试发送：立即同步发一封测试邮件（单次尝试，最长阻塞约 15s）。
+  // 用户主动触发、频率极低，可接受；队列中的通知邮件不受影响。
+  _server.on("/api/email/test", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    if (!_email.enabled()) {
+      sendErr(req, 400, "邮件通知未启用，请先打开总开关");
+      return;
+    }
+    if (!_email.isConfigured()) {
+      sendErr(req, 400, "邮件配置不完整，请先保存服务器/账号/授权码/收件人");
+      return;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      sendErr(req, 400, "WiFi 未连接，无法发送");
+      return;
+    }
+    if (!_email.sendTest()) {
+      sendErr(req, 500, "发送失败，请检查 SMTP 配置与网络");
+      return;
+    }
+    sendOk(req);
+  });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）
   _server.onNotFound([](AsyncWebServerRequest *req) {

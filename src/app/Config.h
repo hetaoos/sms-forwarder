@@ -40,6 +40,44 @@ constexpr const char *kNvsKeyWifi = "wifi";      // WiFi 配置键（JSON 对象
 constexpr const char *kNvsKeyAuth = "auth";      // 管理账号键（JSON 对象，{"ver":1,"user":"..","pass":".."}）
 constexpr const char *kNvsKeySms = "sms";        // 短信配置键（{"ver":1,"max":n,"modems":[{"port":1,"enabled":true},..]}）
 constexpr const char *kNvsKeyToken = "apitoken"; // API 访问令牌键（持久化，重启不失效，用于脚本/第三方客户端）
+constexpr const char *kNvsKeyEmail = "email";    // 邮件配置键（{"ver":1,"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","notifyTypes":n,"onlineH":n}）
+
+// ---------------- SMTP 邮件通知（参考 esp32-sms-forwarding）----------------
+// 通知类型位掩码：每个位代表一类「会单独发一封 HTML 邮件」的事件。
+// 关闭后该事件不再发邮件，短信存储 / SSE / Web 等其余功能不受影响。
+// 位定义与 esp32-sms-forwarding 的 EmailNotifyType 保持一致，便于两个项目对照；
+// 新增类型时：这里加一位 → EmailService 加一个构建分支 → Web 表单加一个复选框。
+constexpr uint32_t kEmailNotifyStartup = 1u << 0;  // 设备启动完成
+constexpr uint32_t kEmailNotifySim     = 1u << 1;  // SIM 状态变更（运行时插入/拔出）
+constexpr uint32_t kEmailNotifySms     = 1u << 2;  // 收到短信
+constexpr uint32_t kEmailNotifyOnline  = 1u << 3;  // 定时在线通知（确认设备仍在线）
+// 全部已知位（保存配置时过滤越界位用）
+constexpr uint32_t kEmailNotifyAll = kEmailNotifyStartup | kEmailNotifySim |
+                                     kEmailNotifySms | kEmailNotifyOnline;
+// 出厂默认：四类全开
+constexpr uint32_t kEmailNotifyDefault = kEmailNotifyAll;
+
+// SMTP 默认端口：465 为隐式 TLS（握手即加密，多数服务商推荐）。
+// 587（STARTTLS 明文起连后升级）不适用——底层直接用 WiFiClientSecure 连接。
+constexpr uint16_t kMailSmtpPortDefault = 465;
+constexpr uint16_t kMailOnlineIntervalMaxH = 720;    // 定时在线通知最大间隔（小时，30 天）
+constexpr uint16_t kMailIntervalHMin = 1;            // 间隔模式周期下限（小时）
+constexpr uint16_t kMailIntervalHDefault = 24;       // 间隔模式默认周期（小时）
+constexpr uint8_t  kMailQueueSize = 6;               // 待发邮件队列深度（超出丢弃新通知）
+constexpr uint8_t  kMailMaxAttempts = 3;             // 单封邮件最大尝试次数（含首次）
+constexpr uint32_t kMailSocketTimeoutMs = 15000;     // SMTP 单次 socket 读写上限（ms）
+constexpr uint32_t kMailBootDelayMs = 15000;         // 启动邮件延迟（等 WiFi 连上再发）
+constexpr uint32_t kMailBootWaitMaxMs = 300000;      // 启动邮件最长等待（5 分钟，超时放弃）
+
+// ---------------- 定时在线通知排程模式（与 esp32-sms-forwarding 的 Schedule.mode 一致）-
+// 总控开关为通知类型位 kEmailNotifyOnline（Web「通知类型」里的「定时在线通知」）；
+// 勾选后按这里的模式触发：间隔模式基于 millis()（开机起算），
+// 每日模式基于本地时间（依赖 NTP / SIM 时间同步，未同步时不触发）。
+constexpr uint8_t kSchedModeDaily    = 0;  // 每日定点（hour:minute）
+constexpr uint8_t kSchedModeInterval = 1;  // 固定间隔（intervalH 小时）
+// 每日模式触发窗口（秒）：tick 被邮件发送等阻塞时可能错过触发分，
+// 窗口内的迟到触发仍算有效（配合 NVS 记录的上次触发时刻，不会重复发）
+constexpr uint32_t kMailDailyWindowSec = 600;
 
 // ---------------- 外部串口（AT 模块）----------------
 // 串口1：TX -> 模块 RX，RX <- 模块 TX

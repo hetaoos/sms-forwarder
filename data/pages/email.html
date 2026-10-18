@@ -1,0 +1,124 @@
+<div x-data="pageEmail()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>邮件通知</h2>
+      <p class="page-desc">通过 SMTP 发送通知邮件（统一 HTML 卡片模板，验证码高亮），配置保存到 NVS，重启后仍有效</p>
+    </div>
+    <button class="btn ghost sm" @click="load()">刷新</button>
+  </div>
+
+  <!-- SMTP 服务器配置 -->
+  <div class="card">
+    <h3>SMTP 服务器</h3>
+    <!-- 总开关：停用后一切邮件都不发（含定时在线通知），已保存配置保留 -->
+    <div class="bar" style="margin-bottom:4px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:#333">
+        <input type="checkbox" x-model="cfg.enabled" @change="toggleEnabled()">
+        <b>启用邮件通知</b>
+      </label>
+      <span class="badge" :class="cfg.enabled ? 'ok' : 'err'"
+            x-text="cfg.enabled ? '已启用' : '已停用'"></span>
+      <span class="badge" :class="configured ? 'ok' : 'warn'"
+            x-text="configured ? '配置完整' : '配置不完整'"></span>
+    </div>
+    <div class="hint" x-show="!cfg.enabled" style="margin:0 0 12px">
+      已停用：短信 / SIM / 启动 / 定时在线通知都不会发送，待发邮件被丢弃；
+      已保存的服务器、账号与通知类型保留，重新开启后立即恢复。
+    </div>
+    <form @submit.prevent="save()">
+      <div class="grid cols2">
+        <div class="field"><label>SMTP 服务器</label>
+          <input class="inp" x-model="cfg.server" placeholder="smtp.qq.com"
+                 maxlength="64" autocomplete="off"></div>
+        <div class="field"><label>端口（仅隐式 TLS，如 465）</label>
+          <input class="inp" x-model="cfg.port" type="number" min="1" max="65535"></div>
+        <div class="field"><label>发件邮箱（同时作为登录账号）</label>
+          <input class="inp" x-model="cfg.user" placeholder="user@qq.com"
+                 maxlength="64" autocomplete="off"></div>
+        <div class="field"><label>SMTP 授权码</label>
+          <input class="inp" x-model="cfg.pass" type="password" autocomplete="new-password"
+                 maxlength="64" :placeholder="hasPass ? '已保存（留空则不修改）' : '请输入授权码'"></div>
+        <div class="field"><label>收件邮箱</label>
+          <input class="inp" x-model="cfg.sendTo" placeholder="me@example.com"
+                 maxlength="128" autocomplete="off"></div>
+      </div>
+      <div class="bar" style="margin-top:14px">
+        <button class="btn" type="submit" :disabled="saving"
+                x-text="saving ? '保存中…' : '保存配置'"></button>
+        <button class="btn ghost" type="button"
+                :disabled="testing || !configured || !cfg.enabled"
+                @click="test()" x-text="testing ? '发送中…' : '发送测试邮件'"></button>
+      </div>
+    </form>
+    <div class="hint">
+      多数邮箱服务商使用「授权码」而非登录密码（如 QQ 邮箱：设置 → 账号 → 开启 SMTP 服务后获取）。<br>
+      仅支持握手即加密的隐式 TLS 端口（465 等）；587（STARTTLS 明文起连后升级）不适用。
+    </div>
+  </div>
+
+  <!-- 通知类型 -->
+  <div class="card">
+    <h3>通知类型</h3>
+    <p class="page-desc" style="margin:0 0 10px">
+      勾选的事件会各自发送一封 HTML 邮件；关闭后不影响短信存储、SSE 与其它功能。
+    </p>
+    <div class="grid cols2">
+      <template x-for="t in types" :key="t.bit">
+        <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer">
+          <input type="checkbox" style="margin-top:3px" :checked="isOn(t.bit)"
+                 @change="toggle(t.bit)">
+          <span>
+            <span style="font-size:14px;color:#333" x-text="t.label"></span><br>
+            <span style="font-size:12px;color:#8a94a3" x-text="t.desc"></span>
+          </span>
+        </label>
+      </template>
+    </div>
+    <div class="bar" style="margin-top:10px">
+      <button class="btn sm" :disabled="saving" @click="save()">保存通知类型</button>
+      <span class="hint" style="margin:0">当前掩码：<b x-text="'0x' + cfg.notifyTypes.toString(16).toUpperCase()"></b></span>
+    </div>
+
+    <!-- 定时在线通知排程：勾选「定时在线通知」后出现，两种触发模式 -->
+    <div x-show="onlineOn()" x-cloak
+         style="margin-top:16px;border-top:1px solid #eef1f4;padding-top:14px">
+      <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:4px">定时在线通知排程</div>
+      <p class="page-desc" style="margin:0 0 12px">
+        保存排程后会立即发送一封在线通知，便于确认配置生效。
+      </p>
+      <div class="bar" style="gap:16px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="radio" value="1" x-model="cfg.schedMode"> 固定间隔
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="radio" value="0" x-model="cfg.schedMode"> 每日定点
+        </label>
+      </div>
+      <div class="bar" style="margin-top:10px" x-show="isInterval()">
+        <div class="field" style="width:150px"><label>间隔（小时，1-720）</label>
+          <input class="inp" x-model="cfg.intervalH" type="number" min="1" max="720"></div>
+        <span class="hint" style="margin:0">开机后每满一个周期发送一次</span>
+      </div>
+      <div class="bar" style="margin-top:10px" x-show="!isInterval()">
+        <div class="field" style="width:110px"><label>小时（0-23）</label>
+          <input class="inp" x-model="cfg.schedHour" type="number" min="0" max="23"></div>
+        <div class="field" style="width:110px"><label>分钟（0-59）</label>
+          <input class="inp" x-model="cfg.schedMinute" type="number" min="0" max="59"></div>
+        <span class="hint" style="margin:0">依赖时间同步（NTP / SIM），未同步时不触发</span>
+      </div>
+      <div class="bar" style="margin-top:12px">
+        <button class="btn sm" :disabled="saving" @click="save()">保存排程</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模板说明 -->
+  <div class="card">
+    <h3>邮件模板</h3>
+    <div class="row"><span class="k">版式</span><span class="v">统一 HTML 卡片（灰底白卡 + 渐变标题栏 + 状态徽标）</span></div>
+    <div class="row"><span class="k">验证码</span><span class="v">识别「验证码 / OTP / code」等关键词，标题与正文大字高亮</span></div>
+    <div class="row"><span class="k">兜底</span><span class="v">客户端不支持 HTML 时自动附带纯文本正文</span></div>
+    <div class="row"><span class="k">公共信息</span><span class="v">系统时间、各模组本机号码（或设备 IP）、运行时长</span></div>
+    <div class="row"><span class="k">发送方式</span><span class="v">主循环队列发送（不阻塞短信收发），失败退避重试 3 次</span></div>
+  </div>
+</div>

@@ -11,7 +11,9 @@ struct StatusInfo {
   const char *time = "--:--:--";  // 当前时间 "HH:MM:SS"（时钟未同步为 --:--:--）
   int8_t rssi = 0;            // WiFi 信号强度，单位 dBm（未连接时为 0）
   uint32_t uptimeSec = 0;     // 系统运行秒数
-  uint32_t freeHeap = 0;      // 剩余堆内存，单位字节
+  uint32_t freeHeap = 0;      // 剩余内部堆内存（DRAM），单位字节
+  uint32_t psramSize = 0;     // PSRAM 总容量（板载 8MB；无 PSRAM 为 0），单位字节
+  uint32_t freePsram = 0;     // 剩余 PSRAM，单位字节
   const char *ledName = "-";  // RGB 灯当前颜色名（如 "RED"）
   uint8_t lastPort = 0;       // 最近一次 AT 交互所在串口号，0 表示暂无 AT 记录
   const char *lastCmd = "";   // 最近一条 AT 命令（空 = 串口自发上报）

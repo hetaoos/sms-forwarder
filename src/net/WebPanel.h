@@ -6,6 +6,7 @@
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/AdminStore.h"
+#include "net/EmailService.h"
 #include "net/StatusBus.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
@@ -32,9 +33,11 @@ class WebPanel {
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
-  // time：时间同步（状态 JSON 输出当前时间/来源）
+  // time：时间同步（状态 JSON 输出当前时间/来源）；
+  // email：SMTP 邮件通知（配置读写 + 测试发送）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
-           AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time);
+           AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time,
+           EmailService &email);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -81,4 +84,5 @@ class WebPanel {
   StatusBus &_events;      // SSE 状态推送总线引用
   SmsService &_sms;        // 短信服务引用
   TimeSync &_time;         // 时间同步引用
+  EmailService &_email;    // SMTP 邮件通知引用
 };

@@ -30,6 +30,7 @@ bool App::begin() {
   _wifi.setOnConnectCb([this] { _time.syncNTP(); });
   _wifi.begin();                       // 读 NVS 配置并启动连接状态机（非阻塞）
   _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
+  _email.begin(_wifi, _sms, _time);    // 邮件：载入 SMTP 配置（NVS）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
@@ -37,8 +38,21 @@ bool App::begin() {
   // 短信时间戳供给：已同步返回纪元秒，未同步返回开机秒数
   // （前端按 >=1.6e9 区分「真实时间 / 开机时长」，无需改动）
   _sms.setTimeProvider([this] { return _time.epochOrUptime(); });
+  // 短信接收 -> 邮件通知入队（回调仅入队，SMTP 会话在 App::tick 执行，
+  // 不阻塞串口抽数任务）
+  _sms.setOnSmsReceivedCb([this](const String &sender, const String &text,
+                                 uint32_t ts, int8_t modem) {
+    _email.notifySms(sender, text, ts, modem);
+  });
+  // SIM 运行时插拔 -> 邮件通知入队
+  _sms.setOnSimChangeCb([this](uint8_t port, bool ready) {
+    _email.notifySim(port, ready);
+  });
   _panel.begin();                      // 启动 HTTP 服务
+  _email.notifyStartup();              // 排入启动邮件（等 WiFi 就绪后发出）
 
+  Serial.printf("[app] heap free %u B, psram %u/%u B\r\n", ESP.getFreeHeap(),
+                ESP.getFreePsram(), ESP.getPsramSize());
   Serial.println("[app] ready");
   return true;
 }
@@ -52,6 +66,8 @@ StatusInfo App::collectStatus() {
   s.apMode = _wifi.apMode();
   s.uptimeSec = millis() / 1000;
   s.freeHeap = ESP.getFreeHeap();
+  s.psramSize = ESP.getPsramSize();   // 0 表示板子无 PSRAM
+  s.freePsram = ESP.getFreePsram();
   s.ledName = _led.color().name;
   s.rssi = s.wifiUp ? _wifi.rssi() : 0;
 
@@ -75,13 +91,16 @@ StatusInfo App::collectStatus() {
 // 1. 推进 WiFi 断线重连
 // 2. SSE 状态推送（diff 比对，无客户端时几乎零开销）
 // 3. 短信长报文重组超时清理
-// 4. 每 kUiRefreshMs 毫秒重绘一次屏幕（内容变化才会实际刷新）
-// 5. 短暂延时让出 CPU
+// 4. 邮件通知：发送队列 / 定时在线通知 / 启动邮件（SMTP 会话同步阻塞，
+//    放在屏幕刷新前，保证一轮邮件发送完成后界面立即跟上）
+// 5. 每 kUiRefreshMs 毫秒重绘一次屏幕（内容变化才会实际刷新）
+// 6. 短暂延时让出 CPU
 void App::tick() {
   _wifi.tick();
   _time.tick();                        // NTP 超时判定 / SIM NITZ 重试 / 时间落盘
   _events.tick();
   _sms.tick();
+  _email.tick();                       // 邮件通知发送队列（无待发时零开销）
 
   if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
     _lastUiMs = millis();

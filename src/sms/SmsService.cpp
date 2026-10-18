@@ -344,6 +344,34 @@ bool SmsService::modemReady(uint8_t port) const {
   return _modems[port].initState == ModemInitState::kReady;
 }
 
+// 设置 SIM 就绪态并检测运行时切换（插卡/拔卡事件）。
+// 两类「假切换」必须排除，否则每次开机/模组重启都会误报：
+//   1. 开机首次就绪：everReady=false（模组从未就绪过），属启动流程；
+//   2. 模组重启后的重新就绪：未通知过拔出（simRemovedNotified=false）。
+// 只有「就绪 -> 拔出 -> 重新就绪」这条真实路径会成对发出两个事件。
+void SmsService::setSimReady(uint8_t port, bool ready) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  if (m.simReady == ready) return;
+  m.simReady = ready;
+
+  if (!ready) {
+    // 运行时掉卡：仅当模组曾就绪（排除开机初始化过程）才通知
+    if (m.everReady && !m.simRemovedNotified) {
+      m.simRemovedNotified = true;
+      Serial.printf("[sms] port%u SIM 卡已拔出\r\n", (unsigned)port);
+      if (_onSim) _onSim(port, false);
+    }
+  } else {
+    // 重新插卡：仅当之前通知过拔出才通知
+    if (m.simRemovedNotified) {
+      m.simRemovedNotified = false;
+      Serial.printf("[sms] port%u SIM 卡已插入\r\n", (unsigned)port);
+      if (_onSim) _onSim(port, true);
+    }
+  }
+}
+
 // 启动异步初始化：仅置初始态与计数，真正的 AT 交互由 pollInit（抽数任务轮询）驱动
 void SmsService::startInit(uint8_t port) {
   ModemState &m = _modems[port];
@@ -510,11 +538,11 @@ void SmsService::pollInit(uint8_t port) {
     case ModemInitState::kWaitCpin: {
       if (!at("AT+CPIN?", cfg::kSmsCmdTimeoutMs)) return;
       if (resp.indexOf("+CPIN: READY") >= 0) {
-        m.simReady = true;
+        setSimReady(port, true);
         m.initState = ModemInitState::kBringRf;
         m.nextPollMs = now + 200;
       } else if (resp.indexOf("NOT INSERTED") >= 0 || resp.indexOf("+CME ERROR: 10") >= 0) {
-        m.simReady = false;
+        setSimReady(port, false);
         m.initState = ModemInitState::kFault;  // 明确未插卡：慢速重试（也许会插卡）
         m.nextPollMs = now + cfg::kModemFaultRetryMs;
       } else {
@@ -586,6 +614,7 @@ void SmsService::pollInit(uint8_t port) {
       if (m.configStep >= (int)(sizeof(kCmds) / sizeof(kCmds[0]))) {
         m.initState = ModemInitState::kReady;
         m.failCount = 0;
+        m.everReady = true;  // 此后 SIM 掉卡/插卡才算「运行时事件」
         m.lastOkMs = now;
         m.nextPollMs = now + cfg::kModemLivenessMs;
         Serial.printf("[sms] port%u 模组就绪（PDU 模式 + 短信直投已配置）\r\n",
@@ -721,8 +750,28 @@ void SmsService::pollInit(uint8_t port) {
             }
             break;
           }
+          case 8: {  // SIM 卡在位检测 AT+CPIN?（运行时拔卡检测，约每 36s 一轮）
+            if (at("AT+CPIN?", cfg::kSmsCmdTimeoutMs)) {
+              if (resp.indexOf("+CPIN: READY") >= 0) {
+                setSimReady(port, true);
+              } else if (resp.indexOf("+CPIN:") >= 0 ||
+                         resp.indexOf("NOT INSERTED") >= 0 ||
+                         resp.indexOf("+CME ERROR: 10") >= 0) {
+                // 掉卡/卡失效：标记未就绪（触发「已拔出」通知）并重新初始化。
+                // 状态机经 kWaitCpin 确认后进故障态慢速重试；用户重新插卡后
+                // CPIN 恢复 READY，setSimReady 会补发「已插入」通知。
+                setSimReady(port, false);
+                if (!m.needReinit) {
+                  m.needReinit = true;
+                  Serial.printf("[sms] port%u SIM 卡疑似拔出，重新初始化\r\n",
+                                (unsigned)port);
+                }
+              }
+            }
+            break;
+          }
         }
-        m.teleStep = (m.teleStep + 1) % 8;
+        m.teleStep = (m.teleStep + 1) % 9;
       }
       return;
     }
@@ -804,6 +853,9 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     Serial.printf("[sms] port%u received from %s but store failed\r\n",
                   (unsigned)port, sender.c_str());
   }
+  // 通知上层（邮件通知等）。落盘失败也通知——短信确实已收到，
+  // 不应因存储异常丢掉通知。回调运行于抽数任务上下文，只允许轻量操作。
+  if (_onSms) _onSms(sender, text, msg.ts, (int8_t)port);
 }
 
 // 最新一条短信的摘要 JSON

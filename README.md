@@ -33,6 +33,20 @@
 - **SSE 实时推送**（`net/StatusBus`，`/api/sse`）：状态变化时主动推送给
   全部已连接浏览器（1 秒 diff 比对，只推变化），网页端不再轮询状态接口；
   REST 接口原样保留供第三方客户端使用
+- **SMTP 邮件通知**（`net/EmailService`，参考 esp32-sms-forwarding 实现）
+  - 统一 HTML 卡片模板（灰底白卡 + 渐变标题栏 + 状态徽标 + 公共信息块），
+    自动识别短信验证码并在标题/正文大字高亮；客户端不支持 HTML 时附带纯文本兜底
+  - 通知类型位掩码（可分别开关）：**收到短信** / **SIM 状态变更** /
+    **设备启动完成** / **定时在线通知**（两种排程：固定间隔 N 小时 /
+    每日定点时:分，未勾选则不触发）
+  - 运行期插拔卡检测：遥测周期查询 `AT+CPIN?`，掉卡/插卡成对通知
+    （开机首次就绪与模组重启不误报）
+  - 非阻塞入队 + 主循环发送：短信/SIM 回调（串口抽数任务）只做入队，
+    SMTP 会话在 `App::tick` 执行，失败退避重试 3 次，认证失败不重试
+  - 配置存 NVS（`appcfg` / `email`），授权码不回显；网页可发送测试邮件
+  - **总开关**：停用后一切邮件都不发（短信 / SIM / 启动 / 定时在线全部静默
+    跳过，待发队列丢弃），已保存的服务器、账号与通知类型保留，重新开启立即恢复
+  - 仅支持隐式 TLS 端口（465 等，握手即加密），不支持 587（STARTTLS）
 
 ## 硬件与引脚
 
@@ -56,6 +70,8 @@
 - ESP32Async/AsyncTCP 3.5.0
 - lovyan03/LovyanGFX 1.2.33
 - bblanchon/ArduinoJson 7.x
+- mobizt/ReadyMail 0.4.x（SMTP 邮件发送，需 C++17，见 `platformio.ini` 的
+  `-std=gnu++17` 与 `build_unflags`）
 
 ```bash
 # 编译
@@ -223,6 +239,72 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 | `POST /api/wifi/move` | `{"from":n,"to":m}` | 调整启动顺序；越界返回 400 |
 | `POST /api/wifi/connect` | `{"ssid":"..","pass":".."}` | 仅试连，不保存 |
 
+### 邮件通知（SMTP）
+
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/email` | - | 邮件配置：`{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":465,"user":"..","sendTo":"..","hasPass":bool,"notifyTypes":n,"schedMode":0\|1,"schedHour":n,"schedMinute":n,"intervalH":n}`；授权码不回显 |
+| `POST /api/email` | `{"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","enabled":true,"notifyTypes":15,"schedMode":1,"schedHour":9,"schedMinute":0,"intervalH":24}` | 保存配置并落盘 NVS；`pass` 为空串表示不修改已保存授权码；`enabled` 为 SMTP 邮件通知总开关（缺省 true，兼容不带该字段的旧客户端）；`notifyTypes` 为位掩码（bit0=设备启动 bit1=SIM状态 bit2=收到短信 bit3=定时在线）；排程 `schedMode=1` 固定间隔（`intervalH` 小时，1-720）/ `schedMode=0` 每日定点（`schedHour:schedMinute`，依赖时间同步）；保存成功返回最新配置 |
+| `POST /api/email/enabled` | `{"enabled":true\|false}` | 只翻转总开关，不动其余配置；停用时丢弃待发队列，重新开启后立即恢复 |
+| `POST /api/email/test` | 无 | 立即发送一封测试邮件（单次尝试，最长阻塞约 15s）；总开关未开、配置不完整或 WiFi 未连接返回 400，发送失败 500 |
+
+**总开关**（`enabled`）：false 时一切邮件都不发送——短信 / SIM / 启动 /
+定时在线通知全部静默跳过，待发队列丢弃；已保存的 SMTP 参数与通知类型保留，
+重新开启后立即恢复。与「配置完整」（`configured`，四项参数齐全）相互独立：
+实际能否发邮件由 `enabled && configured` 共同决定。NVS 无该字段时默认开启
+（旧固件没有总开关，升级后保持原行为）。
+
+邮件模板：所有通知邮件共用一套卡片式 HTML（`EmailService::buildHtml`）——
+灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各模组
+本机号码或设备 IP / 运行时长）+ 底部标识；短信邮件额外带验证码高亮块
+（识别「验证码 / OTP / code」等关键词附近的 4~6 位数字串，标题形如
+「验证码: 123456 来自 示例」）。HTML 超长（>6000 字符）时自动降级为纯文本。
+
+通知类型默认四类全开；「SIM 状态变更」仅在运行时插拔卡时触发（开机首次
+就绪、模组重启后的重新就绪均不通知）。发送走主循环队列，失败退避重试 3 次
+（2s / 4s），认证失败（账号或授权码错）直接丢弃并提示，不消耗重试。
+
+**定时在线通知排程**（由通知类型位 bit3 总控，勾选后按排程触发）：
+
+| 模式 | 字段 | 说明 |
+|------|------|------|
+| 固定间隔 | `schedMode=1` + `intervalH`（1-720 小时） | 基于 millis 计时，开机后每满一个周期发送一次 |
+| 每日定点 | `schedMode=0` + `schedHour`(0-23) + `schedMinute`(0-59) | 基于本地时间，每天到点发送一次；**依赖 NTP / SIM 时间同步**，未同步不触发；触发时刻落盘 NVS（`lastDaily`），重启不会补发当天已发过的通知；tick 被邮件发送阻塞时，触发点起 10 分钟窗口内的迟到触发仍有效 |
+
+保存配置（含排程）后会立即补发一封在线通知，便于确认配置生效。
+
+邮件配置脚本示例（Bearer 令牌）：
+
+```bash
+TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login \
+  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# 查询邮件配置（GET）
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/email
+
+# 保存邮件配置（POST + JSON 请求体；pass 留空则不修改授权码）
+# 示例：每日 09:00 发送在线通知（schedMode=0）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":15,"schedMode":0,"schedHour":9,"schedMinute":0}' \
+  http://设备IP/api/email
+
+# 示例：固定间隔 24 小时（schedMode=1 + intervalH）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":15,"schedMode":1,"intervalH":24}' \
+  http://设备IP/api/email
+
+# 总开关：停用 / 重新启用邮件通知（只翻开关，不动其余配置）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enabled":false}' \
+  http://设备IP/api/email/enabled
+
+# 发送测试邮件
+curl -X POST -H "Authorization: Bearer $TOKEN" http://设备IP/api/email/test
+```
+
 脚本调用示例（Bearer 令牌）：
 
 ```bash
@@ -247,7 +329,7 @@ src/
 ├── main.cpp              Arduino 入口（setup/loop 驱动 App）
 ├── app/                  应用层
 │   ├── App.h/.cpp        模块装配与主循环调度
-│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时
+│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 邮件通知类型
 │   └── StatusInfo.h      App -> Display 的状态快照结构
 ├── hal/                  硬件抽象层
 │   ├── Display.h/.cpp    ST7789 屏幕（pimpl 隔离 LovyanGFX）
@@ -255,6 +337,7 @@ src/
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
 │   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
+│   ├── EmailService.h/.cpp  SMTP 邮件通知：HTML 模板 + 通知类型 + 发送队列
 │   ├── StatusBus.h/.cpp   SSE 实时推送（/api/sse，diff 比对只推变化）
 │   ├── StateJson.h        状态快照 JSON 序列化（REST 与 SSE 共用）
 │   └── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
@@ -268,6 +351,7 @@ data/
 │   ├── dashboard.html    仪表盘：状态指标 / 屏幕 / RGB / 串口 / 最近动态 / API 令牌
 │   ├── serial.html       串口 AT：命令发送 / 历史日志 / 统计 / 复位
 │   ├── wifi.html         WiFi：扫描 / 保存 / 排序 / 删除
+│   ├── email.html        邮件通知：SMTP 配置 / 通知类型 / 测试发送
 │   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
 │   ├── display.html      屏幕显示：开关 / 背光亮度调节
 │   ├── sms.html          短信记录（规划中）

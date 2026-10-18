@@ -6,6 +6,7 @@
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/AdminStore.h"
+#include "net/EmailService.h"
 #include "net/StatusBus.h"
 #include "net/WifiManager.h"
 #include "net/WebPanel.h"
@@ -34,7 +35,8 @@ class App {
   TimeSync _time;           // 时间同步（NTP 为主，SIM NITZ 兜底；依赖 _bridge/_sms）
   StatusBus _events{_wifi, _bridge, _led, _display, _sms, _time};  // SSE 状态推送总线
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time};  // HTTP 控制台（依赖上述模块）
+  EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time, _email};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };
