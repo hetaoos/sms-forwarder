@@ -68,13 +68,41 @@ async function errText(r) {
   }
 }
 
+/* ---------- 统一操作反馈 ----------
+ * 各页面的写操作（POST/动作类 GET）统一走这两个助手：
+ * 失败自动弹右上角红色 toast（5s），调用方只需处理成功分支。
+ * 轮询类 GET 不要用（避免定时失败刷屏）。 */
+async function apiOp(path, opts, okMsg) {
+  let r;
+  try {
+    r = await apiFetch(path, opts);
+  } catch (e) {
+    toast('✕ 请求失败：' + (e && e.message ? e.message : e), 'err');
+    return null;
+  }
+  if (!r.ok) {
+    toast('✕ ' + await errText(r), 'err');
+    return null;
+  }
+  if (okMsg) toast(okMsg, 'ok');
+  return r;
+}
+async function postOp(path, obj, okMsg) {
+  return apiOp(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(obj || {})
+  }, okMsg);
+}
+
 function goLogin() {
   const next = location.pathname + location.hash;
   location.replace('/login.html?next=' + encodeURIComponent(next || '/'));
 }
 
 /* ---------- Toast / 确认框 ---------- */
-function toast(msg, type) {
+// 右上角滑入提示；type: ''|'ok'|'err'|'warn'；duration: 停留 ms（错误默认 5s，其余 3s）
+function toast(msg, type, duration) {
   const el = document.createElement('div');
   el.className = 'toast ' + (type || '');
   el.textContent = msg;
@@ -82,7 +110,8 @@ function toast(msg, type) {
   if (!wrap) return;
   wrap.appendChild(el);
   requestAnimationFrame(() => el.classList.add('show'));
-  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, 2800);
+  const ms = duration || (type === 'err' ? 5000 : 3000);
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, ms);
 }
 function confirmDialog(title, text, danger) {
   return new Promise(resolve => {
@@ -267,11 +296,11 @@ function pageDashboard() {
       } catch (e) {}
     },
     async toggleDisp() {
-      const r = await postJson('/api/disp', { on: !this.st.disp });
-      if (r.ok) this.st.disp = (await r.json()).on === true;
+      const r = await postOp('/api/disp', { on: !this.st.disp });
+      if (r) this.st.disp = (await r.json()).on === true;
     },
     async nextLed() {
-      await apiFetch('/api/led');
+      await apiOp('/api/led');
       this.refresh();
     },
     rgbCss() {
@@ -331,30 +360,31 @@ function pageSerial() {
       this.localIdx = this.localHist.length;
       const q = new URLSearchParams(
         { port: this.port, baud: this.baud, eol: this.eol, t: this.tmo, cmd: cmd });
-      try {
-        const r = await apiFetch('/api/at/send?' + q.toString());
+      const r = await apiOp('/api/at/send?' + q.toString());  // 失败 toast + 日志留痕
+      if (r) {
         const j = await r.json();
         if (j.id !== undefined) {
           this.entries.push(j);
           this.lastId = Math.max(this.lastId, j.id);
           this.scrollBottom();
         }
-      } catch (err) {
-        this.entries.push({ id: '-', port: '-', cmd: cmd, resp: '请求失败' });
+      } else {
+        this.entries.push({ id: '-', port: '-', cmd: cmd, resp: '请求失败，详见右上角提示' });
       }
       this.cmd = '';
     },
     async clear() {
       if (!await confirmDialog('清空历史', '确定清空全部 AT 历史记录吗？')) return;
-      await apiFetch('/api/at/clear');
+      const r = await apiOp('/api/at/clear', null, '已清空历史');
+      if (!r) return;
       this.entries = [];
       this.lastId = -1;
     },
     async reset() {
       const p = parseInt(this.port, 10);
       if (!await confirmDialog('复位串口', '将关闭并重新打开串口' + p + '，确定？', true)) return;
-      await apiFetch('/api/at/reset?port=' + p);
-      toast('串口' + p + ' 已复位', 'ok');
+      const r = await apiOp('/api/at/reset?port=' + p, null, '串口' + p + ' 已复位');
+      if (!r) return;
     },
     onKey(ev) {
       if (ev.key === 'Enter') this.send();
@@ -376,7 +406,7 @@ function pageSerial() {
 function pageWifi() {
   return {
     wifi: {}, nets: [], saved: [], scanHint: '', scanning: false,
-    ssid: '', pass: '', saving: false, wifiHint: '',
+    ssid: '', pass: '', saving: false, wifiHint: '', wifiIsErr: false,
     scanTimer: null,
     async init() {
       await this.refresh();
@@ -384,6 +414,9 @@ function pageWifi() {
       const t = setInterval(() => this.refresh(), 3000);
       onCleanup(() => { clearInterval(t); if (this.scanTimer) clearInterval(this.scanTimer); });
     },
+    /* 提示区辅助：错误走红底错误条，普通信息走灰字 */
+    wifiErr(msg) { this.wifiHint = msg; this.wifiIsErr = true; },
+    wifiBusy(msg) { this.wifiHint = msg; this.wifiIsErr = false; },
     async refresh() {
       try {
         const r = await apiFetch('/api/wifi/status');
@@ -399,24 +432,24 @@ function pageWifi() {
     async scan() {
       this.scanning = true;
       this.scanHint = '扫描中…';
-      try {
-        const r = await apiFetch('/api/wifi/scan');
-        const j = await r.json();
-        if (j.busy) {
-          if (!this.scanTimer) this.scanTimer = setInterval(() => this.pollScan(), 1200);
-          return;
-        }
-        this.doneScan(j.nets || []);
-      } catch (e) { this.scanHint = ''; this.scanning = false; }
+      const r = await apiOp('/api/wifi/scan');   // 失败自动 toast
+      if (!r) { this.scanHint = ''; this.scanning = false; return; }
+      const j = await r.json();
+      if (j.busy) {
+        if (!this.scanTimer) this.scanTimer = setInterval(() => this.pollScan(), 1200);
+        return;
+      }
+      this.doneScan(j.nets || []);
     },
     async pollScan() {
-      try {
-        const r = await apiFetch('/api/wifi/scan');
-        const j = await r.json();
-        if (!j.busy) this.doneScan(j.nets || []);
-      } catch (e) {
-        clearInterval(this.scanTimer); this.scanTimer = null; this.scanHint = '';
+      const r = await apiOp('/api/wifi/scan');
+      if (!r) {
+        if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
+        this.scanHint = '';
+        return;
       }
+      const j = await r.json();
+      if (!j.busy) this.doneScan(j.nets || []);
     },
     doneScan(nets) {
       if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
@@ -427,25 +460,25 @@ function pageWifi() {
     pick(ssid) { this.ssid = ssid; this.pass = ''; },
     async save() {
       const ssid = this.ssid.trim();
-      if (!ssid.length) { this.wifiHint = '请先填写或选择 SSID'; return; }
+      if (!ssid.length) { this.wifiErr('请先填写或选择 SSID'); return; }
       this.saving = true;
-      this.wifiHint = '正在保存并尝试连接…';
-      try {
-        const r = await postJson('/api/wifi/save',
-          { ssid: ssid, pass: this.pass, connect: true });
-        this.wifiHint = r.ok ? '已保存，连接结果见上方状态' : await errText(r);
-        this.pass = '';
-        await this.loadSaved();
-      } catch (e) { this.wifiHint = '请求失败'; }
+      this.wifiBusy('正在保存并尝试连接…');
+      const r = await postOp('/api/wifi/save',
+        { ssid: ssid, pass: this.pass, connect: true });
       this.saving = false;
+      if (!r) { this.wifiErr('保存失败，详见右上角提示'); return; }
+      this.wifiBusy('已保存，连接结果见上方状态');
+      this.pass = '';
+      await this.loadSaved();
     },
     async move(from, to) {
-      await postJson('/api/wifi/move', { from: from, to: to });
-      this.loadSaved();
+      const r = await postOp('/api/wifi/move', { from: from, to: to });
+      if (r) this.loadSaved();
     },
     async del(i, ssid) {
-      if (!await confirmDialog('删除配置', '确定删除「' + ssid + '」吗？重启后将不再自动连接。', true)) return;
-      await postJson('/api/wifi/delete', { index: i });
+      if (!await confirmDialog('删除配置', '确定删除「' + ssid + '』吗？重启后将不再自动连接。', true)) return;
+      const r = await postOp('/api/wifi/delete', { index: i });
+      if (!r) return;
       this.loadSaved();
       toast('已删除 ' + ssid, 'ok');
     },
@@ -503,26 +536,29 @@ function pageRgb() {
              ');opacity:' + (0.25 + 0.75 * (this.st.bright || 0) / 100);
     },
     async applyPreset(i) {
-      await postJson('/api/rgb', { c: i });
-      this.refresh();
+      const r = await postOp('/api/rgb', { c: i });
+      if (r) this.refresh();
     },
     async next() {
-      await apiFetch('/api/led');
-      this.refresh();
+      const r = await apiOp('/api/led');
+      if (r) this.refresh();
     },
     async applyRaw() {
       const clamp = v => Math.max(0, Math.min(255, v | 0));
-      await postJson('/api/rgb',
+      const r = await postOp('/api/rgb',
         { r: clamp(this.r), g: clamp(this.g), b: clamp(this.b) });
-      this.refresh();
+      if (r) this.refresh();
     },
     async off() {
-      await postJson('/api/rgb', { c: 0 });
-      this.refresh();
+      const r = await postOp('/api/rgb', { c: 0 });
+      if (r) this.refresh();
     },
     async applyBright() {
-      const r = await postJson('/api/rgb', { bright: this.bright });
-      if (r.ok) this.st = await r.json();
+      const r = await postOp('/api/rgb', { bright: this.bright });
+      if (r) {
+        this.st = await r.json();
+        this.bright = this.st.bright;
+      }
       this.touched = false;
     },
     previewStyle() {
@@ -553,12 +589,12 @@ function pageDisplay() {
       } catch (e) {}
     },
     async toggle() {
-      const r = await postJson('/api/disp', { on: !this.st.on });
-      if (r.ok) this.st = await r.json();
+      const r = await postOp('/api/disp', { on: !this.st.on });
+      if (r) this.st = await r.json();
     },
     async applyBright() {
-      const r = await postJson('/api/disp', { bright: this.bright });
-      if (r.ok) {
+      const r = await postOp('/api/disp', { bright: this.bright });
+      if (r) {
         this.st = await r.json();
         this.bright = this.st.bright;
       }
@@ -571,7 +607,8 @@ function pageDisplay() {
 function pageAuth() {
   return {
     user: '', newUser: '', newPass: '', oldPass: '',
-    saving: false, hint: '', isErr: false,
+    saving: false, done: false,
+    hint: '', isErr: false, errField: '',
     async init() {
       try {
         const r = await apiFetch('/api/auth');
@@ -579,40 +616,77 @@ function pageAuth() {
       } catch (e) {}
     },
     async save() {
+      if (this.done) return;
       this.isErr = false;
       this.hint = '';
+      this.errField = '';
       // 整个函数体包在 try 内：任何异常都要给出可见提示，不能静默失败
       // （曾经的教训：校验代码在 try 外抛 TypeError，用户点击毫无反应）
       try {
         const u = (this.newUser || '').trim();
-        if (!u.length) { this.fail('新用户名不能为空'); return; }
-        if (u.length > 32) { this.fail('用户名最长 32 字符'); return; }
-        if (!this.newPass.length) { this.fail('新密码不能为空'); return; }
-        if (this.newPass.length > 64) { this.fail('密码最长 64 字符'); return; }
-        if (!this.oldPass.length) { this.fail('请输入当前密码以验证身份'); return; }
+        if (!u.length) { this.failField('newUser', '新用户名不能为空'); return; }
+        if (u.length > 32) { this.failField('newUser', '用户名最长 32 字符'); return; }
+        if (!this.newPass.length) { this.failField('newPass', '新密码不能为空'); return; }
+        if (this.newPass.length > 64) { this.failField('newPass', '密码最长 64 字符'); return; }
+        if (!this.oldPass.length) { this.failField('oldPass', '请输入当前密码以验证身份'); return; }
         this.saving = true;
-        console.log('[auth] submitting change request');
-        const r = await postJson('/api/auth',
-          { user: u, pass: this.newPass, passOld: this.oldPass });
-        console.log('[auth] response status:', r.status);
-        if (r.ok) {
-          this.hint = '已保存，全部登录态已作废，即将跳转登录页…';
-          this.isErr = false;
-          toast('账号已保存，请重新登录', 'ok');
-          setTimeout(() => { location.replace('/login.html'); }, 1500);
+        let r;
+        try {
+          r = await apiFetch('/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user: u, pass: this.newPass, passOld: this.oldPass })
+          });
+        } catch (e) {
+          this.fail('请求失败：' + (e && e.message ? e.message : e));
           return;
         }
-        this.fail(await errText(r));
+        if (r.status === 403) {          // 当前密码不对：高亮旧密码框并聚焦
+          this.failField('oldPass', await errText(r));
+          return;
+        }
+        if (!r.ok) {
+          this.fail(await errText(r));
+          return;
+        }
+        // 成功：全部登录态已作废，跳登录页
+        this.done = true;
+        this.isErr = false;
+        this.hint = '已保存，全部登录态已作废，即将跳转登录页…';
+        toast('账号已保存，请重新登录', 'ok');
+        setTimeout(() => { location.replace('/login.html'); }, 1500);
       } catch (e) {
         console.error('[auth] save failed:', e);
         this.fail('请求失败：' + (e && e.message ? e.message : e));
       }
       this.saving = false;
     },
+    // 普通错误：红底错误条 + 红色 toast
     fail(msg) {
       this.isErr = true;
       this.hint = msg;
+      toast('✕ ' + msg, 'err');
       this.saving = false;
+    },
+    // 字段级错误：额外高亮对应输入框并聚焦
+    failField(field, msg) {
+      this.fail(msg);
+      this.errField = field;
+      // 聚焦出错字段：优先用 Alpine 的 $nextTick，不可用时退化到 setTimeout，
+      // 且任何情况下都不允许抛异常（否则会把真正的错误提示覆盖掉）
+      const focusField = () => {
+        const el = this.$refs && this.$refs[field];
+        if (el && el.focus) el.focus();
+      };
+      if (typeof this.$nextTick === 'function') this.$nextTick(focusField);
+      else setTimeout(focusField, 0);
+    },
+    // 用户重新输入时清除错误态
+    clearErr() {
+      if (!this.isErr) return;
+      this.isErr = false;
+      this.hint = '';
+      this.errField = '';
     },
   };
 }

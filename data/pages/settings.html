@@ -11,20 +11,28 @@
   <h3>管理账号</h3>
   <div class="row"><span class="k">当前用户名</span><span class="v" x-text="user || '-'"></span></div>
   <div class="row"><span class="k">存储位置</span><span class="v">NVS · appcfg/auth（JSON）</span></div>
-  <!-- form 提交：点击按钮与任意输入框回车都走 save()（submit 只触发一次） -->
+  <!-- form 提交：点击按钮与任意输入框回车都走 save()（submit 只触发一次）。
+       字段顺序：先验证身份（当前密码），再填写变更项 -->
   <form @submit.prevent="save()">
     <div class="bar" style="margin-top:14px">
-      <div class="field" style="flex:1;min-width:130px"><label>新用户名（1-32 字符）</label>
-        <input x-model="newUser" autocomplete="off" maxlength="32"></div>
-      <div class="field" style="flex:1;min-width:130px"><label>新密码（1-64 字符）</label>
-        <input x-model="newPass" type="password" autocomplete="new-password" maxlength="64"></div>
       <div class="field" style="flex:1;min-width:130px"><label>当前密码（验证身份）</label>
-        <input x-model="oldPass" type="password" autocomplete="current-password" maxlength="64"></div>
+        <input x-ref="oldPass" x-model="oldPass" type="password" autocomplete="current-password"
+               maxlength="64" :class="{'input-error': errField === 'oldPass'}" @input="clearErr()"></div>
+      <div class="field" style="flex:1;min-width:130px"><label>新用户名（1-32 字符）</label>
+        <input x-ref="newUser" x-model="newUser" autocomplete="off" maxlength="32"
+               :class="{'input-error': errField === 'newUser'}" @input="clearErr()"></div>
+      <div class="field" style="flex:1;min-width:130px"><label>新密码（1-64 字符）</label>
+        <input x-ref="newPass" x-model="newPass" type="password" autocomplete="new-password"
+               maxlength="64" :class="{'input-error': errField === 'newPass'}" @input="clearErr()"></div>
       <div class="field"><label>&nbsp;</label>
         <button type="submit" class="btn" :disabled="saving" x-text="saving ? '保存中…' : '保存修改'"></button></div>
     </div>
   </form>
-  <div class="hint" :class="{ err: isErr }" x-text="hint"></div>
+  <!-- 错误条：红底 + 图标，与右上角 toast 双通道展示 -->
+  <div class="form-err" x-show="isErr" x-cloak>
+    <span class="ico">⚠</span><span x-text="hint"></span>
+  </div>
+  <div class="hint" x-show="!isErr" x-text="hint"></div>
   <div class="hint">保存成功后全部登录会话与访问令牌立即作废，需使用新账号重新登录；
     未认证的 API 调用将返回 401。请妥善保管新密码，忘记后需擦除 NVS 才能恢复默认账号。</div>
 </div>

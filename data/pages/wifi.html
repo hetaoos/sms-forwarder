@@ -47,7 +47,11 @@
       <div class="field"><label>&nbsp;</label>
         <button class="btn" @click="save()" :disabled="saving" x-text="saving ? '保存中…' : '保存并连接'"></button></div>
     </div>
-    <div class="hint" x-text="wifiHint">同 SSID 再次保存会覆盖密码；启动时按下方列表顺序依次尝试连接。</div>
+    <!-- 错误时切换为红底错误条（与右上角 toast 双通道） -->
+    <div :class="wifiIsErr ? 'form-err' : 'hint'" x-show="wifiHint">
+      <span class="ico" x-show="wifiIsErr">⚠</span><span x-text="wifiHint"></span>
+    </div>
+    <div class="hint" x-show="!wifiHint">同 SSID 再次保存会覆盖密码；启动时按下方列表顺序依次尝试连接。</div>
   </div>
 
   <!-- 已保存列表 -->
