@@ -37,6 +37,8 @@ class SmsService {
   bool modemEnabled(uint8_t port) const;
   // 启用/禁用模组（热配置 + 持久化）；port 越界返回 false
   bool setModemEnabled(uint8_t port, bool enabled);
+  // 设置模组别名（持久化）；port 越界返回 false
+  bool setModemAlias(uint8_t port, const String &alias);
   // 触发模组重新初始化（仅启用态有效；置 needReinit 由抽数任务状态机重跑）
   bool reinitPort(uint8_t port);
   // 模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
@@ -82,6 +84,7 @@ class SmsService {
   // 每模组运行时状态（下标 = 串口号 1..kSmsMaxModems）
   struct ModemState {
     bool enabled = false;
+    String alias;               // 模组别名（用户可设，展示用；如「客厅卡槽」）
     uint8_t csmsRef = 1;       // 长短信参考号计数器（每模组独立，非零）
     bool waitingPdu = false;   // +CMT 头之后的下一段即 PDU
     ModemInitState initState = ModemInitState::kDown;  // 初始化状态机当前态
@@ -102,6 +105,10 @@ class SmsService {
     bool    simReady = false;  // SIM 卡是否就绪（AT+CPIN? READY）
     String  imei;              // 模组 IMEI（就绪后查一次）
     String  num;               // 本机号码（SIM 号码，AT+CNUM；部分 SIM 不含则为空）
+    String  vendor;            // 模组厂商（AT+CGMI，如 MLINK）
+    String  model;             // 模组型号（AT+CGMM，如 ML307A-DSLN）
+    String  revision;          // 模组版本/完整料号（AT+CGMR，常含后缀如 -MTSH1S00 或固件版本）
+    String  operCode;          // 运营商短代码（CMCC/CUCC/CTCC/CBN，由 AT+COPS 解析）
     uint32_t nextTeleMs = 0;   // 下次遥测查询时间（独立于心跳，节流）
     uint8_t  teleStep = 0;     // 遥测轮询步骤（0 CSQ / 1 COPS / 2 CEREG / 3 CGSN）
   };

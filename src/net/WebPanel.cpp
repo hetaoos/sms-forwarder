@@ -704,22 +704,32 @@ void WebPanel::setupRoutes() {
     sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
   });
 
-  // 启用/禁用模组：JSON {"port":1,"enabled":true}（热配置 + 持久化）
+  // 配置模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
   _server.on("/api/sms/ports", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) {
                int port;
-               bool enabled;
                if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
-                   !jsonBool(json["enabled"], enabled)) {
-                 sendErr(req, 400, "invalid json");
-                 return;
-               }
-               if (port < 1 || port > cfg::kSmsMaxModems) {
+                   port < 1 || port > cfg::kSmsMaxModems) {
                  sendErr(req, 400, "invalid port");
                  return;
                }
-               if (!_sms.setModemEnabled((uint8_t)port, enabled)) {
-                 sendErr(req, 500, "config save failed");
+               bool changed = false;
+               if (json["enabled"].is<bool>()) {
+                 if (!_sms.setModemEnabled((uint8_t)port, json["enabled"].as<bool>())) {
+                   sendErr(req, 500, "config save failed");
+                   return;
+                 }
+                 changed = true;
+               }
+               if (json["alias"].is<const char *>()) {
+                 if (!_sms.setModemAlias((uint8_t)port, json["alias"].as<String>())) {
+                   sendErr(req, 500, "config save failed");
+                   return;
+                 }
+                 changed = true;
+               }
+               if (!changed) {
+                 sendErr(req, 400, "missing enabled or alias");
                  return;
                }
                sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");

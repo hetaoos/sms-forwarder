@@ -55,12 +55,14 @@
           <span class="badge" :class="modemStateClass(m)" x-text="modemStateText(m)"></span>
         </span>
         <span class="v">
-          <span x-text="modemName(m.port) + ' · 串口' + m.port"></span>
+          <span x-text="modemLabel(m)"></span>
           <template x-if="m.enabled && m.ready">
             <div style="margin-top:4px;color:#6f7885;font-size:12px;line-height:1.7">
+              <div x-text="modemModel(m)"></div>
+              <div x-show="modemRevision(m)">固件：<b x-text="modemRevision(m)"></b></div>
               <div>
                 <span x-text="csqBars(m.csq) + ' ' + csqDbm(m.csq)"></span>
-                <span x-text="' · ' + (m.oper || '未知运营商')"></span>
+                <span x-text="' · ' + (m.operCode ? (m.operCode + (operCn(m.operCode) ? ' · ' + operCn(m.operCode) : '')) : (m.oper || '未知运营商'))"></span>
                 <span x-text="' · ' + (m.reg || '-')"></span>
                 <span x-show="m.act" x-text="' · ' + actText(m.act)"></span>
               </div>

@@ -23,6 +23,34 @@ const fmt = fmtUptime;  // 模板里用的短名
 
 // ---- 模组状态 / 信号强度展示（仪表盘与短信页共用）----
 function modemName(p) { return '模组' + p; }
+// 显示名称：有别名时「别名（模组x）」，否则「模组x」；m 可为模组对象或 port 数字
+function modemLabel(m) {
+  const port = (m && typeof m === 'object') ? m.port : m;
+  const base = '模组' + port;
+  const alias = (m && typeof m === 'object' && m.alias) ? String(m.alias).trim() : '';
+  return alias ? (alias + '（' + base + '）') : base;
+}
+// 模组型号展示：取「厂商 + 最完整的料号」。CGMM 可能仅前缀（如 ML307A-DSLN），
+// 而 CGMR 常含完整料号/后缀（如 -MTSH1S00），故优先使用更长的那一个。
+function modemModel(m) {
+  const vendor = String(m.vendor || '').trim();
+  const model  = String(m.model || '').trim();
+  const rev    = String(m.revision || '').trim();
+  let full = model;
+  if (rev && (model === '' || (rev.length >= model.length && rev.indexOf(model) >= 0))) full = rev;
+  const parts = [vendor, full].filter(x => x);
+  return parts.length ? parts.join(' ') : '未知型号';
+}
+// 固件版本：仅在 CGMR 与已展示型号不同（即非完整料号）时返回，避免重复
+function modemRevision(m) {
+  const rev = String(m.revision || '').trim();
+  return (rev && rev !== modemModel(m)) ? rev : '';
+}
+// 运营商短代码 -> 中文名（CMCC/CUCC/CTCC/CBN）
+function operCn(code) {
+  const map = { CMCC: '中国移动', CUCC: '中国联通', CTCC: '中国电信', CBN: '中国广电' };
+  return code ? (map[code] || code) : '';
+}
 function modemStateText(m) {
   if (!m.enabled) return '已禁用';
   switch (m.state) {
@@ -1014,6 +1042,11 @@ function pageSms() {
                               : '开机 ' + fmtUptime(ts);
     },
     preview(s) { return s.length > 40 ? s.slice(0, 40) + '…' : s; },
+    // 按 port 取显示名（含别名）：记录 / 详情里模组只带 port，需回查别名
+    modemLabelOf(port) {
+      const m = this.modems.find(x => x.port === port);
+      return modemLabel(m || { port: port });
+    },
   };
 }
 
@@ -1021,6 +1054,7 @@ function pageSms() {
 function pageModem() {
   return {
     modems: [],
+    aliasDraft: {},            // 各模组别名草稿（按 port 暂存输入）
     init() {
       // SSE 推送模组状态（含遥测）时同步
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
@@ -1028,12 +1062,26 @@ function pageModem() {
       if (live.smsports.length) this.applyPorts(live.smsports);
       else this.loadPorts();
     },
-    applyPorts(list) { this.modems = list || []; },
+    applyPorts(list) {
+      this.modems = list || [];
+      // 用已保存别名回填草稿（仅当草稿为空，避免覆盖用户输入）
+      this.modems.forEach(m => {
+        if (this.aliasDraft[m.port] === undefined) this.aliasDraft[m.port] = m.alias || '';
+      });
+    },
     async loadPorts() {
       try {
         const r = await apiFetch('/api/sms/ports');
         if (r.ok) this.applyPorts((await r.json()).modems || []);
       } catch (e) {}
+    },
+    async saveAlias(p) {
+      const a = (this.aliasDraft[p] ?? '').trim();
+      const r = await postOp('/api/sms/ports', { port: p, alias: a }, '别名已保存');
+      if (r) {
+        this.applyPorts((await r.json()).modems || []);
+        this.aliasDraft[p] = a;
+      }
     },
     async togglePort(p, enabled) {
       const r = await postOp('/api/sms/ports', { port: p, enabled: enabled },

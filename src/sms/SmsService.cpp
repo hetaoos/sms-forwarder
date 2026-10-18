@@ -32,6 +32,28 @@ static const char *regText(int stat) {
   }
 }
 
+// 运营商识别（AT+COPS 可能是长名或数字形式）-> 短代码 CMCC/CUCC/CTCC/CBN
+static String operCode(const String &raw) {
+  String s = raw; s.trim(); s.replace("\"", "");
+  // 数字形式 "46000"：MCC 前 3 位 + MNC 余下
+  if (s.length() >= 5 && s.charAt(0) >= '0' && s.charAt(0) <= '9') {
+    String mcc = s.substring(0, 3), mnc = s.substring(3);
+    if (mcc == "460") {
+      if (mnc == "00" || mnc == "02" || mnc == "04" || mnc == "07" || mnc == "08") return "CMCC";
+      if (mnc == "01" || mnc == "06" || mnc == "09") return "CUCC";
+      if (mnc == "03" || mnc == "05" || mnc == "11") return "CTCC";
+      if (mnc == "15") return "CBN";
+    }
+    return s;  // 未知数字，原样返回
+  }
+  String low = s; low.toLowerCase();
+  if (low.indexOf("china mobile") >= 0 || low == "cmcc") return "CMCC";
+  if (low.indexOf("unicom") >= 0 || low == "cucc") return "CUCC";
+  if (low.indexOf("telecom") >= 0 || low == "ctcc") return "CTCC";
+  if (low.indexOf("broadcast") >= 0 || low == "cbn") return "CBN";
+  return "";  // 未知运营商
+}
+
 // bridge：AT 串口桥引用
 SmsService::SmsService(SerialBridge &bridge) : _bridge(bridge) {}
 
@@ -121,6 +143,12 @@ bool SmsService::setModemEnabled(uint8_t port, bool enabled) {
   return saveConfig();
 }
 
+bool SmsService::setModemAlias(uint8_t port, const String &alias) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  _modems[port].alias = alias;   // 仅展示用，不触发模组状态机
+  return saveConfig();
+}
+
 String SmsService::modemsJson() const {
   String js = "[";
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
@@ -137,7 +165,12 @@ String SmsService::modemsJson() const {
           ",\"sim\":" + (m.simReady ? "true" : "false") +
           ",\"act\":" + String(m.act) +
           ",\"imei\":\"" + jsonStr(m.imei) + "\"" +
-          ",\"num\":\"" + jsonStr(m.num) + "\"}";
+          ",\"num\":\"" + jsonStr(m.num) + "\"" +
+          ",\"vendor\":\"" + jsonStr(m.vendor) + "\"" +
+          ",\"model\":\"" + jsonStr(m.model) + "\"" +
+          ",\"revision\":\"" + jsonStr(m.revision) + "\"" +
+          ",\"operCode\":\"" + jsonStr(m.operCode) + "\"" +
+          ",\"alias\":\"" + jsonStr(m.alias) + "\"}";
   }
   js += "]";
   return js;
@@ -283,6 +316,7 @@ void SmsService::startInit(uint8_t port) {
   m.failCount = 0;
   // 重置遥测（重新初始化后从空开始采集）
   m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.act = 0; m.num = "";
+  m.vendor = ""; m.model = ""; m.revision = ""; m.operCode = "";
   m.simReady = false; m.nextTeleMs = 0; m.teleStep = 0;
   // 若配置了 EN 复位引脚，先走硬上下电；否则直接等 AT 就绪
   m.initState = (enPin(port) >= 0) ? ModemInitState::kPowerOn : ModemInitState::kWaitAt;
@@ -576,6 +610,7 @@ void SmsService::pollInit(uint8_t port) {
                 int sc = (fc >= 0) ? seg.indexOf(',', fc + 1) : -1;
                 if (sc >= 0) { String op = seg.substring(fc + 1, sc); op.replace("\"", ""); m.oper = op; }
                 else m.oper = "";
+                m.operCode = operCode(m.oper);
               }
             }
             break;
@@ -617,8 +652,32 @@ void SmsService::pollInit(uint8_t port) {
             }
             break;
           }
+          case 5: {  // 模组厂商 AT+CGMI
+            if (at("AT+CGMI", cfg::kSmsCmdTimeoutMs)) {
+              String s = resp; s.replace("\r", ""); s.replace("\n", "");
+              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+              s.trim(); m.vendor = s;
+            }
+            break;
+          }
+          case 6: {  // 模组型号 AT+CGMM（如 ML307A-DSLN）
+            if (at("AT+CGMM", cfg::kSmsCmdTimeoutMs)) {
+              String s = resp; s.replace("\r", ""); s.replace("\n", "");
+              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+              s.trim(); m.model = s;
+            }
+            break;
+          }
+          case 7: {  // 模组版本/完整料号 AT+CGMR（常含后缀，如 ML307A-DSLN-MTSH1S00 或固件版本）
+            if (at("AT+CGMR", cfg::kSmsCmdTimeoutMs)) {
+              String s = resp; s.replace("\r", ""); s.replace("\n", "");
+              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+              s.trim(); m.revision = s;
+            }
+            break;
+          }
         }
-        m.teleStep = (m.teleStep + 1) % 5;
+        m.teleStep = (m.teleStep + 1) % 8;
       }
       return;
     }
@@ -747,6 +806,7 @@ bool SmsService::loadConfig() {
     int port = o["port"] | 0;
     if (port >= 1 && port <= cfg::kSmsMaxModems) {
       _modems[port].enabled = o["enabled"] | true;
+      _modems[port].alias = o["alias"] | "";
     }
   }
   Serial.printf("[sms] config loaded: max=%u modems=[%d,%d]\r\n", (unsigned)_max,
@@ -764,6 +824,7 @@ bool SmsService::saveConfig() {
     JsonObject o = arr.add<JsonObject>();
     o["port"] = p;
     o["enabled"] = _modems[p].enabled;
+    o["alias"] = _modems[p].alias;
   }
   String out;
   serializeJson(doc, out);

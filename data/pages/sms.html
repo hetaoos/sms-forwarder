@@ -13,7 +13,7 @@
       <select class="inp sm" x-model.number="portFilter">
         <option value="-1">全部模组</option>
         <template x-for="m in modems" :key="m.port">
-          <option :value="m.port" x-text="modemName(m.port) + ' (串口' + m.port + ')'"></option>
+          <option :value="m.port" x-text="modemLabel(m)"></option>
         </template>
       </select>
       <input class="inp sm" style="flex:1;min-width:160px" placeholder="搜索号码 / 内容"
@@ -31,7 +31,7 @@
           <template x-for="msg in messages" :key="msg.id">
             <tr @click="showDetail(msg)" style="cursor:pointer">
               <td x-text="fmtTs(msg.ts)"></td>
-              <td x-text="'串口' + msg.port"></td>
+              <td x-text="modemLabelOf(msg.port)"></td>
               <td>
                 <span class="badge" :class="msg.dir === 'in' ? 'ok' : 'warn'"
                       x-text="msg.dir === 'in' ? '收' : '发'"></span>
@@ -56,26 +56,35 @@
 
   <!-- 发送短信对话框 -->
   <div class="modal-mask" x-show="sendOpen" @click.self="closeSend()" style="display:none">
-    <div class="modal">
-      <h3>发送短信</h3>
-      <div class="form">
+    <div class="modal send-modal">
+      <div class="modal-head">
+        <h3>发送短信</h3>
+        <button class="modal-close" @click="closeSend()" aria-label="关闭">×</button>
+      </div>
+
+      <div class="field">
         <label>模组</label>
         <select class="inp" x-model.number="sendPort">
           <option value="0" x-show="!enabledPorts().length">无可用模组</option>
           <template x-for="m in enabledPorts()" :key="m.port">
-            <option :value="m.port" x-text="modemName(m.port) + ' (串口' + m.port + ')' + (m.ready ? '' : ' · 未就绪')"></option>
+            <option :value="m.port" x-text="modemLabel(m) + (m.ready ? '' : ' · 未就绪')"></option>
           </template>
         </select>
+      </div>
 
+      <div class="field">
         <label>对方号码</label>
         <input class="inp" placeholder="如 13800138000 或 +86138..." x-model="phone">
-
-        <label>短信内容</label>
-        <textarea class="inp" rows="4" placeholder="输入短信内容" x-model="content"></textarea>
-
-        <div class="hint" :class="sendErr ? 'err' : ''" x-show="sendHint" x-text="sendHint"></div>
       </div>
-      <div class="bar" style="margin-top:8px">
+
+      <div class="field">
+        <label>短信内容 <span class="counter" x-text="content.length + ' 字'"></span></label>
+        <textarea class="inp" rows="4" placeholder="输入短信内容" x-model="content"></textarea>
+      </div>
+
+      <div class="form-err" x-show="sendErr && sendHint" x-text="sendHint"></div>
+
+      <div class="modal-btns">
         <button class="btn" :disabled="sending || !sendPort"
                 @click="send()" x-text="sending ? '发送中…' : '发送'"></button>
         <button class="btn ghost" @click="closeSend()">取消</button>
@@ -90,7 +99,7 @@
       <template x-if="detail">
         <div class="form">
           <div class="row"><span class="k">时间</span><span class="v" x-text="fmtTs(detail.ts)"></span></div>
-          <div class="row"><span class="k">模组</span><span class="v" x-text="'串口' + detail.port"></span></div>
+          <div class="row"><span class="k">模组</span><span class="v" x-text="modemLabelOf(detail.port)"></span></div>
           <div class="row"><span class="k">方向</span><span class="v" x-text="detail.dir === 'in' ? '收到' : '发送'"></span></div>
           <div class="row"><span class="k">号码</span><span class="v" x-text="detail.phone"></span></div>
           <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap" x-text="detail.text"></span></div>
