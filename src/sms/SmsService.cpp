@@ -912,7 +912,7 @@ String SmsService::latestJson() {
 
 // 载入 NVS 配置
 bool SmsService::loadConfig() {
-  // 默认：两个模组都启用（本设备即为双 AT 模组桥接设计）
+  // 默认：两个模组都启用（本设备即为双 4G 模块桥接设计）
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     _modems[p].enabled = true;
     _modems[p].csmsRef = 1;

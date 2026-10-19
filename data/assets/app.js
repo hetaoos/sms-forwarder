@@ -357,7 +357,7 @@ const MENU = [
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
     { id: 'modem', title: '4G 模组', icon: 'modem' },
-    { id: 'serial', title: '短信调试', icon: 'serial' },
+    { id: 'serial', title: '串口调试', icon: 'serial' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
   ]},
   { group: '监控', items: [

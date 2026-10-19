@@ -1,6 +1,6 @@
 # 短信转发器（SMS Forwarder）
 
-基于 ESP32-S3 的双串口 AT 透传设备：外接两个 AT 模组串口，通过 ST7789 屏幕
+基于 ESP32-S3 的双串口 AT 透传设备：外接两个 4G 模块串口，通过 ST7789 屏幕
 实时显示运行状态与最近一条 AT 交互，并内置 Web 控制台进行远程管理。
 
 ## 功能特性
@@ -67,8 +67,8 @@
 
 | 功能 | 引脚 | 说明 |
 |------|------|------|
-| 串口1 TX / RX | GPIO17 / GPIO18 | 外接 AT 模组 |
-| 串口2 TX / RX | GPIO41 / GPIO40 | 外接 AT 模组 |
+| 串口1 TX / RX | GPIO17 / GPIO18 | 外接 4G 模块 |
+| 串口2 TX / RX | GPIO41 / GPIO40 | 外接 4G 模块 |
 | TFT CS / RST / DC | GPIO15 / GPIO5 / GPIO14 | ST7789 控制 |
 | TFT MOSI / SCLK | GPIO13 / GPIO12 | SPI（SPI2，40MHz） |
 | TFT BLK | GPIO8 | PWM 背光，默认 80% |
