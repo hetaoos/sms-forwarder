@@ -219,6 +219,42 @@ String WifiManager::ssid() const {
   return "";
 }
 
+// 导出全部 WiFi 配置（含密码，供备份用）到给定 JSON 对象
+void WifiManager::exportAllTo(JsonObject &o) const {
+  lock();
+  o["count"] = _entryCount;
+  JsonArray arr = o["list"].to<JsonArray>();
+  for (uint8_t i = 0; i < _entryCount; i++) {
+    JsonObject e = arr.add<JsonObject>();
+    e["ssid"] = _entries[i].ssid;
+    e["pass"] = _entries[i].pass;
+  }
+  unlock();
+}
+
+// 批量导入（覆盖式）：清空现有列表，按 JSON 对象重建并落盘
+bool WifiManager::importAllFrom(const JsonObject &o) {
+  lock();
+  _entryCount = 0;
+  for (JsonObject e : o["list"].as<JsonArray>()) {
+    if (_entryCount >= kMaxEntries) break;   // 超容量忽略
+    const char *s = e["ssid"] | "";
+    if (!*s) continue;                        // 空 SSID 跳过
+    _entries[_entryCount].ssid = s;
+    _entries[_entryCount].pass = e["pass"] | "";
+    _entryCount++;
+  }
+  bool persisted = persistToNvs();
+  unlock();
+  if (persisted) {
+    _log.addf(LogLevel::kInfo, "wifi", "已从备份导入 %u 个 WiFi 配置",
+              (unsigned)_entryCount);
+  } else {
+    _log.addf(LogLevel::kError, "wifi", "WiFi 配置导入落盘失败");
+  }
+  return persisted;
+}
+
 // 已保存配置 JSON（不回传密码，只回 hasPass 标记）
 String WifiManager::listJson() const {
   lock();

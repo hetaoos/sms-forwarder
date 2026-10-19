@@ -448,6 +448,55 @@ String EmailService::configJson() const {
   return out;
 }
 
+// 导出完整配置（含授权码，供备份用）到给定 JSON 对象
+void EmailService::exportTo(JsonObject &o) const {
+  Guard g(_mutex);
+  o["enabled"] = _enabled;
+  o["server"] = _server;
+  o["port"] = _port;
+  o["user"] = _user;
+  o["pass"] = _pass;            // 备份用，含授权码
+  o["sendTo"] = _sendTo;
+  o["notifyTypes"] = _notifyTypes;
+  o["schedMode"] = _sched.mode;
+  o["schedHour"] = _sched.hour;
+  o["schedMinute"] = _sched.minute;
+  o["intervalH"] = _sched.intervalH;
+}
+
+// 从给定 JSON 对象导入配置并落盘（缺失字段保持原值）
+bool EmailService::importFrom(const JsonObject &o) {
+  {
+    Guard g(_mutex);
+    _enabled = o["enabled"] | _enabled;
+    _server = o["server"] | _server;
+    int port = o["port"] | (int)_port;
+    _port = (port > 0 && port <= 65535) ? (uint16_t)port : _port;
+    _user = o["user"] | _user;
+    if (o["pass"].is<const char *>()) _pass = o["pass"].as<String>();
+    _sendTo = o["sendTo"] | _sendTo;
+    uint32_t types = o["notifyTypes"] | _notifyTypes;
+    _notifyTypes = types & cfg::kEmailNotifyAll;
+    int mode = o["schedMode"] | (int)_sched.mode;
+    _sched.mode = (mode == cfg::kSchedModeDaily) ? cfg::kSchedModeDaily
+                                                 : cfg::kSchedModeInterval;
+    int hour = o["schedHour"] | (int)_sched.hour;
+    _sched.hour = (hour >= 0 && hour <= 23) ? (uint8_t)hour : _sched.hour;
+    int minute = o["schedMinute"] | (int)_sched.minute;
+    _sched.minute = (minute >= 0 && minute <= 59) ? (uint8_t)minute : _sched.minute;
+    int ih = o["intervalH"] | (int)_sched.intervalH;
+    if (ih < (int)cfg::kMailIntervalHMin) ih = cfg::kMailIntervalHDefault;
+    if (ih > (int)cfg::kMailOnlineIntervalMaxH) ih = cfg::kMailOnlineIntervalMaxH;
+    _sched.intervalH = (uint16_t)ih;
+  }
+  if (!persistConfig()) {
+    _log.addf(LogLevel::kError, "mail", "邮件配置导入落盘失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "mail", "已从备份导入邮件配置");
+  return true;
+}
+
 bool EmailService::loadConfig() {
   Preferences prefs;
   String json;

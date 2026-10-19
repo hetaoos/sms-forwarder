@@ -183,6 +183,12 @@ class WebPanel {
   void handleOtaUploadFsChunk(AsyncWebServerRequest *req, String filename, size_t index,
                               uint8_t *data, size_t len, bool final);
 
+  // 配置导入导出：导出全部配置为 JSON 下载；导入 JSON 覆盖配置并重启
+  void handleConfigExport(AsyncWebServerRequest *req);
+  void handleConfigImportReq(AsyncWebServerRequest *req);
+  void handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data,
+                              size_t len, size_t index, size_t total);
+
   // 兜底 404
   void handleNotFound(AsyncWebServerRequest *req);
   SerialBridge &_bridge;   // AT 串口桥引用

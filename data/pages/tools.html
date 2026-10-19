@@ -55,4 +55,26 @@
       </div>
     </div>
   </div>
+
+  <!-- 配置管理 -->
+  <div class="card">
+    <h3>配置管理</h3>
+    <p class="hint">导出当前全部配置（含 WiFi 密码、管理账号、邮件授权码等敏感信息）为 JSON 文件；
+      导入该文件可一键恢复配置。导入后设备会自动重启生效。</p>
+
+    <div class="bar" style="margin-top:8px">
+      <button class="btn" @click="exportConfig()">导出配置</button>
+      <span class="hint" style="margin:0">⚠️ 导出文件包含密码等敏感信息，请妥善保管</span>
+    </div>
+
+    <div class="bar" style="margin-top:14px">
+      <div class="field" style="flex:1;min-width:220px"><label>导入配置（选择 .json 文件）</label>
+        <input type="file" accept=".json" @change="onImportFile($event)">
+      </div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="importConfig()" :disabled="!importFile || importing">导入配置</button>
+      </div>
+    </div>
+    <div class="hint" x-show="importing" x-cloak style="margin-top:8px">正在导入，设备即将重启…</div>
+  </div>
 </div>

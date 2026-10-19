@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 #include "app/Config.h"
 
@@ -27,6 +28,13 @@ class AdminStore {
 
   // 当前用户名（密码不回传）
   const String &user() const { return _user; }
+
+  // 导出账号（含密码，供备份用）到给定 JSON 对象：o["user"]/o["pass"]
+  void exportTo(JsonObject &o) const;
+
+  // 从给定 JSON 对象导入账号并落盘；json 字段：o["user"]/o["pass"]；
+  // 仅当 user/pass 均非空且长度合规时写入，成功返回 true
+  bool importFrom(const JsonObject &o);
 
  private:
   // 从 NVS 读取 JSON 填充；无记录 / 解析失败 / 字段非法返回 false

@@ -10,6 +10,11 @@
 #include "net/StateJson.h"
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
+#include <esp_system.h>            // esp_restart()
+#include <freertos/FreeRTOS.h>    // xTaskCreate / vTaskDelay
+#include <freertos/task.h>
+#include <time.h>                 // localtime_r / time()
+
 namespace {
 
 // 取字符串参数；req：请求对象；name：参数名；def：缺省值
@@ -544,6 +549,21 @@ void WebPanel::setupRoutes() {
              [this](AsyncWebServerRequest *req, String filename, size_t index,
                     uint8_t *data, size_t len, bool final) {
                handleOtaUploadFsChunk(req, filename, index, data, len, final);
+             });
+
+  // ================= 配置导入导出 =================
+  // 导出：GET 触发浏览器下载完整配置 JSON（含密码等敏感信息）
+  _server.on("/api/config/export", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleConfigExport(req); });
+
+  // 导入：POST 原始 JSON 请求体（application/json），经 onBody 分片累积后整体解析。
+  // 第 4 参 onUpload 留空（非 multipart）；第 5 参 onBody 接收原始 body 分片。
+  _server.on("/api/config/import", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleConfigImportReq(req); },
+             nullptr,
+             [this](AsyncWebServerRequest *req, uint8_t *data, size_t len,
+                    size_t index, size_t total) {
+               handleConfigImportChunk(req, data, len, index, total);
              });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）
@@ -1287,6 +1307,128 @@ void WebPanel::handleOtaUploadFsChunk(AsyncWebServerRequest *req, String /*filen
     req->send(500, "application/json",
               "{\"ok\":false,\"error\":\"Web UI 写入失败，请确认镜像与本设备匹配\"}");
   }
+}
+
+// ---- 配置导入导出 ----
+// 导出：各模块直接把配置写入主文档的子对象（全程操作 JSON 对象，无字符串往返）。
+void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ver"] = 1;                  // 配置格式版本，便于后续升级/兼容
+  doc["product"] = "sms-forwarder"; // 出品标识，导入时可用于校验
+  JsonObject oWifi  = doc["wifi"].to<JsonObject>();
+  JsonObject oAuth  = doc["auth"].to<JsonObject>();
+  JsonObject oEmail = doc["email"].to<JsonObject>();
+  JsonObject oSms   = doc["sms"].to<JsonObject>();
+  _wifi.exportAllTo(oWifi);
+  _auth.exportTo(oAuth);
+  _email.exportTo(oEmail);
+  _sms.exportTo(oSms);
+
+  String body;
+  serializeJsonPretty(doc, body);
+
+  char filename[40] = "sms_forwarder_config.json";
+  time_t now = time(nullptr);
+  if (now > 100000) {  // 时间已同步才用日期命名，否则用默认名
+    struct tm t;
+    localtime_r(&now, &t);
+    snprintf(filename, sizeof(filename),
+             "sms_forwarder_config_%04d%02d%02d.json",
+             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+  }
+
+  char disposition[96];
+  snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", filename);
+
+  AsyncResponseStream *resp = req->beginResponseStream("application/octet-stream");
+  resp->addHeader("Content-Disposition", disposition);
+  resp->addHeader("X-Content-Type-Options", "nosniff");
+  resp->print(body);
+  req->send(resp);
+
+  _log.addf(LogLevel::kInfo, "http", "配置已导出，大小 %u 字节", (unsigned)body.length());
+}
+
+// 导入：onBody 分片回调，把原始请求体累积进 req->_tempObject（String*）
+void WebPanel::handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data,
+                                      size_t len, size_t /*index*/,
+                                      size_t /*total*/) {
+  if (!req->_tempObject) req->_tempObject = new String();
+  String *s = (String *)req->_tempObject;
+  s->concat((char *)data, len);
+}
+
+// 导入：请求收尾后解析整份 JSON，逐节写入各模块并落盘，最后延迟重启生效
+void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
+  if (!req->_tempObject) {
+    sendErr(req, 400, "missing body");
+    return;
+  }
+  String body = *((String *)req->_tempObject);
+  delete (String *)req->_tempObject;
+  req->_tempObject = nullptr;
+
+  if (body.length() > 65536) {  // 配置不会很大，超限直接拒绝（防内存滥用）
+    sendErr(req, 413, "配置文件过大");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok || !doc.is<JsonObject>()) {
+    sendErr(req, 400, "JSON 解析失败，请确认文件格式正确");
+    return;
+  }
+
+  // 逐节导入，缺失的节跳过（支持部分导入 / 向后兼容）
+  bool anyApplied = false;
+
+  if (doc["wifi"].is<JsonObject>()) {
+    if (!_wifi.importAllFrom(doc["wifi"].as<JsonObject>())) {
+      sendErr(req, 500, "WiFi 配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["auth"].is<JsonObject>()) {
+    if (!_auth.importFrom(doc["auth"].as<JsonObject>())) {
+      sendErr(req, 500, "账号配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["email"].is<JsonObject>()) {
+    if (!_email.importFrom(doc["email"].as<JsonObject>())) {
+      sendErr(req, 500, "邮件配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["sms"].is<JsonObject>()) {
+    if (!_sms.importFrom(doc["sms"].as<JsonObject>())) {
+      sendErr(req, 500, "短信配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+
+  if (!anyApplied) {
+    sendErr(req, 400, "配置格式不兼容，未找到可识别的配置节（wifi/auth/email/sms）");
+    return;
+  }
+
+  // 账号可能已被改：导入后立即作废全部会话与令牌，强制重新登录
+  invalidateAllSessions();
+
+  _log.addf(LogLevel::kInfo, "http", "配置导入成功，准备重启");
+
+  // 先返回成功，再延迟 2 秒重启（与 OTA 一致，给响应留出发送时间）
+  sendOk(req, ",\"message\":\"配置导入成功，设备将在2秒后自动重启\"");
+
+  xTaskCreate([](void *) {
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+    vTaskDelete(nullptr);
+  }, "cfg_rst", 2048, nullptr, 5, nullptr);
 }
 
 // ---- 兜底 404 ----

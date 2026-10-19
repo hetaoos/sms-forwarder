@@ -1549,5 +1549,47 @@ function pageTools() {
 
     onFirmware(e) { this.firmwareFile = e.target.files[0] || null; },
     onLfs(e) { this.lfsFile = e.target.files[0] || null; },
+
+    // ---------- 配置导入导出 ----------
+    importFile: null,    // 待导入的 JSON 文件
+    importing: false,    // 导入进行中（避免重复点击）
+
+    // 导出配置：直接触发浏览器下载（GET /api/config/export 返回附件）
+    exportConfig() {
+      window.location.href = '/api/config/export';
+    },
+
+    // 选择文件
+    onImportFile(e) { this.importFile = e.target.files[0] || null; },
+
+    // 导入配置：读文件内容 -> POST 原始 JSON 到 /api/config/import
+    async importConfig() {
+      if (!this.importFile || this.importing) return;
+      if (typeof confirmDialog === 'function' &&
+          !(await confirmDialog('确认导入', '导入配置将覆盖当前 WiFi、账号、邮件与短信设置，并自动重启设备。是否继续？', true))) {
+        return;
+      }
+      this.importing = true;
+      try {
+        const text = await this.importFile.text();
+        const r = await fetch('/api/config/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: text,
+        });
+        let data = {};
+        try { data = await r.json(); } catch (e) {}
+        if (!r.ok) {
+          toast('✕ 导入失败：' + (data.error || ('HTTP ' + r.status)), 'err', 6000);
+          this.importing = false;
+          return;
+        }
+        toast('✓ ' + (data.message || '导入成功，设备即将重启'), 'ok');
+        // 成功后设备会在约 2 秒后重启，无需后续处理
+      } catch (e) {
+        toast('✕ 导入失败：' + (e && e.message ? e.message : e), 'err', 6000);
+        this.importing = false;
+      }
+    },
   };
 }

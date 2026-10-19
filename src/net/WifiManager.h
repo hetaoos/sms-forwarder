@@ -7,6 +7,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <stdint.h>
+#include <ArduinoJson.h>
 
 #include "app/Config.h"
 
@@ -68,6 +69,14 @@ class WifiManager {
   // 已保存配置的 JSON：{"count":n,"list":[{"i":序号,"ssid":"..","hasPass":true},..]}
   // 密码不回传前端，避免泄露
   String listJson() const;
+
+  // 导出全部 WiFi 配置（含密码，供备份用）到给定 JSON 对象：
+  // o["count"]=n, o["list"]=[{"ssid":"..","pass":".."},..]
+  void exportAllTo(JsonObject &o) const;
+
+  // 批量导入 WiFi 配置（覆盖式）：从给定 JSON 对象读取 list 数组重建并落盘；
+  // 超出容量部分忽略；成功返回 true。导入后通常需重启生效（见 WebPanel 导入流程）
+  bool importAllFrom(const JsonObject &o);
 
   // 新增或更新一条配置（同 SSID 覆盖密码）并落盘；
   // ssid：热点名；pass：密码；connectNow：true 表示立即尝试连接

@@ -4,6 +4,7 @@
 #include <functional>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <ArduinoJson.h>
 
 #include "app/Config.h"
 #include "serial/SerialBridge.h"
@@ -82,6 +83,13 @@ class SmsService {
   }
   // 模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
   String modemsJson() const;
+
+  // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象：
+  // o["max"]=n, o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]
+  void exportTo(JsonObject &o) const;
+
+  // 从给定 JSON 对象导入模组配置并落盘；json 同 exportTo；成功返回 true
+  bool importFrom(const JsonObject &o);
 
   // ---------------- AT 控制台 ----------------
   // 经短信模块发送一条 AT 命令（供 Web AT 控制台）。与短信收发共用同一端口锁，

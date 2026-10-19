@@ -210,6 +210,18 @@ String SmsService::modemsJson() const {
   return js;
 }
 
+// 导出模组配置（启用/别名，供备份用）到给定 JSON 对象
+void SmsService::exportTo(JsonObject &o) const {
+  o["max"] = _max;
+  JsonArray arr = o["modems"].to<JsonArray>();
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    JsonObject m = arr.add<JsonObject>();
+    m["port"] = p;
+    m["enabled"] = _modems[p].enabled;
+    m["alias"] = _modems[p].alias;
+  }
+}
+
 // ---------------- 发送 ----------------
 uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
                           String &err, bool *storedPtr) {
@@ -929,6 +941,26 @@ bool SmsService::loadConfig() {
   }
   _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，模组=[%d,%d]",
             (unsigned)_max, (int)_modems[1].enabled, (int)_modems[2].enabled);
+  return true;
+}
+
+// 从给定 JSON 对象导入模组配置并落盘
+bool SmsService::importFrom(const JsonObject &o) {
+  if (o["max"].is<int>()) {
+    _max = (uint16_t)constrain(o["max"].as<int>(), 10, 1000);
+  }
+  for (JsonObject m : o["modems"].as<JsonArray>()) {
+    int port = m["port"] | 0;
+    if (port >= 1 && port <= cfg::kSmsMaxModems) {
+      _modems[port].enabled = m["enabled"] | _modems[port].enabled;
+      _modems[port].alias = m["alias"] | _modems[port].alias;
+    }
+  }
+  if (!saveConfig()) {
+    _log.addf(LogLevel::kError, "sms", "短信配置导入落盘失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "sms", "已从备份导入短信配置");
   return true;
 }
 

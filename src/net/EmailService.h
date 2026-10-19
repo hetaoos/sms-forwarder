@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <stdint.h>
+#include <ArduinoJson.h>
 
 #include "app/Config.h"
 #include "app/Psram.h"
@@ -89,6 +90,14 @@ class EmailService {
   //  "schedMode":0|1,"schedHour":n,"schedMinute":n,"intervalH":n}
   // smtpPass 不回显（hasPass 表示是否已保存），避免泄露
   String configJson() const;
+
+  // 导出完整配置（含授权码，供备份用）到给定 JSON 对象（字段同 configJson 但含 pass）
+  void exportTo(JsonObject &o) const;
+
+  // 从给定 JSON 对象导入配置并落盘；缺失字段保持原值；成功返回 true
+  // 字段：enabled/server/port/user/pass/sendTo/notifyTypes/
+  // schedMode/schedHour/schedMinute/intervalH
+  bool importFrom(const JsonObject &o);
 
   // ---------------- 通知入队（非阻塞，回调上下文安全）----------------
   // 以下方法运行于串口抽数任务（SerialBridge 抽数任务）等后台上下文，

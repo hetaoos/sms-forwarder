@@ -95,6 +95,31 @@ bool AdminStore::check(const String &user, const String &pass) const {
   return user == _user && pass == _pass;
 }
 
+// 导出账号（含密码，供备份用）到给定 JSON 对象
+void AdminStore::exportTo(JsonObject &o) const {
+  o["user"] = _user;
+  o["pass"] = _pass;
+}
+
+// 从给定 JSON 对象导入账号并落盘（长度校验与 update 一致）
+bool AdminStore::importFrom(const JsonObject &o) {
+  String u = o["user"] | "";
+  String p = o["pass"] | "";
+  if (!u.length() || u.length() > kUserMaxLen ||
+      !p.length() || p.length() > kPassMaxLen) {
+    _log.addf(LogLevel::kWarn, "auth", "导入的账号字段非法，已跳过");
+    return false;
+  }
+  _user = u;
+  _pass = p;
+  if (!persist()) {
+    _log.addf(LogLevel::kError, "auth", "账号导入落盘失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "auth", "已从备份导入管理账号：%s", _user.c_str());
+  return true;
+}
+
 // 修改用户名 / 密码并持久化到 NVS
 bool AdminStore::update(const String &user, const String &pass, String *err) {
   if (!user.length() || user.length() > kUserMaxLen) {
