@@ -1,23 +1,114 @@
-<div class="page-head">
-  <div>
-    <h2>黑名单</h2>
-    <p class="page-desc">按号码过滤短信与来电，支持通配与备注</p>
+<div x-data="pageBlacklist()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>黑名单</h2>
+      <p class="page-desc">按号码过滤短信（与来电，待来电检测落地），命中后阻断转发，可分别设置「仅记录不推送」或「静默丢弃」</p>
+    </div>
+    <button class="btn ghost sm" @click="load()">刷新</button>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128683;</div>
-    <h3>功能规划中</h3>
-    <p>计划支持号码黑名单（短信 + 来电），命中后静默丢弃或仅记录不推送。</p>
+  <!-- 总开关 + 命中动作 -->
+  <div class="card">
+    <h3>拦截设置</h3>
+    <div class="bar" style="margin-bottom:4px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text)">
+        <input type="checkbox" x-model="cfg.enabled" @change="toggleEnabled()">
+        <b>启用黑名单拦截</b>
+      </label>
+      <span class="badge" :class="cfg.enabled ? 'ok' : 'err'"
+            x-text="cfg.enabled ? '已启用' : '已停用'"></span>
+    </div>
+    <div class="hint" x-show="!cfg.enabled" style="margin:0 0 12px">
+      已停用：所有短信照常入库并转发；已保存的规则与动作保留，重新开启后立即生效。
+    </div>
+
+    <div style="margin:6px 0 4px;font-size:13px;font-weight:600;color:var(--text)">命中动作</div>
+    <div class="bar" style="gap:18px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+        <input type="radio" value="0" x-model.number="cfg.action"> 仅记录不推送（默认，短信仍入库，但不再转发）
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+        <input type="radio" value="1" x-model.number="cfg.action"> 静默丢弃（不入库、不推送）
+      </label>
+    </div>
+    <div class="hint" style="margin-top:6px">
+      「静默丢弃」会在短信落盘前直接丢弃，列表中不会留下记录；若担心误拦丢信，建议先用「仅记录不推送」。
+    </div>
   </div>
-</div>
 
-<div class="card">
-  <h3>计划能力</h3>
-  <div class="row"><span class="k">匹配规则</span><span class="v">精确号码 / 前缀 / 通配符</span></div>
-  <div class="row"><span class="k">生效范围</span><span class="v">短信接收 / 来电提醒，可分别开关</span></div>
-  <div class="row"><span class="k">备注</span><span class="v">每条可加备注名，便于管理</span></div>
-  <div class="row"><span class="k">存储</span><span class="v">随主配置持久化，支持导入导出</span></div>
+  <!-- 规则列表 -->
+  <div class="card">
+    <div class="bar" style="margin-bottom:10px">
+      <h3 style="margin:0">拦截规则</h3>
+      <span class="hint" style="margin:0" x-text="'共 ' + cfg.list.length + ' 条'"></span>
+      <button class="btn ghost sm" style="margin-left:auto" @click="addRule()">+ 新增规则</button>
+    </div>
+
+    <div x-show="cfg.list.length === 0" class="empty">
+      <div class="icon">&#128683;</div>
+      <p>还没有规则，点「新增规则」添加号码</p>
+    </div>
+
+    <div class="bl-rules">
+      <template x-for="(r, i) in cfg.list" :key="i">
+        <div class="bl-row">
+          <div class="bl-idx" x-text="i + 1"></div>
+          <div class="bl-pattern">
+            <input class="inp" x-model="r.pattern" placeholder="号码，如 13800138000 或 +86138…"
+                   maxlength="32" autocomplete="off">
+          </div>
+          <div class="bl-mode">
+            <select class="inp" x-model.number="r.mode">
+              <option :value="0">精确</option>
+              <option :value="1">前缀</option>
+              <option :value="2">通配符</option>
+            </select>
+          </div>
+          <div class="bl-scope">
+            <label style="display:flex;gap:4px;align-items:center;font-size:12px;cursor:pointer">
+              <input type="checkbox" :checked="(r.scope & 1) !== 0" @change="setScope(r, 1, $event.target.checked)"> 短信
+            </label>
+            <label style="display:flex;gap:4px;align-items:center;font-size:12px;cursor:pointer">
+              <input type="checkbox" :checked="(r.scope & 2) !== 0" @change="setScope(r, 2, $event.target.checked)"> 来电
+            </label>
+          </div>
+          <div class="bl-note">
+            <input class="inp" x-model="r.note" placeholder="备注（可选）" maxlength="24" autocomplete="off">
+          </div>
+          <div class="bl-on">
+            <input type="checkbox" x-model="r.enabled" title="启用此条">
+          </div>
+          <button class="btn ghost sm danger" @click="delRule(i)" title="删除">✕</button>
+        </div>
+      </template>
+    </div>
+
+    <div class="hint" style="margin:10px 0 0">
+      匹配模式：<b>精确</b> = 完整号码相等；<b>前缀</b> = 目标以该串开头；<b>通配符</b> 中
+      <code>*</code> 匹配任意长度、<code>?</code> 匹配单个字符。号码自动去掉空格、横线等分隔符；
+      录入「本地号」也能拦「+86…」来电（自动补齐国家码兜底）。
+    </div>
+
+    <div class="bar" style="margin-top:14px">
+      <button class="btn" :disabled="saving" @click="save()" x-text="saving ? '保存中…' : '保存规则'"></button>
+      <span class="hint" style="margin:0" x-show="cfg.list.length >= 100" x-text="'已达上限 100 条'"></span>
+    </div>
+  </div>
+
+  <!-- 测试匹配 -->
+  <div class="card">
+    <h3>测试规则</h3>
+    <p class="page-desc" style="margin:0 0 10px">输入一个号码，按当前规则（忽略总开关）实时判断是否命中，便于调试。</p>
+    <div class="bar">
+      <input class="inp" style="max-width:260px" x-model="testNum" placeholder="输入待测试号码"
+             maxlength="32" autocomplete="off" @keydown.enter="test()">
+      <button class="btn ghost" :disabled="testing" @click="test()" x-text="testing ? '测试中…' : '测试匹配'"></button>
+    </div>
+    <div x-show="testRes" style="margin-top:10px">
+      <span class="badge" :class="testRes && testRes.matched ? 'err' : 'ok'"
+            x-text="testRes && testRes.matched ? '命中' : '未命中'"></span>
+      <span class="hint" style="margin:0" x-show="testRes && testRes.matched"
+            x-text="testRes.note ? ('匹配备注：' + testRes.note) : '（无备注）'"></span>
+    </div>
+  </div>
 </div>

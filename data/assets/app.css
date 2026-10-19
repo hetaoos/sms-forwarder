@@ -299,3 +299,24 @@ input.mono{font-family:var(--mono)}
 [data-theme="dark"] .login-err{color:#ff8585}
 /* 移动端遮罩在深色下加重 */
 [data-theme="dark"] .mask.show{background:rgba(0,0,0,.55)}
+
+/* ================= 黑名单规则行 ================= */
+.bl-rules{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+.bl-row{display:flex;align-items:center;gap:10px;background:#fafbfc;border:1px solid var(--border);
+  border-radius:10px;padding:10px 12px}
+.bl-idx{width:22px;text-align:center;color:var(--faint);font-size:12px;flex:none}
+.bl-pattern{flex:2 1 200px;min-width:140px}
+.bl-mode{flex:0 0 92px}
+.bl-scope{flex:0 0 auto;display:flex;flex-direction:column;gap:2px}
+.bl-note{flex:1 1 140px;min-width:110px}
+.bl-on{flex:0 0 auto}
+.bl-row .inp{width:100%}
+.bl-scope label{color:var(--text)}
+[data-theme="dark"] .bl-row{background:rgba(255,255,255,.03)}
+/* 窄屏：规则行允许换行，各字段占满一行 */
+@media (max-width:760px){
+  .bl-row{flex-wrap:wrap}
+  .bl-pattern,.bl-note{flex:1 1 100%}
+  .bl-mode{flex:0 0 120px}
+  .bl-scope{flex-direction:row;gap:14px}
+}

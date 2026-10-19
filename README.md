@@ -400,7 +400,7 @@ data/
 │   ├── modem.html        4G 模组：状态 / 信号 / 运营商 / 号码 / 启用与别名
 │   ├── push.html         推送通道（规划中，13 种方式）
 │   ├── mqtt.html         MQTT（规划中）
-│   ├── blacklist.html    黑名单（规划中）
+│   ├── blacklist.html    黑名单：精确/前缀/通配符匹配，短信命中后静默丢弃或仅记录不推送（来电拦截待来电检测落地）
 │   ├── logs.html         运行日志：分页查看 / 级别与关键字过滤 / 自动刷新 / 清空
 │   ├── settings.html     系统设置：管理账号修改（用户名/密码存 NVS）
 │   └── tools.html        系统工具（规划中）

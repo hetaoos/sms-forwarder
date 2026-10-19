@@ -13,6 +13,7 @@
 #include "net/WifiManager.h"
 #include "net/WebPanel.h"
 #include "serial/SerialBridge.h"
+#include "sms/BlackList.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
 
@@ -39,10 +40,11 @@ class App {
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
   EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
   MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
+  BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
   // 设备日志环形存储（PSRAM，Web 分页查询 + 串口镜像）；
   // 指向全局唯一实例（devLog()），其余模块取的也是同一份
   LogStore &_log = devLog();
-  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time, _email, _log, _mqtt};  // HTTP 控制台（依赖上述模块）
+  WebPanel _panel{_bridge, _led, _wifi, _display, _auth, _events, _sms, _time, _email, _log, _mqtt, _push, _blacklist};  // HTTP 控制台（依赖上述模块）
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
 };

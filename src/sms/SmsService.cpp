@@ -877,6 +877,20 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
               (unsigned)port, (unsigned)concat[2]);
   }
 
+  // 黑名单拦截：在落盘与转发之前判定，使「静默丢弃」真正不入库、不推送。
+  bool blocked = false;
+  if (_blacklist && _blacklist->enabled()) {
+    blocked = _blacklist->match(sender, BlackList::kSms);
+  }
+  if (blocked) {
+    String note = _blacklist->lastNote();
+    _log.addf(LogLevel::kInfo, "black", "命中黑名单，来自 %s（%s）%s",
+              sender.c_str(),
+              _blacklist->action() == BlackList::kDrop ? "静默丢弃" : "仅记录不推送",
+              note.length() ? ("[" + note + "]").c_str() : "");
+    if (_blacklist->action() == BlackList::kDrop) return;  // 不入库、不推送
+  }
+
   SmsMessage msg;
   msg.incoming = true;
   msg.phone = sender;
@@ -896,9 +910,9 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     _log.addf(LogLevel::kWarn, "sms", "模组 %u 收到来自 %s 的短信，但入库失败",
               (unsigned)port, sender.c_str());
   }
-  // 通知上层（邮件通知等）。落盘失败也通知——短信确实已收到，
-  // 不应因存储异常丢掉通知。回调运行于抽数任务上下文，只允许轻量操作。
-  if (_onSms) _onSms(sender, text, msg.ts, (int8_t)port);
+  // 通知上层（邮件通知等）。命中黑名单（仅记录模式）时跳过，不向任何通道转发；
+  // 静默丢弃已在上面 return。回调运行于抽数任务上下文，只允许轻量操作。
+  if (_onSms && !blocked) _onSms(sender, text, msg.ts, (int8_t)port);
 }
 
 // 最新一条短信的摘要 JSON

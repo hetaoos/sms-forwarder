@@ -8,6 +8,7 @@
 
 #include "app/Config.h"
 #include "serial/SerialBridge.h"
+#include "sms/BlackList.h"
 #include "sms/SmsCodec.h"
 #include "sms/SmsRecord.h"
 #include "sms/SmsStore.h"
@@ -43,6 +44,9 @@ class SmsService {
   bool setModemAlias(uint8_t port, const String &alias);
   // 触发模组重新初始化（仅启用态有效；置 needReinit 由抽数任务状态机重跑）
   bool reinitPort(uint8_t port);
+
+  // 注入黑名单过滤器（App 装配时调用）；非空时在 handleCmt 内先于落盘/转发做匹配
+  void setBlackList(BlackList *bl) { _blacklist = bl; }
 
   // ---------------- 事件回调 / 时间供给 ----------------
   // 模组就绪事件：初始化状态机进入 kReady 时于抽数任务上下文触发。
@@ -220,4 +224,5 @@ class SmsService {
   SmsReceivedFn _onSms;     // 短信接收回调（抽数任务上下文触发）
   SimChangeFn _onSim;       // SIM 就绪状态变更回调（抽数任务上下文触发）
   TimeProviderFn _timeFn;   // 时间戳供给（App 注入；为空则开机秒数）
+  BlackList *_blacklist = nullptr;  // 黑名单过滤器（App 注入；空表示不拦截）
 };

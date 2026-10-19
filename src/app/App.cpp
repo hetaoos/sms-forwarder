@@ -42,7 +42,9 @@ bool App::begin() {
   _email.begin(_wifi, _sms, _time);    // 邮件：载入 SMTP 配置（NVS）
   _mqtt.begin(_wifi, _sms, _time, _log);  // MQTT：载入配置（NVS）+ 注册日志 sink
   _mqtt.notifyStartup();               // 开机后首次连上 MQTT 时补发启动通知
+  _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
+  _sms.setBlackList(&_blacklist);     // 注入黑名单拦截器（handleCmt 内先于落盘/转发判定）
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
   _sms.setOnModemReadyCb([this](uint8_t port) {

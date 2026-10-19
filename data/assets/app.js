@@ -416,7 +416,7 @@ const MENU = [
     { id: 'sms', title: '短信', icon: 'sms' },
     { id: 'modem', title: '4G 模组', icon: 'modem' },
     { id: 'serial', title: '串口调试', icon: 'serial' },
-    { id: 'blacklist', title: '黑名单', icon: 'blacklist', todo: true },
+    { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
   ]},
   { group: '监控', items: [
     { id: 'logs', title: '运行日志', icon: 'logs' },
@@ -1634,6 +1634,99 @@ function pageLogs() {
                p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
       }
       return '开机 ' + fmtUptime(ts);
+    },
+  };
+}
+
+/* ---------- 黑名单 ----------
+ * 配置经 /api/blacklist 读写；总开关经 /api/blacklist/enabled；
+ * 测试匹配经 /api/blacklist/test（忽略总开关，便于调试）。
+ * 匹配模式 mode: 0 精确 / 1 前缀 / 2 通配符；作用域 scope: 位1=短信 位2=来电。 */
+function pageBlacklist() {
+  return {
+    cfg: { enabled: false, action: 0, list: [] },
+    saving: false,
+    testing: false,
+    testNum: '',
+    testRes: null,
+
+    init() { this.load(); },
+
+    // 规整后端条目为前端可用的数字字段（mode / scope）
+    _norm(e) {
+      return {
+        pattern: e.pattern || '',
+        mode: Number(e.mode) || 0,
+        scope: Number(e.scope) || 1,
+        note: e.note || '',
+        enabled: e.enabled !== false,
+      };
+    },
+
+    async load() {
+      try {
+        const r = await apiFetch('/api/blacklist');
+        if (r.ok) {
+          const j = await r.json();
+          this.cfg.enabled = !!j.enabled;
+          this.cfg.action = j.action ?? 0;
+          this.cfg.list = (j.list || []).map(e => this._norm(e));
+        }
+      } catch (e) {}
+    },
+
+    // 总开关：只翻转启用位（不动规则与动作）
+    async toggleEnabled() {
+      const on = !!this.cfg.enabled;
+      const r = await postOp('/api/blacklist/enabled', { enabled: on },
+                            on ? '黑名单已启用' : '黑名单已停用');
+      if (r) { const j = await r.json(); this.cfg.enabled = !!j.enabled; }
+      else { this.cfg.enabled = !on; }   // 失败回滚，避免界面与设备不一致
+    },
+
+    // 作用域位：短信(1) / 来电(2)；允许全部取消（保存后后端回落为短信）
+    setScope(rule, bit, on) {
+      rule.scope = on ? (rule.scope | bit) : (rule.scope & ~bit);
+    },
+
+    addRule() {
+      if (this.cfg.list.length >= 100) { toast('已达规则上限 100 条', 'warn'); return; }
+      this.cfg.list.push({ pattern: '', mode: 0, scope: 1, note: '', enabled: true });
+    },
+    delRule(i) { this.cfg.list.splice(i, 1); },
+
+    async save() {
+      this.saving = true;
+      try {
+        const r = await postOp('/api/blacklist', {
+          enabled: !!this.cfg.enabled,
+          action: Number(this.cfg.action) || 0,
+          list: this.cfg.list.map(e => ({
+            pattern: (e.pattern || '').trim(),
+            mode: Number(e.mode) || 0,
+            scope: Number(e.scope) || 1,
+            note: (e.note || '').trim(),
+            enabled: e.enabled !== false,
+          })),
+        }, '黑名单已保存');
+        if (r) {
+          const j = await r.json();
+          this.cfg.enabled = !!j.enabled;
+          this.cfg.action = j.action ?? 0;
+          this.cfg.list = (j.list || []).map(e => this._norm(e));
+        }
+      } finally { this.saving = false; }
+    },
+
+    async test() {
+      const num = (this.testNum || '').trim();
+      if (!num) { toast('请输入待测试号码', 'warn'); return; }
+      this.testing = true;
+      try {
+        const r = await apiFetch('/api/blacklist/test?num=' + encodeURIComponent(num));
+        if (r.ok) this.testRes = await r.json();
+      } catch (e) {}
+      finally { this.testing = false; }
     },
   };
 }

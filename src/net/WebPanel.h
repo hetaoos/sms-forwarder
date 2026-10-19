@@ -10,8 +10,10 @@
 #include "net/EmailService.h"
 #include "net/MqttService.h"
 #include "net/StatusBus.h"
+#include "push/PushService.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
+#include "sms/BlackList.h"
 #include "sms/SmsService.h"
 #include "ota/Ota.h"   // OTA 升级（固件 + LittleFS 烧录）
 
@@ -43,10 +45,12 @@ class WebPanel {
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
   // time：时间同步（状态 JSON 输出当前时间/来源）；
   // email：SMTP 邮件通知（配置读写 + 测试发送）；
+  // blacklist：号码黑名单（拦截匹配 + 配置读写）；
   // log：设备日志环形存储（PSRAM，分页查询 / 清空）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
            AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time,
-           EmailService &email, LogStore &log, MqttService &mqtt);
+           EmailService &email, LogStore &log, MqttService &mqtt, PushService &push,
+           BlackList &blacklist);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -176,6 +180,13 @@ class WebPanel {
   void handleMqttTest(AsyncWebServerRequest *req);
   void handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+
+  // 黑名单：配置读取 / 整体保存 / 总开关 / 测试匹配
+  void handleBlackGet(AsyncWebServerRequest *req);
+  void handleBlackPost(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleBlackEnabled(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleBlackTest(AsyncWebServerRequest *req);
+
   // OTA：状态查询 / 触发版本检查 / 启动在线升级 / 本地固件上传 / 本地 Web UI 上传
   // 固件与 LittleFS 镜像均通过 onUpload 分片回调写入，避免一次性把整个文件读进内存
   void handleOtaStatus(AsyncWebServerRequest *req);
@@ -208,5 +219,6 @@ class WebPanel {
   TimeSync &_time;         // 时间同步引用
   EmailService &_email;    // SMTP 邮件通知引用
   MqttService &_mqtt;      // MQTT 服务引用
+  BlackList &_blacklist;   // 号码黑名单引用
   LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
 };

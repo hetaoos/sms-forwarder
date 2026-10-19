@@ -145,14 +145,15 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events/sms/time/email/log/mqtt：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events/sms/time/email/blacklist/log/mqtt/push：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, AdminStore &auth, StatusBus &events,
                    SmsService &sms, TimeSync &time, EmailService &email,
-                   LogStore &log, MqttService &mqtt)
+                   LogStore &log, MqttService &mqtt, PushService &push,
+                   BlackList &blacklist)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
       _events(events), _sms(sms), _time(time), _email(email), _mqtt(mqtt),
-      _log(log) {}
+      _push(push), _blacklist(blacklist), _log(log) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -480,6 +481,26 @@ void WebPanel::setupRoutes() {
 
   // 删除：?id=n 删单条（不存在 404）；?all=1 清空
   _server.on("/api/sms", HTTP_DELETE, [this](AsyncWebServerRequest *req) { handleSmsDelete(req); });
+
+  // ================= 黑名单 =================
+  // 顺序：/api/blacklist/<子路径> 先注册，/api/blacklist（父路径）放最后
+  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动规则与动作
+  _server.on("/api/blacklist/enabled", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleBlackEnabled(req, json); });
+
+  // 测试匹配：?num=... 返回 {"ok":true,"matched":bool,"scope":n,"note":".."}
+  _server.on("/api/blacklist/test", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleBlackTest(req); });
+
+  // ---- 以下是父路径 /api/blacklist，必须排在上述子路径之后 ----
+  // 配置读取：{"ok":true,"enabled":bool,"action":n,"count":n,
+  //   "list":[{"pattern":"..","mode":n,"scope":n,"note":"..","enabled":bool}]}
+  _server.on("/api/blacklist", HTTP_GET, [this](AsyncWebServerRequest *req) { handleBlackGet(req); });
+
+  // 配置整体保存：JSON {"enabled":bool,"action":0|1,"list":[{pattern,mode,scope,note,enabled}...]}
+  // 逐条校验（mode 0..2、scope 非 0、pattern 非空）+ 去重，落盘后返回最新配置
+  _server.on("/api/blacklist", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleBlackPost(req, json); });
 
   // ================= 邮件通知（SMTP）=================
   // 顺序：/api/email/<子路径> 先注册，/api/email（父路径）放最后
@@ -1420,11 +1441,13 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonObject oEmail = doc["email"].to<JsonObject>();
   JsonObject oSms   = doc["sms"].to<JsonObject>();
   JsonObject oMqtt  = doc["mqtt"].to<JsonObject>();
+  JsonObject oBlack = doc["blacklist"].to<JsonObject>();
   _wifi.exportAllTo(oWifi);
   _auth.exportTo(oAuth);
   _email.exportTo(oEmail);
   _sms.exportTo(oSms);
   _mqtt.exportTo(oMqtt);
+  _blacklist.exportTo(oBlack);
 
   String body;
   serializeJsonPretty(doc, body);
@@ -1515,6 +1538,13 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (doc["mqtt"].is<JsonObject>()) {
     if (!_mqtt.importFrom(doc["mqtt"].as<JsonObject>())) {
       sendErr(req, 500, "MQTT 配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["blacklist"].is<JsonObject>()) {
+    if (!_blacklist.importFrom(doc["blacklist"].as<JsonObject>())) {
+      sendErr(req, 500, "黑名单配置写入失败");
       return;
     }
     anyApplied = true;
