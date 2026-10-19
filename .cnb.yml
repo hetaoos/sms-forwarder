@@ -1,0 +1,176 @@
+# CNB 云原生构建流水线 —— ESP32-S3 固件编译与发布
+#
+# 参考 esp32-sms-forwarding 的 .cnb.yml，按本仓库（单平台 esp32s3）情况裁剪：
+#   - 本仓库只有一个硬件平台（ESP32-S3，16MB flash，双 OTA 槽位），编译一次即可
+#   - 产物文件名带平台后缀（-esp32s3），挂在同一个 Release 下
+#
+# 版本标识只有一套 —— RELEASE_TAG = <VERSION>-<构建时间>-<短 SHA>
+# （如 1.0.0-20261004T121442-f2b513a）。它同时是：
+#   - Release 的 tag（每次构建一个新 Release，产物都挂上去）
+#   - 产物文件名里的 <tag>（ota-<tag>-esp32s3.bin 等）
+#   - 设备固件自报的版本（若启用 OTA 检查更新时的比较依据）
+# 这三处必须逐字一致，OTA 才能既查得到、又下得动。
+#
+# 平台与分区表对照见 platformio.ini / partitions/esp32s3_16mb.csv，
+# 打包逻辑见 script/build_release.py。
+#
+# ⚠️ 层级模型（这里踩过坑，务必看清）：Pipeline → Stage → Job。
+#   Job 没有 stages 字段，只有 script/image/env/exports 等；把 stages 塞进 job
+#   会被静默忽略——任务照样「成功」，实际啥也没跑。所以下面每个平台 job 都是
+#   一个直接的 script，不再嵌套 stages。
+#
+# ⚠️ 跨 job / 跨 stage 传文件：并行 job 各在自己的容器里，工作区不互通，
+#   dist/ 必须声明成 data 数据卷才能被后面的 gen-release-notes / 上传阶段读到。
+#   （数据卷类型见 docs.cnb.cool/zh/build/grammar.md#docker-volumes）
+
+# 构建阶段列表：先定版本，再编译。
+# docker 只能挂在 Pipeline 级（Job 级没有 docker 字段），所以这里不放 docker，
+# 由下面每个 Pipeline 自己声明，脚本任务自动继承。
+.docker: &docker
+  # 预装 PlatformIO / esptool 的构建镜像，见 .ci/Dockerfile
+  build:
+    dockerfile: .ci/Dockerfile
+  volumes:
+    # PlatformIO 工具链缓存，跨流水线复用（构建节点内有效）
+    #
+    # ⚠️ 后两个数据卷请勿删除：CNB 会用流水线内的**机器全局**用户来跑任务，
+    # 所有流水线共用同一个 $HOME，`copy-on-write` 的卷又是绑定到容器的，
+    # 于是容器被回收后 /root/.platformio/penv（PlatformIO 的虚拟环境）会残缺，
+    # 下次构建时 PlatformIO 试图 `venv --clear` 重建，撞上残留的
+    # penv/include/python3.12 目录，报
+    # `Error: [Errno 17] File exists: '/root/.platformio/penv/include/python3.12'`
+    # 并让构建失败。显式声明成 data 卷后就有了容器内的持久挂载点，不会再被回收
+    # 成残缺状态。
+    #
+    # home 放在 /root/.cnb/hmnt，只读后再让 /root/.platformio 落进它下面 ——
+    # 注意不能反过来把 home 直接挂到 /root 上：那会盖掉镜像里已有的 /root 内容。
+    - /root/.cnb/hmnt:data
+    - /root/.platformio:data:ro
+    # dist/ 用 data 卷在构建 job 与后续 stage 之间共享构建产物
+    - ./dist:data
+
+# 版本解析 Stage（单独一段锚点，避免把列表锚点拼进 stages 造成嵌套数组）
+# 注意不要给这个 Job 覆盖 image：缺省的 Pipeline 镜像（.ci/Dockerfile）里有
+# git，脚本才能取到真实短 SHA；一旦覆盖成没有 git 的镜像，构建元数据会静默
+# 退化成 `-local`（构建成功但版本号是错的）。
+.resolve-version: &resolve-version
+  name: resolve-version
+  script: bash script/print_version_tag.sh
+  exports:
+    # release_tag: Release 的 tag，也是产物文件名里的 <tag>，也是设备自报的版本。
+    # 一次构建一个值（含构建时间 + 短 SHA），所以每次 push 都会产生一个新的
+    # Release；不同构建的产物互不覆盖，回滚时能精确指到某一版。
+    release_tag: RELEASE_TAG
+    # app_version / app_build_timestamp：编进固件（esp_app_desc / OTA_RELEASE_TAG），
+    # 与 RELEASE_TAG 同源，确保固件内构建时间/版本与 Release 一致。
+    app_version: APP_VERSION
+    app_build_timestamp: APP_BUILD_TIMESTAMP
+    # short_sha: 固件把它编进版本标识（见 inject_app_version.py）。它已经是
+    # RELEASE_TAG 的一部分，这里单独导出是给 release notes 与人工核对用
+    short_sha: SHA_SHORT
+    full_sha: FULL_SHA
+    timestamp: TIMESTAMP
+
+# 编译 Stage（单平台 esp32s3）
+.build-firmware: &build-firmware
+  name: build-firmware
+  script: |
+    set -euo pipefail
+    python3 script/build_release.py --platform "$PLATFORM" --tag "$RELEASE_TAG"
+
+# ---------- push 到 master：编译 + 发布 ----------
+master:
+  push:
+    - name: build-and-release
+      ifModify:
+        - "src/**"
+        - "data/**"
+        - "include/**"
+        - "platformio.ini"
+        - "partitions/**"
+        - "script/**"
+        - ".ci/**"
+        - ".cnb.yml"
+        - "VERSION"
+      docker: *docker
+      stages:
+        - *resolve-version
+        - name: build
+          jobs:
+            esp32s3:
+              <<: *build-firmware
+              env:
+                PLATFORM: esp32s3
+        # 生成 Release 描述（含各平台产物 SHA256）
+        # 同样不覆盖 image：脚本缺 FULL_SHA 时会退回 `git rev-parse HEAD`，
+        # 没有 git 的镜像会让描述里的 Commit 变成 unknown。
+        - name: gen-release-notes
+          script: |
+            set -euo pipefail
+            python3 script/gen_release_notes.py "$RELEASE_TAG" release_notes.md
+            ls -l dist/
+        # 先清掉同版本的历史 Release / Tag，再建本次的。
+        # 必要性：版本标识带构建时间 + 短 SHA，同一版 VERSION 每 push 一次就多一个
+        # Release；设备端 OTA「检查更新」只认 tag 列表里最新的一个，老的纯占位。
+        # 脚本按严格前缀 <VERSION>- 删（不删裸 `1.0.0`，那是手动里程碑标签），
+        # 且跳过 $RELEASE_TAG 自身 —— 删完再建，顺序不能反。
+        - name: prune-old-releases
+          script: |
+            set -euo pipefail
+            python3 script/prune_releases.py "$RELEASE_TAG"
+        # 创建 Release。tag 用 $RELEASE_TAG（完整标识，每次构建都不同）。
+        # 上面已经删过同名历史，这里直接用默认的「叠加」模式即可 —— 不要用
+        # overlying: false，那是另一套删除逻辑，与脚本重复且更难控。
+        - name: create-release
+          type: git:release
+          options:
+            tag: $RELEASE_TAG
+            title: $RELEASE_TAG
+            descriptionFromFile: release_notes.md
+            latest: true
+        # 上传各平台产物到该 Release。附件必须挂在 Release 上（tag 指定），
+        # 绝不能上传成 commit 附件——那会让每个 commit 都挂一份固件。
+        - name: upload-assets
+          image: cnbcool/attachments:latest
+          settings:
+            tag: $RELEASE_TAG
+            attachments:
+              - "./dist/*.bin"
+              - "./dist/*.elf"
+
+# ---------- PR：仅编译校验，不发布 ----------
+"pull_request":
+  pull_request:
+    - name: build-check
+      ifModify:
+        - "src/**"
+        - "data/**"
+        - "include/**"
+        - "platformio.ini"
+        - "partitions/**"
+        - "script/**"
+        - ".ci/**"
+        - ".cnb.yml"
+      docker: *docker
+      stages:
+        - *resolve-version
+        - name: build
+          jobs:
+            esp32s3:
+              <<: *build-firmware
+              env:
+                PLATFORM: esp32s3
+
+# ---------- 兜底分支：手动触发编译 ----------
+$:
+  web_trigger:
+    - name: build-manual
+      docker: *docker
+      stages:
+        - *resolve-version
+        - name: build
+          jobs:
+            esp32s3:
+              <<: *build-firmware
+              env:
+                PLATFORM: esp32s3
