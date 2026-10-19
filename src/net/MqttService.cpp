@@ -10,8 +10,10 @@
 #include <mbedtls/ssl.h>        // mbedtls_ssl_set_verify：用于关闭证书校验
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/idf_additions.h>   // xQueueCreateWithCaps：把命令队列优先放 PSRAM
 #include <time.h>
 
+#include "app/Psram.h"                // psramJsonAllocator()：JsonDocument 内存池优先 PSRAM
 #include "log/LogStore.h"
 #include "net/WifiManager.h"
 #include "ota/Ota.h"            // Ota::version()：与前端 /api/ota/version 同源
@@ -118,7 +120,7 @@ static void buildDeviceStatus(JsonObject info) {
   }
   if (MqttService::_sms) {
     JsonArray modems = info["modems"].to<JsonArray>();
-    JsonDocument mdoc;
+    JsonDocument mdoc(psramJsonAllocator());
     if (deserializeJson(mdoc, MqttService::_sms->modemsJson()) == DeserializationError::Ok &&
         mdoc.is<JsonArray>()) {
       for (JsonObject m : mdoc.as<JsonArray>()) {
@@ -154,7 +156,7 @@ void MqttService::onLog(uint8_t level, const char *tag, const char *msg, uint32_
   if (s_logSecCount >= LOG_THROTTLE_PER_SEC) return;
   s_logSecCount++;
 
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["type"]    = "log";
   doc["time"]    = ts;
   doc["level"]   = (int)level;
@@ -177,7 +179,7 @@ bool MqttService::publish(const String &subtopic, const String &payload, int qos
 }
 
 void MqttService::publishStatus(const String &status) {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["type"]      = "status";
   doc["status"]    = status;
   doc["device"]    = deviceName();
@@ -209,7 +211,7 @@ void MqttService::publishEvent(MqttMsgType type, const String &sender,
   if (!_enabled || !isConfigured()) return;
   if ((_notifyTypes & bit) == 0) return;
 
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["type"]      = sub;
   doc["device"]    = deviceName();
   doc["deviceId"]  = deviceId();
@@ -240,7 +242,7 @@ void MqttService::publishEvent(MqttMsgType type, const String &sender,
 
 // ── 命令响应 ───────────────────────────────────────────────
 static void respond(const JsonDocument &req, bool ok, const String &msg) {
-  JsonDocument r;
+  JsonDocument r(psramJsonAllocator());
   r["type"]    = "response";
   r["ok"]      = ok;
   r["message"] = msg;
@@ -251,7 +253,7 @@ static void respond(const JsonDocument &req, bool ok, const String &msg) {
 }
 
 static void respondHelp(const JsonDocument &req) {
-  JsonDocument r;
+  JsonDocument r(psramJsonAllocator());
   r["type"]    = "response";
   r["ok"]      = true;
   r["message"] = "可用命令列表";
@@ -275,7 +277,7 @@ static void respondHelp(const JsonDocument &req) {
 }
 
 static void respondInfo(const JsonDocument &req) {
-  JsonDocument r;
+  JsonDocument r(psramJsonAllocator());
   r["type"]    = "response";
   r["ok"]      = true;
   r["message"] = "设备信息（启动信息）";
@@ -289,9 +291,9 @@ static void respondInfo(const JsonDocument &req) {
 
 // ── 命令分发（在主循环线程执行）────────────────────────────
 void MqttService::handleCommand(const String &json) {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   if (deserializeJson(doc, json) != DeserializationError::Ok) {
-    JsonDocument empty;
+    JsonDocument empty(psramJsonAllocator());
     respond(empty, false, "JSON 解析失败");
     return;
   }
@@ -347,6 +349,21 @@ void MqttService::handleCommand(const String &json) {
   }
 }
 
+// 把 ESP-TLS 组件错误码翻译成中文（0x8000 基址），便于排查 MQTT 连接失败。
+// 0x8004 = ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST（连接主机失败）。
+static const char *tlsErrText(uint32_t code) {
+  switch (code) {
+    case 0x8001: return "域名解析失败（检查服务器地址）";
+    case 0x8002: return "无法创建 socket（资源不足）";
+    case 0x8004: return "连接主机失败（地址/端口错误、网络不通、或 TLS 开关与端口不匹配）";
+    case 0x8006: return "连接超时（主机无响应）";
+    case 0x800B: return "TLS 握手失败（明文端口勿开 TLS，加密端口应为 8883 等）";
+    case 0x800C: case 0x800F: return "证书校验失败";
+    case 0x8010: return "证书主机名不匹配";
+    default: return nullptr;
+  }
+}
+
 // ── esp-mqtt 事件回调（运行在 esp-mqtt 网络任务）──────────────
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                int32_t event_id, void *event_data) {
@@ -363,19 +380,32 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     case MQTT_EVENT_ERROR: {
       auto *eh = event->error_handle;
       if (eh != nullptr) {
-        const char *reason = "未知";
+        // conn_return=0 / 未知：失败发生在 TCP/TLS 连接阶段，尚未收到 CONNACK
+        const char *reason = "未收到 CONNACK（连接/握手阶段已失败）";
         switch (eh->connect_return_code) {
           case 1: reason = "协议不被接受"; break;
           case 2: reason = "客户端 ID 被拒绝"; break;
           case 3: reason = "服务器不可用"; break;
           case 4: reason = "用户名/密码错误"; break;
           case 5: reason = "未授权"; break;
-          default: break;
+          default: break;  // 0：连接层失败，沿用上面的默认说明
         }
+        // 翻译 ESP-TLS 错误码（0x8004 = 连接主机失败），其余原样打印
+        const char *t1 = tlsErrText((uint32_t)eh->esp_tls_last_esp_err);
+        String extra;
+        if (t1)
+          extra = String("; tls_err=0x") + String((unsigned)eh->esp_tls_last_esp_err, 16)
+                + "(" + t1 + ")";
+        else if (eh->esp_tls_last_esp_err)
+          extra = String("; tls_err=0x") + String((unsigned)eh->esp_tls_last_esp_err, 16);
+        if (eh->esp_tls_stack_err)
+          extra += String("; tls_stack_err=") + String(eh->esp_tls_stack_err);
+        if (eh->esp_transport_sock_errno)
+          extra += String("; sock_errno=") + String(eh->esp_transport_sock_errno);
         if (MqttService::_log) {
           MqttService::_log->addf(LogLevel::kError, "mqtt",
-            "MQTT 连接错误: conn_return=%d(%s), tls_err=0x%x",
-            (int)eh->connect_return_code, reason, (unsigned)eh->esp_tls_last_esp_err);
+            "MQTT 连接错误: conn_return=%d(%s)%s",
+            (int)eh->connect_return_code, reason, extra.c_str());
         }
       }
       break;
@@ -434,7 +464,7 @@ void MqttService::buildClient() {
   }
   s_will = fullTopic("status");
   {
-    JsonDocument wdoc;
+    JsonDocument wdoc(psramJsonAllocator());
     wdoc["type"]      = "status";
     wdoc["status"]    = "offline";
     wdoc["device"]    = deviceName();
@@ -488,7 +518,12 @@ void MqttService::begin(WifiManager &wifi, SmsService &sms, TimeSync &time,
   _sms  = &sms;
   _time = &time;
   _log  = &log;
-  if (s_cmdQueue == nullptr) s_cmdQueue = xQueueCreate(8, sizeof(MqttCmdMsg));
+  if (s_cmdQueue == nullptr) {
+    // 命令队列（8×512B ≈ 4KB）优先放 PSRAM，与 DRAM/LwIP/SSL 隔离；
+    // 无 PSRAM 或分配失败时退化到内部堆，功能不变。
+    s_cmdQueue = xQueueCreateWithCaps(8, sizeof(MqttCmdMsg), MALLOC_CAP_SPIRAM);
+    if (s_cmdQueue == nullptr) s_cmdQueue = xQueueCreate(8, sizeof(MqttCmdMsg));
+  }
   // 每次开机重置，使首次连接可补发启动通知
   s_bootNotified = false;
   s_pendingBoot  = false;
@@ -595,7 +630,7 @@ bool MqttService::saveConfig(const String &server, uint16_t port, bool useTls,
 }
 
 String MqttService::configJson() const {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["ok"]         = true;
   doc["enabled"]    = _enabled;
   doc["configured"] = isConfigured();
@@ -660,7 +695,7 @@ bool MqttService::loadConfig() {
     if (_log) _log->addf(LogLevel::kInfo, "mqtt", "NVS 无 MQTT 配置，使用默认值（功能关闭）");
     return false;
   }
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   if (deserializeJson(doc, json) != DeserializationError::Ok) {
     if (_log) _log->addf(LogLevel::kWarn, "mqtt", "MQTT 配置解析失败，使用默认值");
     return false;
@@ -683,7 +718,7 @@ bool MqttService::loadConfig() {
 }
 
 bool MqttService::persistConfig() {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["ver"]              = 1;
   doc["enabled"]          = _enabled;
   doc["server"]           = _server;

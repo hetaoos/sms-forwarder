@@ -514,9 +514,9 @@ bool EmailService::loadConfig() {
     return false;
   }
   Guard g(_mutex);
-  // 总开关：NVS 无该字段时默认开启——旧固件没有总开关，靠「配置齐全」即启用，
-  // 升级后保持原行为（已配置的设备继续正常发邮件）
-  _enabled = doc["enabled"] | true;
+  // 总开关：NVS 无该字段时默认关闭（新设备出厂不启用邮件，避免未配置就发信）。
+  // 已配置的设备此前落盘必有 enabled 字段，不受此默认值影响。
+  _enabled = doc["enabled"] | false;
   _server = doc["server"] | "";
   int port = doc["port"] | (int)cfg::kMailSmtpPortDefault;
   _port = (port > 0 && port <= 65535) ? (uint16_t)port : cfg::kMailSmtpPortDefault;

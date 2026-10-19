@@ -87,8 +87,11 @@ constexpr uint32_t kMqttNotifyLog     = 1u << 16; // 运行日志实时推送（
 constexpr uint32_t kMqttNotifyAll = kMqttNotifyStartup | kMqttNotifySim |
                                     kMqttNotifySms | kMqttNotifyOnline |
                                     kMqttNotifyLog;
-// 出厂默认：全部开启
-constexpr uint32_t kMqttNotifyDefault = kMqttNotifyAll;
+// 出厂默认：除「运行日志」外全部开启（日志推送默认关闭，避免日志风暴；
+// 用户可在页面单独勾选开启）。注意：运行日志为 MQTT 专属位（1<<16），
+// 不纳入默认，与邮件通知类型默认全开区分。
+constexpr uint32_t kMqttNotifyDefault = kMqttNotifyStartup | kMqttNotifySim |
+                                        kMqttNotifySms | kMqttNotifyOnline;
 
 // SMTP 默认端口：465 为隐式 TLS（握手即加密，多数服务商推荐）。
 // 587（STARTTLS 明文起连后升级）不适用——底层直接用 WiFiClientSecure 连接。

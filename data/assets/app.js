@@ -1212,7 +1212,7 @@ function pageEmail() {
   ];
   return {
     cfg: { server: '', port: 465, user: '', pass: '', sendTo: '', notifyTypes: 15,
-           enabled: true, schedMode: '1', schedHour: 9, schedMinute: 0, intervalH: 24 },
+           enabled: false, schedMode: '1', schedHour: 9, schedMinute: 0, intervalH: 24 },
     configured: false,
     hasPass: false,
     saving: false,
@@ -1302,68 +1302,88 @@ function pageEmail() {
 /* ---------- MQTT 推送 ----------
  * 配置经 /api/mqtt 读写；通知类型为位掩码（与固件 cfg::kMqttNotify* 一致）：
  *   1=启动 2=SIM 4=短信 8=上线 65536=日志（低 4 位与邮件 kEmailNotify* 同义）。
- * 总开关经 /api/mqtt/enabled；测试发布经 /api/mqtt/test（只入队，主循环补发）。 */
+ * 总开关经 /api/mqtt/enabled；测试发布经 /api/mqtt/test（只入队，主循环补发）。
+ * 交互与「邮件通知」页对齐：cfg 直接持有字段，isOn/toggle 管理通知类型位。 */
 function pageMqtt() {
   // 通知类型位定义（与固件 cfg::kMqttNotify* 保持一致；新增类型在此补一行 + 固件加一位）
   const TYPES = [
-    { bit: 1,     label: '设备启动完成' },
-    { bit: 2,     label: 'SIM 状态变更（插拔）' },
-    { bit: 4,     label: '收到短信' },
-    { bit: 8,     label: '设备上线（重连）通知' },
-    { bit: 65536, label: '运行日志实时推送' },
+    { bit: 1,     label: '设备启动完成', desc: '开机并就绪后发布设备信息' },
+    { bit: 2,     label: 'SIM 状态变更', desc: '运行时插卡 / 拔卡各一条' },
+    { bit: 4,     label: '收到短信', desc: '每收到一条短信发布一条' },
+    { bit: 8,     label: '设备上线（重连）', desc: '每次（重）连接发布一次' },
+    { bit: 65536, label: '运行日志实时推送', desc: '运行日志按 20 条/秒限流推送（默认关闭）' },
   ];
   return {
-    loading: true,
+    cfg: { server: '', port: 1883, user: '', pass: '', clientId: '',
+           topicPrefix: 'smsf', keepAlive: 60, useTls: false,
+           subscribeEnabled: true, notifyTypes: 15, enabled: false },
+    configured: false,
+    hasPass: false,
     saving: false,
     testing: false,
-    hint: '',
-    err: false,                // hint 是否为错误（错误显示红条 + ⚠）
-    cfg: { enabled: false, configured: false, hasPass: false },  // 后端只读字段
-    f: {                      // 表单字段（保存时整体下发，password 空串=保持原密码）
-      server: '', port: 1883, useTls: false, user: '', pass: '',
-      clientId: '', topicPrefix: 'smsf', keepAlive: 60, subscribeEnabled: true,
-      enabled: false, notifyTypes: 0,
-    },
-    sel: [],                  // 当前勾选的通知位（多选模型，绑定 checkbox :value）
-    TYPES,
-    // 后端返回的完整配置（一次性 GET 带出全部字段：enabled/server/port/.../notifyTypes）
+    types: TYPES,
+    init() { this.load(); },
     async load() {
-      this.loading = true;
       try {
-        const r = await apiGet('/api/mqtt');
-        if (!r || !r.ok) return;
-        const c = r;
-        this.cfg = { enabled: c.enabled, configured: c.configured, hasPass: c.hasPass };
-        this.f = {
-          server: c.server || '', port: c.port || 1883, useTls: !!c.useTls,
-          user: c.user || '', pass: '', clientId: c.clientId || '',
-          topicPrefix: c.topicPrefix || 'smsf', keepAlive: c.keepAlive || 60,
-          subscribeEnabled: c.subscribeEnabled !== false,
-          enabled: !!c.enabled, notifyTypes: c.notifyTypes || 0,
-        };
-        this.sel = TYPES.filter(t => (c.notifyTypes || 0) & t.bit).map(t => t.bit);
-      } finally { this.loading = false; }
-    },
-    async init() { this.hint = ''; this.err = false; await this.load(); },
-    // 保存：表单字段原样下发，notifyTypes 由勾选项按位或得出
-    async save() {
-      this.saving = true; this.hint = ''; this.err = false;
-      try {
-        const nt = this.sel.reduce((a, b) => a | Number(b), 0);
-        const r = await apiPost('/api/mqtt', {
-          enabled: this.f.enabled, server: this.f.server, port: this.f.port,
-          useTls: this.f.useTls, user: this.f.user, pass: this.f.pass,
-          clientId: this.f.clientId, topicPrefix: this.f.topicPrefix,
-          keepAlive: this.f.keepAlive, subscribeEnabled: this.f.subscribeEnabled,
-          notifyTypes: nt,
-        });
-        if (!r || !r.ok) {
-          this.hint = (r && r.error) ? r.error : '保存失败'; this.err = true; return;
+        const r = await apiFetch('/api/mqtt');
+        if (r.ok) {
+          const j = await r.json();
+          this.cfg.server = j.server || '';
+          this.cfg.port = j.port || 1883;
+          this.cfg.user = j.user || '';
+          this.cfg.clientId = j.clientId || '';
+          this.cfg.topicPrefix = j.topicPrefix || 'smsf';
+          this.cfg.keepAlive = j.keepAlive || 60;
+          this.cfg.useTls = !!j.useTls;
+          this.cfg.subscribeEnabled = j.subscribeEnabled !== false;
+          this.cfg.notifyTypes = j.notifyTypes ?? 15;   // 缺省：除日志外全开
+          this.cfg.enabled = !!j.enabled;
+          this.cfg.pass = '';
+          this.configured = !!j.configured;
+          this.hasPass = !!j.hasPass;
         }
-        toast('MQTT 配置已保存');
-        await this.load();      // 回填（configured/hasPass 等只读字段需刷新）
-      } catch (e) {
-        this.hint = '网络错误：' + e.message; this.err = true;
+      } catch (e) {}
+    },
+    // 总开关：只翻转启用位（不动其余配置），停用时销毁客户端停止连接
+    async toggleEnabled() {
+      const on = !!this.cfg.enabled;
+      const r = await postOp('/api/mqtt/enabled', { enabled: on },
+                             on ? 'MQTT 已启用' : 'MQTT 已停用');
+      if (r) {
+        const j = await r.json();
+        this.configured = !!j.configured;
+        this.hasPass = !!j.hasPass;
+      } else {
+        this.cfg.enabled = !on;   // 失败回滚，避免界面与设备不一致
+      }
+    },
+    isOn(bit) { return (this.cfg.notifyTypes & bit) !== 0; },
+    toggle(bit) {
+      this.cfg.notifyTypes = this.isOn(bit)
+        ? (this.cfg.notifyTypes & ~bit) : (this.cfg.notifyTypes | bit);
+    },
+    async save() {
+      this.saving = true;
+      try {
+        const r = await postOp('/api/mqtt', {
+          enabled: !!this.cfg.enabled,
+          server: (this.cfg.server || '').trim(),
+          port: Number(this.cfg.port) || 1883,
+          useTls: !!this.cfg.useTls,
+          user: (this.cfg.user || '').trim(),
+          pass: this.cfg.pass || '',       // 空 = 不修改已保存密码
+          clientId: (this.cfg.clientId || '').trim(),
+          topicPrefix: (this.cfg.topicPrefix || 'smsf').trim(),
+          keepAlive: Math.min(3600, Math.max(1, Number(this.cfg.keepAlive) || 60)),
+          subscribeEnabled: !!this.cfg.subscribeEnabled,
+          notifyTypes: this.cfg.notifyTypes,
+        }, 'MQTT 配置已保存');
+        if (r) {
+          const j = await r.json();
+          this.configured = !!j.configured;
+          this.hasPass = !!j.hasPass;
+          this.cfg.pass = '';              // 清空密码框（已保存则不回显）
+        }
       } finally { this.saving = false; }
     },
     // 测试：只入队，实际发布在设备主循环完成（HTTP 任务栈不足以跑 MQTT 握手）
@@ -1372,14 +1392,6 @@ function pageMqtt() {
       try {
         await postOp('/api/mqtt/test', {}, '测试消息已加入发布队列，请检查订阅端');
       } finally { this.testing = false; }
-    },
-    // 总开关：单独的轻量接口，不触碰其余配置
-    async setEnabled(on) {
-      this.hint = ''; this.err = false;
-      const r = await postOp('/api/mqtt/enabled', { enabled: on },
-                             on ? 'MQTT 已启用' : 'MQTT 已停用');
-      if (!r) { await this.load(); return; }      // 失败回滚 UI
-      this.cfg.enabled = on;
     },
   };
 }

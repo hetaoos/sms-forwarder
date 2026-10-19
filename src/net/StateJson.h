@@ -4,6 +4,9 @@
 
 #include <Arduino.h>
 
+#include <WiFi.h>
+
+#include "hal/CpuMonitor.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/WifiManager.h"
@@ -47,6 +50,27 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["timeSrc"] = time.srcName();
   // OTA 是否可用（设备分区表是否具备双槽）。前端据此决定是否展示升级入口
   doc["otaAvailable"] = otaPartitionAvailable();
+
+  // ---- 设备硬件/固件信息 ----
+  // CPU 使用率（%）：基于 FreeRTOS 运行时间统计；不可用时 cpuAvail=false
+  float cpu = CpuMonitor::usage();
+  doc["cpuAvail"] = cpu >= 0;
+  doc["cpu"] = cpu >= 0 ? (float)(round(cpu * 10) / 10.0) : 0.0f;
+  // 芯片内部温度传感器（ESP32-S3 内置）；读数异常（NaN）时 tempAvail=false
+  float tempC = temperatureRead();
+  doc["tempAvail"] = !isnan(tempC);
+  doc["temp"] = isnan(tempC) ? 0.0f : (float)(round(tempC * 10) / 10.0);
+  // 芯片型号 + 步进（如 "ESP32-S3 rev 2"），同时作为硬件版本展示
+  String chip = ESP.getChipModel();
+  if (chip.length() > 0) chip += " rev " + String((int)ESP.getChipRevision());
+  doc["chip"] = chip.length() > 0 ? chip : String("未知");
+  // 硬件版本：直接采用芯片型号 + 步进（随实际硅片自动变化）
+  doc["hwVer"] = chip.length() > 0 ? chip : String("未知");
+  // 软件版本（= 固件所属 Release tag，由 CI 注入 OTA_RELEASE_TAG）
+  doc["swVer"] = Ota::version();
+  // 本机 MAC 地址（STA 接口，大写冒号分隔）
+  doc["mac"] = WiFi.macAddress();
+
   String out;
   serializeJson(doc, out);
   return out;

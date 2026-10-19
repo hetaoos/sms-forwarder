@@ -14,10 +14,28 @@
       <div class="v" style="font-size:16px" x-text="st.timeSynced ? st.time : '未同步'"></div></div>
     <div class="stat"><div class="k">堆内存</div><div class="v" x-text="fmtBytes(st.heap) + ' / ' + fmtBytes(st.heapSize)"></div></div>
     <div class="stat"><div class="k">剩余 PSRAM</div><div class="v" x-text="st.psramSize ? fmtBytes(st.psram) + ' / ' + fmtBytes(st.psramSize) : '无'"></div></div>
+    <div class="stat"><div class="k">CPU 使用率</div>
+      <div class="v" x-text="st.cpuAvail ? st.cpu.toFixed(1) + ' %' : '不可用'"></div></div>
+    <div class="stat"><div class="k">芯片温度</div>
+      <div class="v" x-text="st.tempAvail ? st.temp.toFixed(1) + ' °C' : '不可用'"></div></div>
     <div class="stat"><div class="k">WiFi 信号</div>
       <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
     <div class="stat"><div class="k">当前 IP</div>
       <div class="v" style="font-size:15px" x-text="st.ip || '-'"></div></div>
+  </div>
+
+  <!-- 设备信息 -->
+  <div class="card">
+    <h3>设备信息</h3>
+    <div class="row"><span class="k">CPU 使用率</span>
+      <span class="v" x-text="st.cpuAvail ? st.cpu.toFixed(1) + ' %' : '不可用'"></span></div>
+    <div class="row"><span class="k">芯片温度</span>
+      <span class="v" x-text="st.tempAvail ? st.temp.toFixed(1) + ' °C' : '不可用'"></span></div>
+    <div class="row"><span class="k">硬件版本</span><span class="v" x-text="st.hwVer || '-'"></span></div>
+    <div class="row"><span class="k">软件版本</span>
+      <span class="v" style="font-size:12px;word-break:break-all" x-text="st.swVer || '-'"></span></div>
+    <div class="row"><span class="k">MAC 地址</span>
+      <span class="v" style="font-family:monospace" x-text="st.mac || '-'"></span></div>
   </div>
 
   <div class="grid cols2">
