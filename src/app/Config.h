@@ -57,6 +57,7 @@ constexpr const char *kNvsKeySms = "sms";        // 短信配置键（{"ver":1,"
 constexpr const char *kNvsKeyToken = "apitoken"; // API 访问令牌键（持久化，重启不失效，用于脚本/第三方客户端）
 constexpr const char *kNvsKeyEmail = "email";    // 邮件配置键（{"ver":1,"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","notifyTypes":n,"onlineH":n}）
 constexpr const char *kNvsKeyMqtt = "mqtt";      // MQTT 配置键（{"ver":1,"server":"..","port":1883,"useTls":bool,"user":"..","pass":"..","clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n,"enabled":bool}）
+constexpr const char *kNvsKeyPush = "push";      // 推送通道配置键（{"ver":1,"enabled":bool,"strategy":n,"channels":[...]}）
 constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{"ver":1,"enabled":bool,"action":n,"list":[...]}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
 

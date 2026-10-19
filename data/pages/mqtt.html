@@ -12,7 +12,7 @@
     <h3>MQTT Broker</h3>
     <!-- 总开关：停用后一切事件都不发布、命令不订阅，已保存配置保留 -->
     <div class="bar" style="margin-bottom:4px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:#333">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text)">
         <input type="checkbox" x-model="cfg.enabled" @change="toggleEnabled()">
         <b>启用 MQTT 推送</b>
       </label>
@@ -51,12 +51,12 @@
         <div class="field"><label>保活间隔（秒，1-3600）</label>
           <input class="inp" x-model="cfg.keepAlive" type="number" min="1" max="3600"></div>
         <div class="field"><label>TLS 加密</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:#333;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text);margin-top:6px">
             <input type="checkbox" x-model="cfg.useTls"> 启用 TLS（自签名证书不校验身份）
           </label>
         </div>
       </div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#555;margin-top:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--muted);margin-top:14px">
         <input type="checkbox" x-model="cfg.subscribeEnabled"> 订阅命令主题（远程控制）
       </label>
       <div class="bar" style="margin-top:10px">
@@ -88,8 +88,8 @@
           <input type="checkbox" style="margin-top:3px" :checked="isOn(t.bit)"
                  @change="toggle(t.bit)">
           <span>
-            <span style="font-size:14px;color:#333" x-text="t.label"></span><br>
-            <span style="font-size:12px;color:#8a94a3" x-text="t.desc"></span>
+            <span style="font-size:14px;color:var(--text)" x-text="t.label"></span><br>
+            <span style="font-size:12px;color:var(--muted)" x-text="t.desc"></span>
           </span>
         </label>
       </template>

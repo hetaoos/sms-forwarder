@@ -1,7 +1,7 @@
 /* ================= 短信转发器 · 设计系统 ================= */
 :root{
   --primary:#4f6ef7; --primary-deep:#3b57d6; --primary-soft:rgba(79,110,247,.1);
-  --bg:#f3f5f9; --card:#fff; --text:#1f2329; --muted:#8a919f; --faint:#b6bcca;
+  --bg:#f3f5f9; --card:#fff; --bg-soft:#f5f7fb; --text:#1f2329; --muted:#8a919f; --faint:#b6bcca;
   --border:#e6e8ee; --danger:#e64545; --success:#1faf6f; --warn:#e8960f;
   --radius:12px; --shadow:0 1px 3px rgba(16,24,40,.07);
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -104,6 +104,8 @@ input,select{font-size:13px;padding:8px 10px;border:1px solid var(--border);bord
 input:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 input[type=range]{padding:0;border:none;background:none;height:26px;cursor:pointer;accent-color:var(--primary)}
 input[type=range]:focus{box-shadow:none}
+/* 复选框：用主题主色，暗黑模式下也清晰可见（总开关 / 通知类型等） */
+input[type=checkbox]{accent-color:var(--primary);cursor:pointer}
 /* 输入框错误态：红边框 + 红色外晕 */
 input.input-error,select.input-error{border-color:var(--danger);box-shadow:0 0 0 3px rgba(230,69,69,.12)}
 input.input-error:focus{border-color:var(--danger);box-shadow:0 0 0 3px rgba(230,69,69,.2)}
@@ -269,7 +271,7 @@ input.mono{font-family:var(--mono)}
  * system 模式下跟随系统偏好，由 app.js 实时切换 data-theme。 */
 [data-theme="dark"]{
   --primary:#5b7cfa; --primary-deep:#4f6ef7; --primary-soft:rgba(91,124,250,.2);
-  --bg:#0f1117; --card:#1a1d26; --text:#e6e8ee; --muted:#9aa3b2; --faint:#6b7280;
+  --bg:#0f1117; --card:#1a1d26; --bg-soft:#14161d; --text:#e6e8ee; --muted:#9aa3b2; --faint:#6b7280;
   --border:#2a2e3a; --danger:#ff6b6b; --success:#34d399; --warn:#f5b843;
   --shadow:0 1px 3px rgba(0,0,0,.4);
 }
@@ -302,7 +304,7 @@ input.mono{font-family:var(--mono)}
 
 /* ================= 黑名单规则行 ================= */
 .bl-rules{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
-.bl-row{display:flex;align-items:center;gap:10px;background:#fafbfc;border:1px solid var(--border);
+.bl-row{display:flex;align-items:center;gap:10px;background:var(--bg-soft);border:1px solid var(--border);
   border-radius:10px;padding:10px 12px}
 .bl-idx{width:22px;text-align:center;color:var(--faint);font-size:12px;flex:none}
 .bl-pattern{flex:2 1 200px;min-width:140px}

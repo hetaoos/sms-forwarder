@@ -180,6 +180,12 @@ class WebPanel {
   void handleMqttTest(AsyncWebServerRequest *req);
   void handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+  // 推送通道：配置读取 / 类型清单 / 总开关 / 测试发送 / 配置保存
+  void handlePushGet(AsyncWebServerRequest *req);
+  void handlePushTypes(AsyncWebServerRequest *req);
+  void handlePushEnabled(AsyncWebServerRequest *req, JsonVariant &json);
+  void handlePushTest(AsyncWebServerRequest *req);
+  void handlePushPost(AsyncWebServerRequest *req, JsonVariant &json);
 
   // 黑名单：配置读取 / 整体保存 / 总开关 / 测试匹配
   void handleBlackGet(AsyncWebServerRequest *req);
@@ -219,6 +225,7 @@ class WebPanel {
   TimeSync &_time;         // 时间同步引用
   EmailService &_email;    // SMTP 邮件通知引用
   MqttService &_mqtt;      // MQTT 服务引用
+  PushService &_push;      // 统一 webhook 推送通道引用
   BlackList &_blacklist;   // 号码黑名单引用
   LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
 };

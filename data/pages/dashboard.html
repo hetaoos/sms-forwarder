@@ -121,7 +121,7 @@
         <span class="v">
           <span x-text="modemLabel(m)"></span>
           <template x-if="m.enabled && m.ready">
-            <div style="margin-top:4px;color:#6f7885;font-size:12px;line-height:1.7">
+            <div style="margin-top:4px;color:var(--muted);font-size:12px;line-height:1.7">
               <div x-text="modemModel(m)"></div>
               <div x-show="modemRevision(m)">固件：<b x-text="modemRevision(m)"></b></div>
               <div>
@@ -134,7 +134,7 @@
             </div>
           </template>
           <template x-if="m.enabled && !m.ready">
-            <span style="margin-left:0;color:#6f7885"
+            <span style="margin-left:0;color:var(--muted)"
                   x-text="'（' + (m.sim ? 'SIM 就绪' : '等待 SIM') + '）'"></span>
           </template>
         </span>
@@ -173,7 +173,7 @@
         <span class="k">串口 <span x-text="e.port"></span></span>
         <span class="v" style="text-align:left;font-weight:400">
           <div x-text="e.cmd"></div>
-          <div style="color:#6f7885;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px"
+          <div style="color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px"
                x-text="e.resp || '(无响应)'"></div>
         </span>
       </div>

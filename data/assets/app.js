@@ -428,7 +428,7 @@ const MENU = [
   { group: '网络', items: [
     { id: 'wifi', title: 'WiFi 设置', icon: 'wifi' },
     { id: 'email', title: '邮件通知', icon: 'email' },
-    { id: 'push', title: '推送通道', icon: 'push', todo: true },
+    { id: 'push', title: '推送通道', icon: 'push' },
     { id: 'mqtt', title: 'MQTT', icon: 'mqtt' },
   ]},
   { group: '系统', items: [
@@ -1490,6 +1490,155 @@ function pageMqtt() {
       this.testing = true;
       try {
         await postOp('/api/mqtt/test', {}, '测试消息已加入发布队列，请检查订阅端');
+      } finally { this.testing = false; }
+    },
+  };
+}
+
+/* ---------- 推送通道 ----------
+ * 配置经 /api/push 读写；策略：0=广播（全部通道都发）/ 1=故障转移（按顺序首个成功即停）。
+ * 总开关经 /api/push/enabled；测试经 /api/push/test（只入队，主循环补发）。
+ * 通道类型与字段 schema 经 /api/push/types 获取，前端据此动态渲染每个通道的表单；
+ * 密钥字段（secretField）在配置接口中不回显，仅返回 hasKeyX 标记。 */
+function pagePush() {
+  return {
+    loaded: false,
+    cfg: { enabled: false, strategy: 0 },
+    channels: [],
+    types: [],
+    saving: false,
+    testing: false,
+
+    init() { this.load(); },
+
+    async load() {
+      try {
+        const r = await apiFetch('/api/push/types');
+        if (r.ok) { const j = await r.json(); this.types = j.types || []; }
+      } catch (e) {}
+      try {
+        const r = await apiFetch('/api/push');
+        if (r.ok) {
+          const j = await r.json();
+          this.cfg.enabled = !!j.enabled;
+          this.cfg.strategy = Number(j.strategy) || 0;
+          this.channels = (j.channels || []).map(c => ({
+            enabled: !!c.enabled, type: c.type, name: c.name || '',
+            url: c.url || '', key1: '', key2: c.key2 || '', key3: c.key3 || '',
+            key4: c.key4 || '', key5: c.key5 || '', customBody: c.customBody || '',
+            retryOnFail: !!c.retryOnFail,
+            valid: !!c.valid,
+            hasKey1: !!c.hasKey1, hasKey2: !!c.hasKey2, hasKey3: !!c.hasKey3,
+            hasKey4: !!c.hasKey4, hasKey5: !!c.hasKey5,
+          }));
+          this.loaded = true;
+        }
+      } catch (e) {}
+    },
+
+    typeMeta(t) {
+      return this.types.find(x => x.type === Number(t)) ||
+        { label: '未知', required: [], optional: [], secretField: '', body: false };
+    },
+    fieldsFor(t) {
+      const m = this.typeMeta(t);
+      const set = [];
+      const add = n => { if (n && n !== 'name' && !set.includes(n)) set.push(n); };
+      (m.required || []).forEach(add);
+      (m.optional || []).forEach(add);
+      return set.map(n => ({
+        name: n,
+        required: (m.required || []).includes(n),
+        secret: m.secretField === n,
+      }));
+    },
+    fieldLabel(n) {
+      const map = {
+        url: 'URL / 端点', key1: '密钥 / Token', key2: '参数2（域名 / 频道 / 服务器）',
+        key3: '参数3（收件人 / ClientID）', key4: '参数4（发件人）',
+        key5: '参数5（标题模板）', customBody: '自定义请求体 / HTML',
+      };
+      return map[n] || n;
+    },
+    fieldPlaceholder(f, ch) {
+      if (f.secret) {
+        const hk = 'hasKey' + f.name.slice(3);
+        return ch[hk] ? '已设置，留空保持不变' : '必填（不回显）';
+      }
+      if (f.name === 'url') return 'https://...';
+      if (f.name === 'customBody') return '使用 {from}{message}{timestamp} 等占位符';
+      return '';
+    },
+    isSecretPlaceholder(f, ch) {
+      const hk = 'hasKey' + f.name.slice(3);
+      return f.secret && ch[hk] && !ch[f.name];
+    },
+
+    onTypeChange(i) {
+      // 切换类型后重置字段与掩码标记，避免残留误导
+      const ch = this.channels[i];
+      ch.key1 = ch.key2 = ch.key3 = ch.key4 = ch.key5 = ch.customBody = '';
+      ch.hasKey1 = ch.hasKey2 = ch.hasKey3 = ch.hasKey4 = ch.hasKey5 = false;
+    },
+
+    addChannel() {
+      if (this.channels.length >= 10) { toast('最多 10 个通道', 'warn'); return; }
+      const first = this.types.length ? this.types[0].type : 1;
+      this.channels.push({
+        enabled: true, type: first, name: '', url: '', key1: '', key2: '', key3: '',
+        key4: '', key5: '', customBody: '', retryOnFail: false,
+        valid: false, hasKey1: false, hasKey2: false, hasKey3: false, hasKey4: false, hasKey5: false,
+      });
+    },
+    removeChannel(i) { this.channels.splice(i, 1); },
+
+    async toggleEnabled() {
+      const on = !!this.cfg.enabled;
+      const r = await postOp('/api/push/enabled', { enabled: on },
+        on ? '推送已启用' : '推送已停用');
+      if (r) { const j = await r.json(); this.cfg.enabled = !!j.enabled; }
+      else { this.cfg.enabled = !on; }
+    },
+
+    async save() {
+      this.saving = true;
+      try {
+        const payload = {
+          enabled: !!this.cfg.enabled,
+          strategy: Number(this.cfg.strategy) || 0,
+          channels: this.channels.map(c => ({
+            enabled: !!c.enabled, type: Number(c.type) || 1, name: (c.name || '').trim(),
+            url: (c.url || '').trim(), key1: c.key1 || '', key2: c.key2 || '',
+            key3: c.key3 || '', key4: c.key4 || '', key5: c.key5 || '',
+            customBody: c.customBody || '', retryOnFail: !!c.retryOnFail,
+          })),
+        };
+        const r = await postOp('/api/push', payload, '推送配置已保存');
+        if (r) {
+          const j = await r.json();
+          this.cfg.enabled = !!j.enabled;
+          this.cfg.strategy = Number(j.strategy) || 0;
+          const chs = j.channels || [];
+          for (let i = 0; i < this.channels.length; i++) {
+            const src = chs[i] || {};
+            this.channels[i].valid = !!src.valid;
+            if (typeof src.hasKey1 !== 'undefined') this.channels[i].hasKey1 = !!src.hasKey1;
+            if (typeof src.hasKey2 !== 'undefined') this.channels[i].hasKey2 = !!src.hasKey2;
+            if (typeof src.hasKey3 !== 'undefined') this.channels[i].hasKey3 = !!src.hasKey3;
+            if (typeof src.hasKey4 !== 'undefined') this.channels[i].hasKey4 = !!src.hasKey4;
+            if (typeof src.hasKey5 !== 'undefined') this.channels[i].hasKey5 = !!src.hasKey5;
+            // 清空密钥输入（已保存不回显）
+            const sec = this.typeMeta(this.channels[i].type).secretField;
+            if (sec) this.channels[i][sec] = '';
+          }
+        }
+      } finally { this.saving = false; }
+    },
+
+    async test() {
+      this.testing = true;
+      try {
+        await postOp('/api/push/test', {}, '测试推送已加入队列，稍后于各通道发出');
       } finally { this.testing = false; }
     },
   };

@@ -57,7 +57,7 @@
           <div class="resp" :class="msgClass(e.level)" x-text="e.msg"></div>
         </div>
       </template>
-      <div class="hint" style="color:#6f7885" x-show="!loading && !logs.length">
+      <div class="hint" style="color:var(--muted)" x-show="!loading && !logs.length">
         <span x-text="(q || level) ? '当前筛选条件下没有日志' : '暂无日志，设备运行过程中的事件会显示在这里'"></span>
       </div>
     </div>

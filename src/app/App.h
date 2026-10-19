@@ -10,6 +10,7 @@
 #include "net/EmailService.h"
 #include "net/MqttService.h"
 #include "net/StatusBus.h"
+#include "push/PushService.h"
 #include "net/WifiManager.h"
 #include "net/WebPanel.h"
 #include "serial/SerialBridge.h"
@@ -40,6 +41,7 @@ class App {
   AdminStore _auth;         // 管理账号存储（NVS，JSON）
   EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
   MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
+  PushService _push;        // 统一 webhook 推送通道（广播 / 故障转移策略）
   BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
   // 设备日志环形存储（PSRAM，Web 分页查询 + 串口镜像）；
   // 指向全局唯一实例（devLog()），其余模块取的也是同一份

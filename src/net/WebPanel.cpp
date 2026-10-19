@@ -562,6 +562,33 @@ void WebPanel::setupRoutes() {
   _server.on("/api/mqtt", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleMqttPost(req, json); });
 
+  // ================= 推送通道 =================
+  // 顺序：/api/push/<子路径> 先注册，/api/push（父路径）放最后
+
+  // 支持的通道类型清单及字段 schema（前端动态渲染表单用）
+  _server.on("/api/push/types", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handlePushTypes(req); });
+
+  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
+  _server.on("/api/push/enabled", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handlePushEnabled(req, json); });
+
+  // 测试发送：只入队并立即返回（{"ok":true,"queued":true}），真正的发送由
+  // App::tick 在 loop 任务完成（与通知推送同一条链路）。
+  _server.on("/api/push/test", HTTP_POST, [this](AsyncWebServerRequest *req) { handlePushTest(req); });
+
+  // ---- 以下是父路径 /api/push，必须排在上述子路径之后 ----
+  // 配置读取：{"ok":true,"enabled":bool,"strategy":int,"configured":bool,
+  //   "channels":[{"type":n,"name":"..","url":"..","hasKey1":bool,"key2":"..",
+  //   "key3":"..","key4":"..","key5":"..","customBody":"..","retryOnFail":bool,
+  //   "enabled":bool,"valid":bool},...]}
+  _server.on("/api/push", HTTP_GET, [this](AsyncWebServerRequest *req) { handlePushGet(req); });
+
+  // 配置保存：JSON {"enabled":bool,"strategy":int,"channels":[{...}]}
+  // key1 为空串表示保持已保存值（掩码字段）；保存后立即生效
+  _server.on("/api/push", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handlePushPost(req, json); });
+
   // ================= OTA 升级 =================
   // 顺序：子路径（/api/ota/status 等）在父路径（/api/ota/upload 等）前注册无冲突，
   // 这里均为不同路径，按功能分组排列即可。
@@ -1315,6 +1342,106 @@ void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
   sendJson(req, _mqtt.configJson());
 }
 
+// ---- 推送通道 ----
+void WebPanel::handlePushGet(AsyncWebServerRequest *req) {
+  sendJson(req, _push.configJson());
+}
+
+void WebPanel::handlePushTypes(AsyncWebServerRequest *req) {
+  sendJson(req, String("{\"ok\":true,\"types\":") + PushService::typesJson() + "}");
+}
+
+void WebPanel::handlePushEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
+  bool on = false;
+  if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (!_push.setEnabled(on)) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  sendJson(req, _push.configJson());
+}
+
+void WebPanel::handlePushTest(AsyncWebServerRequest *req) {
+  if (!_push.enabled()) {
+    sendErr(req, 400, "推送未启用，请先打开总开关");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    sendErr(req, 400, "WiFi 未连接，无法发送");
+    return;
+  }
+  if (!_push.requestTest()) {
+    sendErr(req, 400, "推送未配置任何有效通道");
+    return;
+  }
+  sendJson(req, "{\"ok\":true,\"queued\":true}");
+}
+
+void WebPanel::handlePushPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (!_push.saveFromJson(json.as<JsonObject>())) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  sendJson(req, _push.configJson());
+}
+
+// ---- 黑名单 ----
+void WebPanel::handleBlackGet(AsyncWebServerRequest *req) {
+  sendJson(req, _blacklist.configJson());
+}
+
+void WebPanel::handleBlackEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
+  bool on = false;
+  if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  _blacklist.setEnabled(on);
+  if (!_blacklist.saveConfig()) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  sendJson(req, _blacklist.configJson());
+}
+
+void WebPanel::handleBlackPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (!_blacklist.saveFromJson(json.as<JsonObject>())) {
+    // 可能是校验失败（空号码/越界）或 NVS 写入失败；统一给 400 便于前端提示
+    sendErr(req, 400, "保存失败：规则校验未通过或写入 NVS 出错");
+    return;
+  }
+  sendJson(req, _blacklist.configJson());
+}
+
+void WebPanel::handleBlackTest(AsyncWebServerRequest *req) {
+  String num = stringParam(req, "num");
+  if (!num.length()) {
+    sendErr(req, 400, "missing num");
+    return;
+  }
+  // 忽略总开关逐条测试（供前端调试规则）
+  bool matched = _blacklist.testMatch(num, BlackList::kSms);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["matched"] = matched;
+  doc["scope"] = matched ? (int)BlackList::kSms : 0;
+  doc["note"] = _blacklist.lastNote();
+  String out;
+  serializeJson(doc, out);
+  sendJson(req, out);
+}
+
 // ---- OTA 升级 ----
 // 状态快照：前端轮询此接口渲染进度与「发现新版本」提示
 void WebPanel::handleOtaStatus(AsyncWebServerRequest *req) {
@@ -1441,12 +1568,14 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonObject oEmail = doc["email"].to<JsonObject>();
   JsonObject oSms   = doc["sms"].to<JsonObject>();
   JsonObject oMqtt  = doc["mqtt"].to<JsonObject>();
+  JsonObject oPush  = doc["push"].to<JsonObject>();
   JsonObject oBlack = doc["blacklist"].to<JsonObject>();
   _wifi.exportAllTo(oWifi);
   _auth.exportTo(oAuth);
   _email.exportTo(oEmail);
   _sms.exportTo(oSms);
   _mqtt.exportTo(oMqtt);
+  _push.exportTo(oPush);
   _blacklist.exportTo(oBlack);
 
   String body;
@@ -1538,6 +1667,13 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (doc["mqtt"].is<JsonObject>()) {
     if (!_mqtt.importFrom(doc["mqtt"].as<JsonObject>())) {
       sendErr(req, 500, "MQTT 配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["push"].is<JsonObject>()) {
+    if (!_push.importFrom(doc["push"].as<JsonObject>())) {
+      sendErr(req, 500, "推送配置写入失败");
       return;
     }
     anyApplied = true;

@@ -1,31 +1,106 @@
-<div class="page-head">
-  <div>
-    <h2>推送通道</h2>
-    <p class="page-desc">设备事件（短信 / 来电 / 状态）转发到外部服务，支持多通道与策略</p>
+<div x-data="pagePush()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>推送通道</h2>
+      <p class="page-desc">将短信事件转发到外部 webhook 服务（Bark / 钉钉 / Telegram / Mailgun 等），支持广播与故障转移策略。邮件 / MQTT 仍由各自独立通道负责。</p>
+    </div>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128640;</div>
-    <h3>功能规划中</h3>
-    <p>计划支持最多 10 个推送通道，策略为广播 / 故障转移，每通道可配自定义消息格式。</p>
+  <!-- 总开关 -->
+  <div class="card">
+    <div class="bar">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text)">
+        <input type="checkbox" x-model="cfg.enabled" @change="toggleEnabled()">
+        <b>启用推送通道</b>
+      </label>
+      <span class="badge" :class="cfg.enabled ? 'ok' : 'err'" x-text="cfg.enabled ? '已启用' : '已停用'"></span>
+    </div>
+    <div class="hint" x-show="!cfg.enabled" style="margin:6px 0 0">
+      已停用：短信不会经 webhook 通道推送；已保存的通道与策略保留，重新开启后立即恢复。
+    </div>
   </div>
-</div>
 
-<div class="card">
-  <h3>计划支持的推送方式</h3>
-  <table class="table">
-    <thead><tr><th>方式</th><th>说明</th><th>方式</th><th>说明</th></tr></thead>
-    <tbody>
-      <tr><td>POST JSON</td><td>自定义 URL，JSON 报文</td><td>钉钉</td><td>机器人 Webhook</td></tr>
-      <tr><td>GET</td><td>URL 模板拼接</td><td>飞书</td><td>机器人 Webhook</td></tr>
-      <tr><td>Bark</td><td>iOS 推送</td><td>企业微信</td><td>机器人 Webhook</td></tr>
-      <tr><td>PushPlus</td><td>国内推送服务</td><td>Telegram</td><td>Bot API</td></tr>
-      <tr><td>Server 酱</td><td>微信通知</td><td>Gotify</td><td>自托管推送</td></tr>
-      <tr><td>Mailgun</td><td>邮件投递</td><td>自定义 POST</td><td>任意 HTTP 端点</td></tr>
-    </tbody>
-  </table>
-  <div class="hint">消息格式支持占位符（如号码、内容、模组序号、ICCID、时间等），每通道独立配置。</div>
+  <!-- 策略 -->
+  <div class="card" x-show="cfg.enabled">
+    <h3>推送策略</h3>
+    <p class="page-desc" style="margin:0 0 10px">决定一条短信如何分发到多个已启用通道。</p>
+    <div class="grid cols2">
+      <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer">
+        <input type="radio" style="margin-top:3px" value="0" x-model.number="cfg.strategy">
+        <span><span style="font-size:14px;color:var(--text)">全部通道都推送（广播）</span><br>
+        <span style="font-size:12px;color:var(--muted)">所有已启用通道都发送，任一失败不影响其它</span></span>
+      </label>
+      <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer">
+        <input type="radio" style="margin-top:3px" value="1" x-model.number="cfg.strategy">
+        <span><span style="font-size:14px;color:var(--text)">按顺序 · 首个成功即停（故障转移）</span><br>
+        <span style="font-size:12px;color:var(--muted)">按列表顺序尝试，第一个成功即停止；全部失败才重试</span></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 通道列表 -->
+  <div class="card" x-show="cfg.enabled">
+    <div class="bar">
+      <h3 style="margin:0">通道列表（<span x-text="channels.length"></span>/10）</h3>
+      <button class="btn sm" @click="addChannel()">+ 添加通道</button>
+    </div>
+
+    <template x-for="(ch, i) in channels" :key="i">
+      <div class="card" style="margin-top:12px;background:var(--bg-soft)">
+        <div class="bar">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" x-model="ch.enabled"><b>启用</b>
+          </label>
+          <select x-model.number="ch.type" @change="onTypeChange(i)" class="inp" style="max-width:240px">
+            <template x-for="t in types" :key="t.type">
+              <option :value="t.type" x-text="t.label"></option>
+            </template>
+          </select>
+          <input class="inp" placeholder="名称（可选）" x-model="ch.name" style="max-width:200px">
+          <button class="btn ghost sm" @click="removeChannel(i)">删除</button>
+        </div>
+
+        <div class="grid cols2" style="margin-top:10px">
+          <template x-for="f in fieldsFor(ch.type)" :key="f.name">
+            <div class="field">
+              <label>
+                <span x-text="fieldLabel(f.name)"></span>
+                <span x-show="f.required" style="color:var(--danger)">*</span>
+              </label>
+              <template x-if="f.name === 'customBody'">
+                <textarea class="inp" rows="3" x-model="ch.customBody" :placeholder="fieldPlaceholder(f, ch)"></textarea>
+              </template>
+              <template x-if="f.name !== 'customBody'">
+                <input class="inp" type="text" x-model="ch[f.name]" :placeholder="fieldPlaceholder(f, ch)" autocomplete="off">
+              </template>
+              <div class="hint" x-show="isSecretPlaceholder(f, ch)" x-text="'已设置，留空表示保持不变'"></div>
+            </div>
+          </template>
+        </div>
+
+        <div class="bar" style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+            <input type="checkbox" x-model="ch.retryOnFail"> 发送失败自动重试
+          </label>
+          <span class="badge" :class="ch.enabled ? (ch.valid ? 'ok' : 'warn') : 'info'"
+                x-text="!ch.enabled ? '已停用' : (ch.valid ? '配置有效' : '配置不完整')"></span>
+        </div>
+      </div>
+    </template>
+
+    <div class="empty" x-show="channels.length === 0">
+      <p>暂无通道，点击「+ 添加通道」开始配置</p>
+    </div>
+  </div>
+
+  <div class="bar" x-show="cfg.enabled" style="margin-top:14px">
+    <button class="btn" :disabled="saving" @click="save()" x-text="saving ? '保存中…' : '保存配置'"></button>
+    <button class="btn ghost" :disabled="testing" @click="test()" x-text="testing ? '测试中…' : '发送测试推送'"></button>
+  </div>
+
+  <!-- 占位符说明 -->
+  <div class="card">
+    <h3>占位符说明</h3>
+    <p class="hint">自定义消息 / 标题模板支持占位符：<code>{from}</code> 发件人、<code>{message}</code> 内容、<code>{timestamp}</code> 时间戳、<code>{date}</code> 本地时间、<code>{deviceName}</code> 设备名、<code>{simSlot}</code> 卡槽、<code>{modemIndex}</code> 模组序号、<code>{uptime}</code> 运行时长、<code>{channelName}</code>/<code>{channelType}</code> 通道信息。</p>
+  </div>
 </div>

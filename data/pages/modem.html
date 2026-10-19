@@ -21,7 +21,7 @@
         </div>
         <!-- 详细状态（启用且就绪时展示遥测） -->
         <template x-if="m.enabled && m.ready">
-          <div style="margin:8px 0 4px;font-size:12px;line-height:1.9;color:#4a5563">
+          <div style="margin:8px 0 4px;font-size:12px;line-height:1.9;color:var(--muted)">
             <div>型号：<b x-text="modemModel(m)"></b></div>
             <div x-show="modemRevision(m)">固件版本：<b x-text="modemRevision(m)"></b></div>
             <div>信号：<b x-text="csqBars(m.csq) + ' ' + csqDbm(m.csq)"></b></div>

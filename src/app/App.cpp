@@ -41,6 +41,7 @@ bool App::begin() {
   _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
   _email.begin(_wifi, _sms, _time);    // 邮件：载入 SMTP 配置（NVS）
   _mqtt.begin(_wifi, _sms, _time, _log);  // MQTT：载入配置（NVS）+ 注册日志 sink
+  _push.begin();                       // 推送通道：载入 NVS 配置 + 初始化队列
   _mqtt.notifyStartup();               // 开机后首次连上 MQTT 时补发启动通知
   _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
@@ -60,6 +61,7 @@ bool App::begin() {
                                  uint32_t ts, int8_t modem) {
     _email.notifySms(sender, text, ts, modem);
     _mqtt.notifySms(sender, text, ts, modem);
+    _push.notifySms(sender, text, ts, modem);  // webhook 推送通道（广播/故障转移）
     _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（模组 %d）", sender.c_str(),
               (int)modem);
   });
@@ -130,6 +132,7 @@ void App::tick() {
   _sms.tick();
   _email.tick();                       // 邮件通知发送队列（无待发时零开销）
   _mqtt.tick();                        // MQTT 连接维护 / 命令执行 / 事件发布
+  _push.tick();                        // 推送通道队列与重试（loop 任务内执行）
 
   if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
     _lastUiMs = millis();
