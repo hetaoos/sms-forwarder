@@ -95,6 +95,20 @@
     </div>
   </div>
 
+  <!-- MQTT 推送状态 -->
+  <div class="card">
+    <h3>MQTT 推送 <span class="badge" :class="mqttConnClass()" x-text="mqttConnText()"></span></h3>
+    <div class="row"><span class="k">总开关</span><span class="v" x-text="mqtt.enabled ? '已启用' : '已停用'"></span></div>
+    <div class="row"><span class="k">配置</span><span class="v" x-text="mqtt.configured ? '完整' : '不完整'"></span></div>
+    <div class="row"><span class="k">连接</span><span class="v" x-text="mqtt.connected ? '已连接' : (mqtt.error ? '连接失败' : '连接中')"></span></div>
+    <div class="form-err" x-show="mqtt.error" style="margin-top:10px">
+      <span class="ico">!</span><span x-text="'连接错误：' + mqtt.error"></span>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost sm" @click="go('mqtt')">MQTT 设置</button>
+    </div>
+  </div>
+
   <!-- 4G 模组状态 -->
   <div class="card">
     <h3>4G 模组状态 <span class="sub">信号 · 运营商 · 注册</span></h3>

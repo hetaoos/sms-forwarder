@@ -575,6 +575,23 @@ function pageDashboard() {
     },
     get smsstats() { return Alpine.store('live').smsstats; },
     get lastSms() { return Alpine.store('live').sms; },
+    // MQTT 推送连接状态（取自 SSE status.mqtt，实时更新）
+    get mqtt() {
+      return Alpine.store('live').status.mqtt ||
+        { enabled: false, configured: false, connected: false, error: '' };
+    },
+    mqttConnClass() {
+      const m = this.mqtt;
+      if (!m.enabled) return 'err';
+      if (!m.configured) return 'warn';
+      return m.connected ? 'ok' : 'err';
+    },
+    mqttConnText() {
+      const m = this.mqtt;
+      if (!m.enabled) return '已停用';
+      if (!m.configured) return '未配置';
+      return m.connected ? '已连接' : (m.error ? '连接失败' : '连接中');
+    },
     // 时间格式化：纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则按开机时长
     fmtTs(ts) {
       if (!ts) return '-';
@@ -1382,8 +1399,28 @@ function pageMqtt() {
     hasPass: false,
     saving: false,
     testing: false,
+    connected: false,        // MQTT 实时连接状态（load 兜底，SSE 优先）
     types: TYPES,
     init() { this.load(); },
+    // 实时连接状态：优先取 SSE status.mqtt（实时推送），否则用 load() 兜底值
+    get live() {
+      const s = Alpine.store('live').status;
+      return (s && s.mqtt) ? s.mqtt : null;
+    },
+    connEnabled() { const l = this.live; return l ? l.enabled : this.cfg.enabled; },
+    connConfigured() { const l = this.live; return l ? l.configured : this.configured; },
+    connConnected() { const l = this.live; return l ? l.connected : this.connected; },
+    connError() { const l = this.live; return (l && l.error) ? l.error : ''; },
+    connClass() {
+      if (!this.connEnabled()) return 'err';
+      if (!this.connConfigured()) return 'warn';
+      return this.connConnected() ? 'ok' : 'err';
+    },
+    connText() {
+      if (!this.connEnabled()) return '已停用';
+      if (!this.connConfigured()) return '未配置';
+      return this.connConnected() ? '已连接' : (this.connError() ? '连接失败' : '连接中');
+    },
     async load() {
       try {
         const r = await apiFetch('/api/mqtt');
@@ -1402,6 +1439,7 @@ function pageMqtt() {
           this.cfg.pass = '';
           this.configured = !!j.configured;
           this.hasPass = !!j.hasPass;
+          this.connected = !!j.connected;   // 兜底值，实时连接状态优先取 SSE
         }
       } catch (e) {}
     },

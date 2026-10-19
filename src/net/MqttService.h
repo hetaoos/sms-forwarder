@@ -61,6 +61,10 @@ class MqttService {
   // 本项目密码可选（匿名 Broker），故「齐全」只校验服务器非空。
   // 声明为 static：onLog / publishEvent 等静态上下文也需调用，且不依赖实例。
   static bool isConfigured();
+  // 实时连接状态（供 Web 状态接口 / 仪表盘显示，跨任务安全读取）
+  static bool isEnabled();          // 总开关是否开启（= _enabled）
+  static bool connected();          // 当前是否真正连上 Broker
+  static const String &lastError(); // 最近一次连接错误描述（成功连上后清空，空串=无错误）
   // 某类事件的发布是否开启（mask 取 cfg::kMqttNotify*）
   bool notifyEnabled(uint32_t mask) const;
   // 保存配置并落盘 NVS；pass 为空串表示保持已保存的密码不变；
@@ -146,6 +150,7 @@ class MqttService {
   static String s_uri, s_cid, s_will, s_willMsg, s_user, s_pass;
   static esp_mqtt_client_handle_t s_client;
   static bool s_connected;       // 当前连接状态
+  static String s_lastError;     // 最近一次连接错误描述（CONNECTED 时清空，空串=无错误）
   static bool s_wasConnected;    // 上一 tick 连接状态（检测刚连上的跳变）
   static bool s_bootNotified;    // 本次开机是否已发启动通知
   static bool s_pendingBoot;     // 待发启动通知（连接建立后于主循环补发）

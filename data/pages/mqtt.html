@@ -20,10 +20,14 @@
             x-text="cfg.enabled ? '已启用' : '已停用'"></span>
       <span class="badge" :class="configured ? 'ok' : 'warn'"
             x-text="configured ? '配置完整' : '配置不完整'"></span>
+      <span class="badge" :class="connClass()" x-text="connText()"></span>
     </div>
     <div class="hint" x-show="!cfg.enabled" style="margin:0 0 12px">
       已停用：短信 / SIM / 启动 / 上线 / 日志事件都不会发布，命令订阅停止；
       已保存的服务器、账号与通知类型保留，重新开启后立即恢复。
+    </div>
+    <div class="form-err" x-show="connError()" style="margin:0 0 12px">
+      <span class="ico">!</span><span x-text="'连接错误：' + connError()"></span>
     </div>
     <form @submit.prevent="save()">
       <div class="grid cols2">

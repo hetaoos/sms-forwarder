@@ -35,6 +35,7 @@ String MqttService::s_uri, MqttService::s_cid, MqttService::s_will,
         MqttService::s_willMsg, MqttService::s_user, MqttService::s_pass;
 esp_mqtt_client_handle_t MqttService::s_client = nullptr;
 bool   MqttService::s_connected       = false;
+String MqttService::s_lastError      = "";
 bool   MqttService::s_wasConnected    = false;
 bool   MqttService::s_bootNotified    = false;
 bool   MqttService::s_pendingBoot     = false;
@@ -373,6 +374,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       // 仅置标志。订阅 / 上线状态 / 启动通知补发统一放到 tick() 主循环处理，
       // 避免在 MQTT 网络任务的事件回调里直接调用 subscribe/publish（esp-idf 不推荐）。
       MqttService::s_connected = true;
+      MqttService::s_lastError = "";   // 连上即清空上次错误，供 Web 状态显示
       break;
     case MQTT_EVENT_DISCONNECTED:
       MqttService::s_connected = false;
@@ -402,10 +404,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
           extra += String("; tls_stack_err=") + String(eh->esp_tls_stack_err);
         if (eh->esp_transport_sock_errno)
           extra += String("; sock_errno=") + String(eh->esp_transport_sock_errno);
+        // 组合成可读错误描述，存入 s_lastError 供 Web 状态接口 / 仪表盘展示
+        String msg = "conn_return=" + String((int)eh->connect_return_code) +
+                     "(" + reason + ")" + extra;
+        MqttService::s_lastError = msg;
         if (MqttService::_log) {
           MqttService::_log->addf(LogLevel::kError, "mqtt",
-            "MQTT 连接错误: conn_return=%d(%s)%s",
-            (int)eh->connect_return_code, reason, extra.c_str());
+            "MQTT 连接错误: %s", msg.c_str());
         }
       }
       break;
@@ -597,6 +602,18 @@ bool MqttService::isConfigured() {
   return _server.length() > 0;
 }
 
+bool MqttService::isEnabled() {
+  return _enabled;
+}
+
+bool MqttService::connected() {
+  return s_connected;
+}
+
+const String &MqttService::lastError() {
+  return s_lastError;
+}
+
 bool MqttService::notifyEnabled(uint32_t mask) const {
   return (_notifyTypes & mask) != 0;
 }
@@ -634,6 +651,8 @@ String MqttService::configJson() const {
   doc["ok"]         = true;
   doc["enabled"]    = _enabled;
   doc["configured"] = isConfigured();
+  doc["connected"]  = s_connected;   // 当前是否真正连上（实时，跨任务安全读取）
+  doc["error"]      = s_lastError;   // 最近一次连接错误描述（空串=无错误）
   doc["server"]     = _server;
   doc["port"]       = _port;
   doc["useTls"]     = _useTls;

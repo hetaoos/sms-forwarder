@@ -14,6 +14,11 @@
 #include "serial/SerialBridge.h"
 #include "time/TimeSync.h"
 
+// MQTT 推送连接状态（仅编译期开启 MQTT 时引用其类定义）
+#if defined(ENABLE_MQTT) && ENABLE_MQTT
+#include "net/MqttService.h"
+#endif
+
 // 各状态快照的 JSON 序列化：WebPanel 的 REST 接口与 StatusBus 的 SSE
 // 推送共用这些函数，确保同一状态在两条通道上的数据完全一致。
 // 均为纯函数（不持有状态），可在任意任务上下文调用。
@@ -50,6 +55,21 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["timeSrc"] = time.srcName();
   // OTA 是否可用（设备分区表是否具备双槽）。前端据此决定是否展示升级入口
   doc["otaAvailable"] = otaPartitionAvailable();
+
+  // ---- MQTT 推送连接状态（仪表盘 / 配置页共用，SSE status 事件实时推送）----
+#if defined(ENABLE_MQTT) && ENABLE_MQTT
+  JsonObject mq = doc["mqtt"].to<JsonObject>();
+  mq["enabled"]    = MqttService::isEnabled();    // 总开关是否开启
+  mq["configured"] = MqttService::isConfigured(); // 服务器是否已配置
+  mq["connected"]  = MqttService::connected();    // 当前是否真正连上 Broker
+  mq["error"]      = MqttService::lastError();    // 最近一次连接错误（空串=无错误）
+#else
+  JsonObject mq = doc["mqtt"].to<JsonObject>();
+  mq["enabled"]    = false;
+  mq["configured"] = false;
+  mq["connected"]  = false;
+  mq["error"]      = String("");
+#endif
 
   // ---- 设备硬件/固件信息 ----
   // CPU 使用率（%）：基于 FreeRTOS 运行时间统计；不可用时 cpuAvail=false
