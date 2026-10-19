@@ -78,6 +78,55 @@
     set -euo pipefail
     python3 script/build_release.py --platform "$PLATFORM" --tag "$RELEASE_TAG"
 
+# 完整「编译 + 发布」stages：被 main push 与 手动构建并发布(web_trigger_release)
+# 两处复用，确保发布流程（Release 描述/清理旧版/创建/上传）始终保持一致。
+# ⚠️ 这是 stages 列表本身，引用时直接写 `stages: *build-release-stages`；
+# 不要写成 `- *build-release-stages`（会把列表嵌进列表，CNB 解析会乱）。
+.build-release-stages: &build-release-stages
+  - *resolve-version
+  - name: build
+    jobs:
+      esp32s3:
+        <<: *build-firmware
+        env:
+          PLATFORM: esp32s3
+  # 生成 Release 描述（含各平台产物 SHA256）
+  # 同样不覆盖 image：脚本缺 FULL_SHA 时会退回 `git rev-parse HEAD`，
+  # 没有 git 的镜像会让描述里的 Commit 变成 unknown。
+  - name: gen-release-notes
+    script: |
+      set -euo pipefail
+      python3 script/gen_release_notes.py "$RELEASE_TAG" release_notes.md
+      ls -l dist/
+  # 先清掉同版本的历史 Release / Tag，再建本次的。
+  # 必要性：版本标识带构建时间 + 短 SHA，同一版 VERSION 每 push 一次就多一个
+  # Release；设备端 OTA「检查更新」只认 tag 列表里最新的一个，老的纯占位。
+  # 脚本按严格前缀 <VERSION>- 删（不删裸 `1.0.0`，那是手动里程碑标签），
+  # 且跳过 $RELEASE_TAG 自身 —— 删完再建，顺序不能反。
+  - name: prune-old-releases
+    script: |
+      set -euo pipefail
+      python3 script/prune_releases.py "$RELEASE_TAG"
+  # 创建 Release。tag 用 $RELEASE_TAG（完整标识，每次构建都不同）。
+  # 上面已经删过同名历史，这里直接用默认的「叠加」模式即可 —— 不要用
+  # overlying: false，那是另一套删除逻辑，与脚本重复且更难控。
+  - name: create-release
+    type: git:release
+    options:
+      tag: $RELEASE_TAG
+      title: $RELEASE_TAG
+      descriptionFromFile: release_notes.md
+      latest: true
+  # 上传各平台产物到该 Release。附件必须挂在 Release 上（tag 指定），
+  # 绝不能上传成 commit 附件——那会让每个 commit 都挂一份固件。
+  - name: upload-assets
+    image: cnbcool/attachments:latest
+    settings:
+      tag: $RELEASE_TAG
+      attachments:
+        - "./dist/*.bin"
+        - "./dist/*.elf"
+
 # ---------- push 到 main：编译 + 发布 ----------
 main:
   push:
@@ -93,50 +142,7 @@ main:
         - ".cnb.yml"
         - "VERSION"
       docker: *docker
-      stages:
-        - *resolve-version
-        - name: build
-          jobs:
-            esp32s3:
-              <<: *build-firmware
-              env:
-                PLATFORM: esp32s3
-        # 生成 Release 描述（含各平台产物 SHA256）
-        # 同样不覆盖 image：脚本缺 FULL_SHA 时会退回 `git rev-parse HEAD`，
-        # 没有 git 的镜像会让描述里的 Commit 变成 unknown。
-        - name: gen-release-notes
-          script: |
-            set -euo pipefail
-            python3 script/gen_release_notes.py "$RELEASE_TAG" release_notes.md
-            ls -l dist/
-        # 先清掉同版本的历史 Release / Tag，再建本次的。
-        # 必要性：版本标识带构建时间 + 短 SHA，同一版 VERSION 每 push 一次就多一个
-        # Release；设备端 OTA「检查更新」只认 tag 列表里最新的一个，老的纯占位。
-        # 脚本按严格前缀 <VERSION>- 删（不删裸 `1.0.0`，那是手动里程碑标签），
-        # 且跳过 $RELEASE_TAG 自身 —— 删完再建，顺序不能反。
-        - name: prune-old-releases
-          script: |
-            set -euo pipefail
-            python3 script/prune_releases.py "$RELEASE_TAG"
-        # 创建 Release。tag 用 $RELEASE_TAG（完整标识，每次构建都不同）。
-        # 上面已经删过同名历史，这里直接用默认的「叠加」模式即可 —— 不要用
-        # overlying: false，那是另一套删除逻辑，与脚本重复且更难控。
-        - name: create-release
-          type: git:release
-          options:
-            tag: $RELEASE_TAG
-            title: $RELEASE_TAG
-            descriptionFromFile: release_notes.md
-            latest: true
-        # 上传各平台产物到该 Release。附件必须挂在 Release 上（tag 指定），
-        # 绝不能上传成 commit 附件——那会让每个 commit 都挂一份固件。
-        - name: upload-assets
-          image: cnbcool/attachments:latest
-          settings:
-            tag: $RELEASE_TAG
-            attachments:
-              - "./dist/*.bin"
-              - "./dist/*.elf"
+      stages: *build-release-stages
 
 # ---------- PR：仅编译校验，不发布 ----------
 "pull_request":
@@ -174,3 +180,9 @@ $:
               <<: *build-firmware
               env:
                 PLATFORM: esp32s3
+  # 手动构建并发布：直接复用 main push 的 *build-release-stages（编译+发布全流程），
+  # 仅由网页按钮触发；发布行为与 push 到 main 逐字一致，改一处两处同步。
+  web_trigger_release:
+    - name: build-and-release-manual
+      docker: *docker
+      stages: *build-release-stages

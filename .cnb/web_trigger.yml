@@ -1,0 +1,18 @@
+# CNB Web 触发按钮（手动操作）
+#
+# 按钮显示在「代码 → 分支详情页」，点击后触发 .cnb.yml 里 `$` 分支下的
+# `web_trigger` 事件流水线（build-manual），用于手动编译 ESP32-S3 固件做验证，
+# 不发布 Release。
+#
+# ⚠️ 本文件不支持 include / imports 语法，所有配置必须内联写在这里。
+# ⚠️ 仅仓库有写权限的用户可点击按钮执行；按钮只在分支详情页展示。
+branch:
+  - buttons:
+      - name: 手动构建
+        description: 手动触发 ESP32-S3 固件编译（仅验证构建，不发布 Release）
+        event: web_trigger
+        groupName: 手动操作
+      - name: 手动构建并发布
+        description: 手动触发 ESP32-S3 固件编译，并发布到 Release（生成描述、清理旧版本、上传产物）
+        event: web_trigger_release
+        groupName: 手动操作
