@@ -7,6 +7,7 @@
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/WifiManager.h"
+#include "ota/Ota.h"  // otaPartitionAvailable()：运行时探测是否支持 OTA 双槽
 #include "serial/SerialBridge.h"
 #include "time/TimeSync.h"
 
@@ -44,6 +45,8 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["time"] = time.dateStr();
   doc["timeSynced"] = time.isSynced();
   doc["timeSrc"] = time.srcName();
+  // OTA 是否可用（设备分区表是否具备双槽）。前端据此决定是否展示升级入口
+  doc["otaAvailable"] = otaPartitionAvailable();
   String out;
   serializeJson(doc, out);
   return out;

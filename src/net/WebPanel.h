@@ -12,6 +12,7 @@
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
+#include "ota/Ota.h"   // OTA 升级（固件 + LittleFS 烧录）
 
 // 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
 // + 运行日志查询（PSRAM 环形缓冲分页拉取）
@@ -167,6 +168,20 @@ class WebPanel {
   void handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json);
   void handleEmailTest(AsyncWebServerRequest *req);
   void handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // OTA：状态查询 / 触发版本检查 / 启动在线升级 / 本地固件上传 / 本地 Web UI 上传
+  // 固件与 LittleFS 镜像均通过 onUpload 分片回调写入，避免一次性把整个文件读进内存
+  void handleOtaStatus(AsyncWebServerRequest *req);
+  void handleOtaVersion(AsyncWebServerRequest *req);
+  void handleOtaStart(AsyncWebServerRequest *req);
+  void handleOtaStartBody(AsyncWebServerRequest *req, uint8_t *data, size_t len,
+                          size_t index, size_t total);
+  void handleOtaUploadReq(AsyncWebServerRequest *req);
+  void handleOtaUploadChunk(AsyncWebServerRequest *req, String filename, size_t index,
+                            uint8_t *data, size_t len, bool final);
+  void handleOtaUploadFsReq(AsyncWebServerRequest *req);
+  void handleOtaUploadFsChunk(AsyncWebServerRequest *req, String filename, size_t index,
+                              uint8_t *data, size_t len, bool final);
 
   // 兜底 404
   void handleNotFound(AsyncWebServerRequest *req);

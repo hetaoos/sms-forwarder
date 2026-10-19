@@ -1,34 +1,58 @@
-<div class="page-head">
-  <div>
-    <h2>系统工具</h2>
-    <p class="page-desc">设备维护操作：重启、恢复出厂、固件升级</p>
+<div x-data="pageTools()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>系统工具</h2>
+      <p class="page-desc">固件 OTA 升级与本地刷写（在线升级需后端 CI 已发布对应版本）</p>
+    </div>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128736;</div>
-    <h3>功能规划中</h3>
-    <p>以下维护操作尚未接入固件，开放前会在本页提供二次确认保护。</p>
-  </div>
-</div>
+  <!-- 固件升级 -->
+  <div class="card">
+    <h3>固件升级 <span class="sub" x-show="!otaAvailable" x-cloak>本设备不支持 OTA</span></h3>
+    <div class="row"><span class="k">当前版本</span><span class="v" x-text="curVer || '未知'"></span></div>
+    <div class="row"><span class="k">最新版本</span><span class="v" x-text="latestVer || '—'"></span></div>
 
-<div class="grid cols2">
-  <div class="card">
-    <h3>计划能力</h3>
-    <div class="row"><span class="k">重启设备</span><span class="v">远程软重启</span></div>
-    <div class="row"><span class="k">恢复出厂</span><span class="v">清空 NVS 配置（需令牌确认，防误触）</span></div>
-    <div class="row"><span class="k">OTA 升级</span><span class="v">网页上传固件 / 文件系统镜像</span></div>
-    <div class="row"><span class="k">崩溃信息</span><span class="v">查看 / 导出 / 清除 coredump</span></div>
-    <div class="row"><span class="k">网络诊断</span><span class="v">Ping 测试连通性</span></div>
+    <div class="bar" style="margin-top:14px">
+      <button class="btn" @click="checkUpdate()" :disabled="busy() || !otaAvailable">检查更新</button>
+      <button class="btn" @click="doUpgrade()" x-show="latestVer && latestVer !== curVer"
+              :disabled="busy() || !otaAvailable" x-cloak>
+        升级到 <span x-text="latestVer"></span>
+      </button>
+    </div>
+
+    <!-- 进度条：进行中或终态时显示 -->
+    <div x-show="busy() || otaState===4 || otaState===5" x-cloak style="margin-top:14px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1;height:10px;background:var(--border);border-radius:6px;overflow:hidden">
+          <div :style="'width:' + otaProgress + '%;height:100%;background:' +
+                       (otaState===5 ? 'var(--danger)' : 'var(--primary)') + ';transition:width .25s'"></div>
+        </div>
+        <span class="hint" style="margin:0;min-width:40px;text-align:right" x-text="otaProgress + '%'"></span>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:10px" x-text="statusLine()"></div>
   </div>
+
+  <!-- 本地刷写 -->
   <div class="card">
-    <h3>分区信息（16MB Flash）</h3>
-    <div class="row"><span class="k">nvs</span><span class="v">64KB · 配置存储</span></div>
-    <div class="row"><span class="k">app0 / app1</span><span class="v">各 4MB · 双 OTA 槽位</span></div>
-    <div class="row"><span class="k">userdata</span><span class="v">5MB · 用户数据（刷固件保留）</span></div>
-    <div class="row"><span class="k">spiffs</span><span class="v">2.75MB · Web 资源分区</span></div>
-    <div class="row"><span class="k">coredump</span><span class="v">128KB · 崩溃转储</span></div>
+    <h3>本地刷写</h3>
+    <p class="hint">无网络或离线环境时，可直接上传编译好的固件 / Web UI 镜像（raw 二进制，无需打包）。
+      上传成功后设备会自动重启。</p>
+    <div class="bar" style="margin-top:8px">
+      <div class="field" style="flex:1;min-width:220px"><label>固件 (.bin)</label>
+        <input type="file" accept=".bin" @change="onFirmware($event)" :disabled="busy()">
+      </div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="uploadFirmware()" :disabled="!firmwareFile || busy() || !otaAvailable">上传固件</button>
+      </div>
+    </div>
+    <div class="bar" style="margin-top:8px">
+      <div class="field" style="flex:1;min-width:220px"><label>Web UI 镜像 (.bin)</label>
+        <input type="file" accept=".bin" @change="onLfs($event)" :disabled="busy()">
+      </div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="uploadLfs()" :disabled="!lfsFile || busy() || !otaAvailable">上传 Web UI</button>
+      </div>
+    </div>
   </div>
 </div>

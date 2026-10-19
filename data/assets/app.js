@@ -375,7 +375,7 @@ const MENU = [
   ]},
   { group: '系统', items: [
     { id: 'settings', title: '系统设置', icon: 'settings' },
-    { id: 'tools', title: '系统工具', icon: 'tools', todo: true },
+    { id: 'tools', title: '系统工具', icon: 'tools' },
   ]},
 ];
 
@@ -1439,5 +1439,115 @@ function pageLogs() {
       }
       return '开机 ' + fmtUptime(ts);
     },
+  };
+}
+
+/* ---------- 系统工具：固件 OTA 升级与本地刷写 ---------- */
+function pageTools() {
+  return {
+    otaAvailable: false,       // 分区表是否支持 OTA 双槽
+    curVer: '',                // 当前固件版本（Release tag）
+    latestVer: '',             // 远端最新版本（检查后填充）
+    otaState: 0,               // OtaState：0空闲 1检查 2下载 3写入 4成功 5失败 6烧录FS
+    otaProgress: 0,            // 0~100
+    otaMessage: '',            // 失败原因 / 当前阶段说明
+    firmwareFile: null,
+    lfsFile: null,
+    pending: false,            // 已发起操作、尚未观察到非空闲状态（避免轮询提前结束）
+    _polling: false,
+    pollCount: 0,
+
+    busy() {
+      return this.otaState === 1 || this.otaState === 2 || this.otaState === 3 || this.otaState === 6;
+    },
+    stateText() {
+      return ({
+        0: '空闲', 1: '检查更新中…', 2: '下载固件中…', 3: '写入固件中…',
+        4: '升级成功', 5: '失败', 6: '烧录 Web UI 中…',
+      })[this.otaState] || '未知';
+    },
+    statusLine() {
+      if (this.busy()) return this.stateText() + ' ' + this.otaProgress + '%';
+      if (this.otaState === 4) return '升级成功，设备重启中…';
+      if (this.otaState === 5) return '失败：' + (this.otaMessage || '未知原因');
+      if (this.latestVer && this.latestVer !== this.curVer) return '发现新版本：' + this.latestVer;
+      if (this.otaMessage) return this.otaMessage;
+      return '已是最新版本' + (this.curVer ? '（' + this.curVer + '）' : '');
+    },
+
+    init() { this.loadStatus(); },
+    async loadStatus() {
+      try {
+        const r = await fetch('/api/ota/status', { cache: 'no-store' });
+        if (!r.ok) return;
+        const s = await r.json();
+        this.otaAvailable = !!s.available;
+        this.curVer = s.currentVersion || '';
+        this.latestVer = s.latestVersion || '';
+        this.otaState = s.state || 0;
+        this.otaProgress = s.progress || 0;
+        this.otaMessage = s.message || '';
+      } catch (e) {}
+    },
+
+    async checkUpdate() {
+      if (this.busy() || !this.otaAvailable) return;
+      this.pending = true;
+      const r = await apiOp('/api/ota/version');   // 失败自动 toast
+      if (!r) { this.pending = false; return; }
+      this.startPolling();
+    },
+    async doUpgrade() {
+      if (!this.latestVer || this.busy() || !this.otaAvailable) return;
+      if (typeof confirmDialog === 'function' &&
+          !(await confirmDialog('确认升级', '确认升级到 ' + this.latestVer + '？升级过程中设备会重启。'))) return;
+      this.pending = true;
+      const r = await apiOp('/api/ota/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: this.latestVer }),
+      });
+      if (!r) { this.pending = false; return; }
+      this.startPolling();
+    },
+    async uploadFirmware() {
+      if (!this.firmwareFile || this.busy() || !this.otaAvailable) return;
+      const fd = new FormData();
+      fd.append('file', this.firmwareFile);
+      this.pending = true;
+      const r = await apiOp('/api/ota/upload', { method: 'POST', body: fd });
+      if (!r) { await this.loadStatus(); this.pending = false; return; }
+      this.startPolling();
+    },
+    async uploadLfs() {
+      if (!this.lfsFile || this.busy() || !this.otaAvailable) return;
+      const fd = new FormData();
+      fd.append('file', this.lfsFile);
+      this.pending = true;
+      const r = await apiOp('/api/ota/upload-fs', { method: 'POST', body: fd });
+      if (!r) { await this.loadStatus(); this.pending = false; return; }
+      this.startPolling();
+    },
+
+    // 轮询 OTA 状态：每 1s 拉一次 /api/ota/status，直到终态或回到空闲
+    startPolling() {
+      if (this._polling) return;
+      this._polling = true;
+      this.pollCount = 0;
+      const tick = async () => {
+        await this.loadStatus();
+        this.pollCount++;
+        if (this.otaState === 4) { this._polling = false; toast('升级成功，设备重启中…', 'ok'); return; }
+        if (this.otaState === 5) { this._polling = false; toast('升级失败：' + (this.otaMessage || ''), 'err'); return; }
+        if (this.otaState !== 0) this.pending = false;               // 操作已真正开始
+        if (this.otaState === 0 && !this.pending) { this._polling = false; return; }
+        if (this.pollCount > 180) { this._polling = false; return; } // 安全上限 ~3 分钟
+        setTimeout(tick, 1000);
+      };
+      tick();
+    },
+
+    onFirmware(e) { this.firmwareFile = e.target.files[0] || null; },
+    onLfs(e) { this.lfsFile = e.target.files[0] || null; },
   };
 }

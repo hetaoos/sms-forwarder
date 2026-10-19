@@ -1,12 +1,14 @@
 #include "net/WebPanel.h"
 
 #include <ArduinoJson.h>
+#include <AsyncJson.h>  // AsyncJsonResponse：OTA 状态等结构化响应
 #include <LittleFS.h>
 #include <Preferences.h>
 
 #include <Arduino.h>
 
 #include "net/StateJson.h"
+#include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
 namespace {
 
@@ -503,6 +505,46 @@ void WebPanel::setupRoutes() {
   // schedMode=0 每日定点（schedHour:schedMinute，依赖时间同步）。
   _server.on("/api/email", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleEmailPost(req, json); });
+
+  // ================= OTA 升级 =================
+  // 顺序：子路径（/api/ota/status 等）在父路径（/api/ota/upload 等）前注册无冲突，
+  // 这里均为不同路径，按功能分组排列即可。
+
+  // 状态快照：轮询用。返回 { state, progress, message, currentVersion,
+  // latestVersion, available }，前端据此渲染进度与「发现新版本」提示
+  _server.on("/api/ota/status", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleOtaStatus(req); });
+
+  // 触发版本检查（异步后台任务），立即返回当前版本；最新版本由后续轮询
+  // /api/ota/status 获取（state 由 CHECKING 转为 IDLE 时 latestVersion 已填好）
+  _server.on("/api/ota/version", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleOtaVersion(req); });
+
+  // 启动在线升级：JSON {"tag":"<完整版本标识>"} -> {ok:true}；实际下载在后台任务进行，
+  // 进度经 /api/ota/status 轮询。tag 即 Release tag（与 /api/ota/version 返回的
+  // latestVersion 一致），白名单校验见 Ota::startOnlineUpgrade
+  _server.on("/api/ota/start", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleOtaStart(req); },
+             nullptr,
+             [this](AsyncWebServerRequest *req, uint8_t *data, size_t len,
+                    size_t index, size_t total) { handleOtaStartBody(req, data, len, index, total); });
+
+  // 本地固件上传：multipart/form-data 的 file 字段原始字节即固件。onUpload 分片写入
+  // OTA 分区；onRequest 在收尾时返回结果。升级成功后会自动重启
+  _server.on("/api/ota/upload", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleOtaUploadReq(req); },
+             [this](AsyncWebServerRequest *req, String filename, size_t index,
+                    uint8_t *data, size_t len, bool final) {
+               handleOtaUploadChunk(req, filename, index, data, len, final);
+             });
+
+  // 本地 Web UI（LittleFS 镜像）上传：同样走 onUpload 分片写入 data 分区
+  _server.on("/api/ota/upload-fs", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleOtaUploadFsReq(req); },
+             [this](AsyncWebServerRequest *req, String filename, size_t index,
+                    uint8_t *data, size_t len, bool final) {
+               handleOtaUploadFsChunk(req, filename, index, data, len, final);
+             });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）
   _server.onNotFound([this](AsyncWebServerRequest *req) { handleNotFound(req); });
@@ -1130,6 +1172,121 @@ void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
     return;
   }
   sendJson(req, _email.configJson());
+}
+
+// ---- OTA 升级 ----
+// 状态快照：前端轮询此接口渲染进度与「发现新版本」提示
+void WebPanel::handleOtaStatus(AsyncWebServerRequest *req) {
+  OtaStatusPayload s = Ota::status();
+  AsyncJsonResponse *resp = new AsyncJsonResponse();
+  auto o = resp->getRoot();
+  o["state"]          = (uint8_t)s.state;
+  o["progress"]       = s.progress;
+  o["message"]        = s.message;
+  o["currentVersion"] = s.currentVersion;
+  o["latestVersion"]  = s.latestVersion;
+  o["available"]      = otaPartitionAvailable();
+  resp->setLength();
+  req->send(resp);
+}
+
+// 触发版本检查（异步），立即返回当前版本；最新版本由 /api/ota/status 轮询得到
+void WebPanel::handleOtaVersion(AsyncWebServerRequest *req) {
+  OtaStatusPayload s = Ota::status();
+  Ota::startVersionCheck();
+  AsyncJsonResponse *resp = new AsyncJsonResponse();
+  auto o = resp->getRoot();
+  o["ok"]            = true;
+  o["version"]       = Ota::version();
+  o["latestVersion"] = s.latestVersion;
+  o["available"]     = otaPartitionAvailable();
+  resp->setLength();
+  req->send(resp);
+}
+
+// POST /api/ota/start 的请求体累积（JSON {"tag":"..."}）
+void WebPanel::handleOtaStartBody(AsyncWebServerRequest *req, uint8_t *data, size_t len,
+                                  size_t /*index*/, size_t /*total*/) {
+  if (!req->_tempObject) req->_tempObject = new String();
+  String *s = (String *)req->_tempObject;
+  s->concat((char *)data, len);
+}
+
+// 启动在线升级：解析 tag，交给后台任务下载并写入 OTA 分区
+void WebPanel::handleOtaStart(AsyncWebServerRequest *req) {
+  if (!req->_tempObject) {
+    sendErr(req, 400, "missing body");
+    return;
+  }
+  String body = *((String *)req->_tempObject);
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  delete (String *)req->_tempObject;
+  req->_tempObject = nullptr;
+  if (err || !doc["tag"].is<const char *>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  String tag = doc["tag"].as<String>();
+  if (!Ota::startOnlineUpgrade(tag)) {
+    sendErr(req, 400, "升级任务已在运行或参数无效");
+    return;
+  }
+  sendOk(req, ",\"started\":true");
+}
+
+// 本地固件上传：收尾时返回结果（成功/失败由 Ota 状态决定）
+void WebPanel::handleOtaUploadReq(AsyncWebServerRequest *req) {
+  OtaStatusPayload s = Ota::status();
+  bool ok = (s.state == OtaState::SUCCESS);
+  AsyncJsonResponse *resp = new AsyncJsonResponse();
+  auto o = resp->getRoot();
+  o["ok"] = ok;
+  if (ok) {
+    o["message"] = s.message.length() ? s.message : "固件上传成功";
+  } else {
+    o["error"] = s.message.length() ? s.message : "固件写入失败";
+  }
+  resp->setLength();
+  req->send(resp);
+}
+
+// 固件分片写入 OTA 分区；失败时立即中止上传（防止后续分片触发重复初始化）
+void WebPanel::handleOtaUploadChunk(AsyncWebServerRequest *req, String /*filename*/,
+                                    size_t index, uint8_t *data, size_t len, bool final) {
+  if (!Ota::handleUploadChunk(data, len, index, final)) {
+    req->send(500, "application/json",
+              "{\"ok\":false,\"error\":\"固件写入失败，请确认固件与本设备匹配\"}");
+  }
+}
+
+// 本地 Web UI（LittleFS 镜像）上传：收尾时返回结果
+void WebPanel::handleOtaUploadFsReq(AsyncWebServerRequest *req) {
+  OtaStatusPayload s = Ota::status();
+  bool ok = (s.state == OtaState::SUCCESS);
+  AsyncJsonResponse *resp = new AsyncJsonResponse();
+  auto o = resp->getRoot();
+  o["ok"] = ok;
+  if (ok) {
+    o["message"] = s.message.length() ? s.message : "Web UI 上传成功";
+  } else {
+    o["error"] = s.message.length() ? s.message : "Web UI 写入失败";
+  }
+  resp->setLength();
+  req->send(resp);
+}
+
+// LittleFS 镜像分片写入 data 分区；totalSize 仅用于进度百分比估算
+void WebPanel::handleOtaUploadFsChunk(AsyncWebServerRequest *req, String /*filename*/,
+                                      size_t index, uint8_t *data, size_t len, bool final) {
+  size_t totalSize = 0;
+  if (req->hasHeader("Content-Length")) {
+    totalSize = (size_t)req->header("Content-Length").toInt();
+  }
+  if (!Ota::handleLfsUploadChunk(data, len, index, totalSize, final)) {
+    req->send(500, "application/json",
+              "{\"ok\":false,\"error\":\"Web UI 写入失败，请确认镜像与本设备匹配\"}");
+  }
 }
 
 // ---- 兜底 404 ----

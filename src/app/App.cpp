@@ -64,6 +64,8 @@ bool App::begin() {
     _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM %s", (unsigned)port,
               ready ? "已插入" : "已拔出");
   });
+  // OTA 升级状态初始化（需在 HTTP 路由注册前完成，确保 /api/ota/status 立即可用）
+  Ota::init();
   _panel.begin();                      // 启动 HTTP 服务
   // 启动邮件的放行条件：除 WiFi 外还要等模组初始化出结果（就绪或故障），
   // 否则邮件里的模组状态会是「初始化中」。须在 notifyStartup() 前注入
