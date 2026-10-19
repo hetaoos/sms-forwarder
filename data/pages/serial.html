@@ -23,6 +23,22 @@
   <div class="hint" x-show="atStats.max && !atStats.psram" x-text="atStoreHint()"
        style="margin-top:-6px;margin-bottom:12px"></div>
 
+  <!-- 日志 -->
+  <div class="card">
+    <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 ' + (atStats.max || '-') + ' 条）'"></span></h3>
+    <div class="console" x-ref="console">
+      <template x-for="e in entries" :key="e.id">
+        <div class="entry">
+          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
+          <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
+          <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
+        </div>
+      </template>
+      <div class="hint" style="color:#6f7885" x-show="!entries.length">暂无记录，发送一条命令试试</div>
+    </div>
+    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。</div>
+  </div>
+
   <!-- 参数栏 -->
   <div class="card">
     <div class="bar">
@@ -72,21 +88,5 @@
       <div class="row"><span class="k">自愈复位</span><span class="v" x-text="s.recovers || 0"></span></div>
       <div class="row"><span class="k">距上次数据</span><span class="v" x-text="fmtAgo(s.idle)"></span></div>
     </div>
-  </div>
-
-  <!-- 日志 -->
-  <div class="card">
-    <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 ' + (atStats.max || '-') + ' 条）'"></span></h3>
-    <div class="console" x-ref="console">
-      <template x-for="e in entries" :key="e.id">
-        <div class="entry">
-          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
-          <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
-          <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
-        </div>
-      </template>
-      <div class="hint" style="color:#6f7885" x-show="!entries.length">暂无记录，发送一条命令试试</div>
-    </div>
-    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。</div>
   </div>
 </div>

@@ -48,8 +48,9 @@ String escape(const String &s) {
 
 // max：条数上限（0 或越界取 cfg::kAtHistoryRingSize）。
 // PSRAM 优先分配（与内部堆使用者隔离）；失败退化为内部堆，并按
-// kAtHistoryRingSizeNoPsram 收紧条数；两者都失败则缓冲不可用（仍不报错，
-// 串口交互本身不受影响，只是历史不可回溯）。calloc 已把字段清零为 '\0'。
+// kAtHistoryRingSizeNoPsram 收紧条数；两者都仍失败则退回编译期静态缓冲
+// （BSS，必定可用，容量取最小档）——保证 AT 历史至少能记录最近若干条、
+// 存储信息块不显示空，行为与原先的静态数组一致。
 void AtHistory::begin(uint16_t max) {
   if (max == 0 || max > cfg::kAtHistoryRingSize) max = cfg::kAtHistoryRingSize;
   _max = max;
@@ -61,7 +62,13 @@ void AtHistory::begin(uint16_t max) {
     if (_max > cfg::kAtHistoryRingSizeNoPsram) _max = cfg::kAtHistoryRingSizeNoPsram;
     _buf = (Entry *)calloc(_max, sizeof(Entry));
   }
-  if (!_buf) _max = 0;  // 两者都失败：缓冲不可用，max 归零便于页面/日志识别
+  if (!_buf) {
+    // 仍失败（极少见：DRAM 极度紧张）：退回编译期静态缓冲（BSS，必定可用），
+    // 容量取最小档，避免缓冲为空导致存储信息块显示空、AT 历史被静默丢弃
+    static Entry sFallback[cfg::kAtHistoryRingSizeNoPsram];
+    _max = cfg::kAtHistoryRingSizeNoPsram;
+    _buf = sFallback;
+  }
 }
 
 // port：来源串口号；cmd：命令（自发上报传空串）；resp：响应内容
