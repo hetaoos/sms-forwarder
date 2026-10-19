@@ -44,11 +44,38 @@ FS_TARGETS = {"uploadfs", "uploadfsota", "buildfs"}
 _COMMAND_TARGETS = set(COMMAND_LINE_TARGETS)  # noqa: F821 — SCons 全局
 
 
+def _empty_dir(path):
+    """删除 path 下的全部内容，但保留 path 目录本身。
+
+    用于 data/ 在容器中是挂载点（mount point）的场景：挂载点目录项本身不能被
+    rename / rmdir（会报 EBUSY），只能修改其内容，因此清空时务必保留目录本身。
+    对可能嵌套的挂载点子目录同样做递归兜底。
+    """
+    if not os.path.isdir(path):
+        return
+    for entry in os.scandir(path):
+        p = entry.path
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(p, ignore_errors=True)
+                if os.path.exists(p):
+                    _empty_dir(p)
+                    try:
+                        os.rmdir(p)
+                    except OSError:
+                        pass
+            else:
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def _restore(data_dir, src_dir):
     """删除临时 data/，把 .data_src/ 换回 data/。
 
-    优先用 rename（本地快）；容器内 data/ 可能是挂载点/特殊文件系统，rename 会
-    报 EBUSY / EXDEV，此时退化为「清空 data/ + 拷贝 .data_src/ 回来」的分支。
+    本地优先用 rename（快）；容器内 data/ 多为挂载点，rename/rmtree 整个目录会报
+    EBUSY，此时退化为「清空 data/ 内容 + 把 .data_src/ 内容拷回」的分支，保留
+    data/ 目录本身。
     """
     if not os.path.isdir(src_dir):
         return
@@ -56,30 +83,35 @@ def _restore(data_dir, src_dir):
         shutil.rmtree(data_dir, ignore_errors=True)
         os.rename(src_dir, data_dir)
     except OSError as e:
-        print("[gzip-data] restore rename 失败 (%s)，改用拷贝分支" % e)
-        if os.path.isdir(data_dir):
-            shutil.rmtree(data_dir, ignore_errors=True)
-        shutil.copytree(src_dir, data_dir)
+        print("[gzip-data] restore rename 失败 (%s)，改用挂载点兼容分支" % e)
+        _empty_dir(data_dir)
+        shutil.copytree(src_dir, data_dir, dirs_exist_ok=True)
     shutil.rmtree(src_dir, ignore_errors=True)
 
 
 def _swap_to_gz(data_dir, src_dir):
     """data/ -> .data_src/，新 data/ 中只放 <文件>.gz；返回 (原始字节, 压缩后字节)。
 
-    优先用 rename（本地原子、快）；容器内 data/ 可能是挂载点/特殊文件系统，
-    rename 会报 EBUSY / EXDEV，此时退化为「拷贝原件 + 清空 data/ 再写入 .gz」的
-    拷贝分支。两种分支都会把原始文件留在 .data_src/，进程退出时由 _restore 还原。
+    本地优先用 rename（原子、快）；容器内 data/ 常为挂载点，rename 会报 EBUSY，
+    此时退化为「拷贝原件到 .data_src/ + 清空 data/ 内容再写入 .gz」的分支，保留
+    data/ 目录本身。两种分支都把原始文件留在 .data_src/，由 _restore 还原。
     """
     # 防御：若上次异常退出残留了 .data_src/，先清掉，避免下方 rename/copytree 冲突
     if os.path.exists(src_dir):
         shutil.rmtree(src_dir, ignore_errors=True)
     try:
         os.rename(data_dir, src_dir)  # 原件整体移走（原子操作，本地快）
+        renamed = True
     except OSError as e:
-        print("[gzip-data] swap rename 失败 (%s)，改用拷贝分支" % e)
+        print("[gzip-data] swap rename 失败 (%s)，改用挂载点兼容分支" % e)
         shutil.copytree(data_dir, src_dir)
-        shutil.rmtree(data_dir)
-        os.makedirs(data_dir)
+        renamed = False
+
+    if not renamed:
+        # data/ 是挂载点/特殊文件系统：不能 rename/rmtree 整个目录本身，
+        # 只能清空其内容后原地复用，避免 EBUSY。
+        _empty_dir(data_dir)
+        os.makedirs(data_dir, exist_ok=True)
 
     total_raw = total_gz = 0
     for root, _dirs, files in os.walk(src_dir):
@@ -90,7 +122,9 @@ def _swap_to_gz(data_dir, src_dir):
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             with open(src_path, "rb") as f:
                 content = f.read()
-            with gzip.open(dst_path, "wb") as gf:
+            # mtime=0：去除时间戳，使 .gz 内容确定性可复现，避免每次构建的
+            # LittleFS 镜像哈希都变化（利于缓存与产物校验）
+            with gzip.GzipFile(dst_path, "wb", mtime=0) as gf:
                 gf.write(content)
             total_raw += len(content)
             total_gz += os.path.getsize(dst_path)
@@ -103,14 +137,16 @@ def _prepare_gzip_data(env):
     data_dir = os.path.join(project_dir, "data")
     src_dir = os.path.join(project_dir, SRC_DIR_NAME)
 
-    if not os.path.isdir(data_dir):
-        print("[gzip-data] data/ not found, skip")
-        return False
-
-    # 上次异常退出的现场：先恢复再重新交换
+    # 上次异常退出的现场：优先恢复。即便 data/ 已不存在也要还原，否则源文件会
+    # 永久困在 .data_src/ 中（例如本地 rename 分支崩溃在「data/ 已被移走、尚未
+    # 重建」的窗口时，data/ 缺失但 .data_src/ 持有唯一副本）。
     if os.path.isdir(src_dir):
         _restore(data_dir, src_dir)
         print("[gzip-data] recovered leftover %s from previous run" % SRC_DIR_NAME)
+
+    if not os.path.isdir(data_dir):
+        print("[gzip-data] data/ not found, skip")
+        return False
 
     total_raw, total_gz = _swap_to_gz(data_dir, src_dir)
     print("[gzip-data] packed %d -> %d bytes (gzip); image will contain .gz only"
