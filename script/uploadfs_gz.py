@@ -45,17 +45,41 @@ _COMMAND_TARGETS = set(COMMAND_LINE_TARGETS)  # noqa: F821 — SCons 全局
 
 
 def _restore(data_dir, src_dir):
-    """删除临时 data/，把 .data_src/ 换回 data/。"""
+    """删除临时 data/，把 .data_src/ 换回 data/。
+
+    优先用 rename（本地快）；容器内 data/ 可能是挂载点/特殊文件系统，rename 会
+    报 EBUSY / EXDEV，此时退化为「清空 data/ + 拷贝 .data_src/ 回来」的分支。
+    """
     if not os.path.isdir(src_dir):
         return
-    shutil.rmtree(data_dir, ignore_errors=True)
-    os.rename(src_dir, data_dir)
+    try:
+        shutil.rmtree(data_dir, ignore_errors=True)
+        os.rename(src_dir, data_dir)
+    except OSError as e:
+        print("[gzip-data] restore rename 失败 (%s)，改用拷贝分支" % e)
+        if os.path.isdir(data_dir):
+            shutil.rmtree(data_dir, ignore_errors=True)
+        shutil.copytree(src_dir, data_dir)
+    shutil.rmtree(src_dir, ignore_errors=True)
 
 
 def _swap_to_gz(data_dir, src_dir):
-    """data/ -> .data_src/，新 data/ 中只放 <文件>.gz；返回 (原始字节, 压缩后字节)。"""
-    os.rename(data_dir, src_dir)  # 原件整体移走（原子操作）
-    os.makedirs(data_dir)
+    """data/ -> .data_src/，新 data/ 中只放 <文件>.gz；返回 (原始字节, 压缩后字节)。
+
+    优先用 rename（本地原子、快）；容器内 data/ 可能是挂载点/特殊文件系统，
+    rename 会报 EBUSY / EXDEV，此时退化为「拷贝原件 + 清空 data/ 再写入 .gz」的
+    拷贝分支。两种分支都会把原始文件留在 .data_src/，进程退出时由 _restore 还原。
+    """
+    # 防御：若上次异常退出残留了 .data_src/，先清掉，避免下方 rename/copytree 冲突
+    if os.path.exists(src_dir):
+        shutil.rmtree(src_dir, ignore_errors=True)
+    try:
+        os.rename(data_dir, src_dir)  # 原件整体移走（原子操作，本地快）
+    except OSError as e:
+        print("[gzip-data] swap rename 失败 (%s)，改用拷贝分支" % e)
+        shutil.copytree(data_dir, src_dir)
+        shutil.rmtree(data_dir)
+        os.makedirs(data_dir)
 
     total_raw = total_gz = 0
     for root, _dirs, files in os.walk(src_dir):
