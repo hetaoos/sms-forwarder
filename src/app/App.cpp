@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "app/Config.h"
+#include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
 #include "app/UserFs.h"
 
 // 初始化调试串口与所有子模块；返回 true 表示装配完成
@@ -24,13 +25,18 @@ bool App::begin() {
 
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 屏幕 + 静态框架
+  _keypad.begin();                     // 4 键输入（OK/UP/DOWN/BACK）
+  _ui.begin();                         // 菜单导航状态机（默认停在状态页）
+  _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 屏幕显示页数据源
   _bridge.begin();                     // 启动串口抽数任务
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等模组自发数据前交给短信服务
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
     return _sms.onUnsolicited(port, text);
   });
 
-  _display.render(collectStatus());    // 先出一帧，避免开机黑屏
+  StatusInfo boot;
+  collectStatus(boot);
+  _display.render(boot);                // 先出一帧，避免开机黑屏
   // WiFi 连上（含重连）即启动 NTP 同步；须在 _wifi.begin() 前注册
   _wifi.setOnConnectCb([this] {
     _log.addf(LogLevel::kInfo, "wifi", "已连接 %s，IP %s", _wifi.ssid().c_str(),
@@ -87,34 +93,32 @@ bool App::begin() {
   return true;
 }
 
-// 聚合屏幕渲染所需的全部状态字段
+// 聚合屏幕渲染所需的全部状态字段，填充到 out（out 的生命周期由调用方持有）
 // 注意：ip / lastCmd / lastResp 为 const char*，必须指向生命周期超出本函数的
 // 存储，这里使用 static String 持有副本
-StatusInfo App::collectStatus() {
-  StatusInfo s;
-  s.wifiUp = _wifi.connected();
-  s.apMode = _wifi.apMode();
-  s.uptimeSec = millis() / 1000;
-  s.freeHeap = ESP.getFreeHeap();
-  s.psramSize = ESP.getPsramSize();   // 0 表示板子无 PSRAM
-  s.freePsram = ESP.getFreePsram();
-  s.ledName = _led.color().name;
-  s.rssi = s.wifiUp ? _wifi.rssi() : 0;
+void App::collectStatus(StatusInfo &out) {
+  out.wifiUp = _wifi.connected();
+  out.apMode = _wifi.apMode();
+  out.uptimeSec = millis() / 1000;
+  out.freeHeap = ESP.getFreeHeap();
+  out.psramSize = ESP.getPsramSize();   // 0 表示板子无 PSRAM
+  out.freePsram = ESP.getFreePsram();
+  out.ledName = _led.color().name;
+  out.rssi = out.wifiUp ? _wifi.rssi() : 0;
 
   static String sIp;         // 需要持有字符串，供 const char* 引用
   static String sCmd, sResp, sTime;
   sIp = _wifi.ip();
-  s.ip = sIp.c_str();
+  out.ip = sIp.c_str();
   sTime = _time.clockStr();  // LCD 标题栏时钟（未同步显示 --:--:--）
-  s.time = sTime.c_str();
+  out.time = sTime.c_str();
 
   uint8_t port = 0;
   if (_bridge.lastEntry(port, sCmd, sResp)) {
-    s.lastPort = port;
-    s.lastCmd = sCmd.c_str();
-    s.lastResp = sResp.c_str();
+    out.lastPort = port;
+    out.lastCmd = sCmd.c_str();
+    out.lastResp = sResp.c_str();
   }
-  return s;
 }
 
 // 主循环调度逻辑：
@@ -134,9 +138,42 @@ void App::tick() {
   _mqtt.tick();                        // MQTT 连接维护 / 命令执行 / 事件发布
   _push.tick();                        // 推送通道队列与重试（loop 任务内执行）
 
-  if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
-    _lastUiMs = millis();
-    _display.render(collectStatus());
+  // 轮询 4 键，事件交给菜单状态机处理（状态页下任意键切入菜单）
+  KeyId key;
+  KeyEvent ev;
+  if (_keypad.poll(millis(), key, ev)) _ui.handle(key, ev);
+
+  // 远程注入的按键（Web /api/key）与物理按键走同一处理路径
+  KeyId ikey; KeyEvent iev;
+  while (KeyInject::instance().pop(ikey, iev)) _ui.handle(ikey, iev);
+
+  // 无操作超时：屏幕显示页退回菜单；菜单/其它退回实时状态页
+  if (millis() - _ui.lastInputMs() > cfg::kUiIdleSleepMs) {
+    if (_ui.inScreenView()) _ui.leaveScreenView();
+    else if (!_ui.inStatusMode()) _ui.enterStatusMode();
   }
+
+  if (_ui.inScreenView()) {
+    // 「屏幕显示」页：实时跟随，按固定周期重绘（滚动/刷新由按键驱动）
+    if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
+      _lastUiMs = millis();
+      _ui.renderScreenView();
+    }
+  } else if (_ui.inStatusMode()) {
+    // 实时状态页：按固定周期刷新（内容变化才实际推屏）
+    if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
+      _lastUiMs = millis();
+      StatusInfo s;
+      collectStatus(s);
+      _display.render(s);
+    }
+  } else if (_display.screenOn() && _ui.dirty()) {
+    // 菜单页：由按键事件驱动，导航变化立即整页重绘（不受 500ms 节流限制）
+    _ui.render();
+  }
+
+  // 屏幕实时预览：主循环预编码 JPEG 缓存（自节流约 1.4fps）；HTTP 处理器只复制返回
+  _display.refreshScreenJpg();
+
   delay(5);
 }

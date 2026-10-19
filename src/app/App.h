@@ -3,6 +3,8 @@
 #include <stdint.h>
 
 #include "app/StatusInfo.h"
+#include "app/UIMenu.h"
+#include "hal/Button.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "log/LogStore.h"
@@ -28,11 +30,13 @@ class App {
   void tick();
 
  private:
-  // 从各模块聚合一份屏幕渲染用的状态快照
-  StatusInfo collectStatus();
+  // 从各模块聚合一份屏幕渲染用的状态快照，填充到 out
+  void collectStatus(StatusInfo &out);
 
   RgbLed _led;              // 板载 RGB 灯（WS2812）
   Display _display;         // ST7789 屏幕
+  Keypad _keypad;           // 4 键输入（OK/UP/DOWN/BACK）
+  UIMenu _ui{_display};     // LCD 菜单导航状态机（依赖 _display）
   WifiManager _wifi;        // WiFi 连接管理 + NVS 配网
   SerialBridge _bridge;     // 双串口 AT 透传桥
   SmsService _sms{_bridge}; // 短信服务（4G 模组收发 + 文件存储）

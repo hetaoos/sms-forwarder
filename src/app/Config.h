@@ -144,6 +144,17 @@ constexpr uint8_t  kTftRotation = 0;   // 屏幕旋转方向
 constexpr uint32_t kTftSpiFreq = 40000000;  // SPI 写入频率 40MHz
 constexpr uint8_t  kTftBacklight = 80;      // 默认亮度 %
 
+// ---------------- 按键（LCD UI 导航）----------------
+// 4 键：OK / UP / DOWN / BACK，低电平有效（GPIO 接上拉，按键到 GND）。
+// 仅作导航输入，不参与任何输出；GPIO2 为 Strapping 引脚但只作输入读取，无副作用。
+constexpr int8_t  kBtnOk   = 42;   // OK（确认 / 进入）
+constexpr int8_t  kBtnUp   = 47;   // UP（上移 / 增加）
+constexpr int8_t  kBtnDown = 38;   // Down（下移 / 减少）
+constexpr int8_t  kBtnBack = 2;    // Back（返回 / 取消；长按熄屏/唤醒）
+constexpr uint16_t kBtnLongMs    = 600;     // 长按阈值（ms）
+constexpr uint16_t kBtnRepeatMs  = 180;     // 长按连发间隔（ms，UP/DOWN/OK 调值用）
+constexpr uint32_t kUiIdleSleepMs = 10000;  // 菜单无操作自动退回状态页（ms）
+
 // ---------------- 其它 ----------------
 constexpr uint16_t kHttpPort = 80;      // HTTP 控制台端口
 constexpr uint32_t kUiRefreshMs = 500;  // 屏幕刷新周期

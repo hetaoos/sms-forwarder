@@ -931,13 +931,35 @@ function pageRgb() {
 function pageDisplay() {
   return {
     bright: 80, touched: false,
+    live: true,            // LCD 实时画面是否轮询刷新
+    screenUrl: '',         // 预览 <img> 的 src（带缓存破除数）
+    timer: null,
     // 状态来自 SSE 实时仓
     get st() { return Alpine.store('live').disp; },
-    async init() {
+    init() {
       const live = Alpine.store('live');
       if (typeof live.disp.bright === 'number') this.bright = live.disp.bright;
       // 仓库为空（SSE 尚未送达）时兜底拉一次
       if (!Object.keys(live.disp).length) this.refresh();
+      this.startLive();    // 进入页面即开始 LCD 实时预览轮询
+    },
+    // LCD 实时画面：每 ~700ms 重新抓取一帧（约 1.4fps），缓存破除数避免命中旧图
+    startLive() {
+      this.live = true;
+      this.refreshScreen();
+    },
+    refreshScreen() {
+      if (!this.live) return;
+      this.screenUrl = '/api/screen?t=' + Date.now();
+      this.timer = setTimeout(() => this.refreshScreen(), 700);
+    },
+    toggleLive() {
+      if (this.live) {
+        this.live = false;
+        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      } else {
+        this.startLive();
+      }
     },
     async refresh() {
       try {
@@ -960,6 +982,10 @@ function pageDisplay() {
         this.bright = this.st.bright;
       }
       this.touched = false;
+    },
+    // 远程按键：等同于设备物理 4 键，驱动屏幕菜单（与本地按键同一处理路径）
+    async pressKey(k) {
+      try { await postOp('/api/key', { key: k }); } catch (e) {}
     },
   };
 }

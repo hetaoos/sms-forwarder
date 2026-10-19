@@ -2,8 +2,16 @@
 
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
+#include <esp_heap_caps.h>  // ps_malloc（帧缓冲抓图放 PSRAM）
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>  // 互斥量：保护屏幕预览 JPEG 缓存（主循环写 / HTTP 读）
+#include <utility>
+#include <vector>
+
+#include "jpge.h"  // 单头+单cpp JPEG 编码器（lib/jpge），用于 /api/screen 实时预览
 
 #include "app/Config.h"
+#include "hal/FontCN.h"
 #include "log/LogStore.h"
 
 namespace {
@@ -117,18 +125,24 @@ constexpr int16_t atBodyY() { return atTitleY() + kRowH; }
 
 const int16_t kAtBodyTop = atBodyY();
 
+// 状态页页脚固定文案
+constexpr const char *kStatusFooter = "HTTP :80  U1 17/18  U2 41/40";
+
+// 页面框架类型：用于在状态页 / 屏幕显示页 / 菜单页之间切换时决定是否需要重铺框架
+enum class Chrome { kStatus, kScreen, kMenu };
+
 // ---------- 静态框架：只画一次 ----------
-// g：绘制目标（LovyanGFX 设备或帧缓冲精灵），绘制标题栏 / 标签 / 分隔线 / 页脚
-void paintChrome(lgfx::LovyanGFX &g) {
+// 绘制标题栏 / 标签 / 分隔线 / 页脚；title/footer 由调用方决定（状态页或屏幕显示页）
+void paintFrame(lgfx::LovyanGFX &g, const char *title, const char *footer) {
   g.fillScreen(kBlack);
 
-  g.setFont(&lgfx::fonts::Font2);
+  FontCN::instance().applyTo(g);  // 中文点阵字体（含 ASCII）；未就绪时回退 Font2
   g.setTextDatum(textdatum_t::top_left);
 
   // 标题栏
   g.fillRect(0, 0, g.width(), kHeaderH, kHeaderBg);
   g.setTextColor(kValue);
-  g.drawString("SMS Forwarder", kPad, 8);
+  g.drawString(title ? title : "", kPad, 8);
 
   // 状态行标签
   g.setTextColor(kLabel);
@@ -141,9 +155,8 @@ void paintChrome(lgfx::LovyanGFX &g) {
 
   g.setFont(&lgfx::fonts::Font0);
   g.setTextColor(kHint);
-  g.drawString("HTTP :80  U1 17/18  U2 41/40", kPad, g.height() - 14);
+  g.drawString(footer ? footer : "", kPad, g.height() - 14);
 
-  g.setFont(&lgfx::fonts::Font2);
   g.setTextDatum(textdatum_t::top_left);
 }
 
@@ -186,6 +199,17 @@ bool updateClock(lgfx::LovyanGFX &g, const String &time, String &cache) {
 // 按 maxW 宽度对 text 做软换行绘制，最多画 maxLines 行
 // 返回实际绘制的行数
 // g：绘制目标；x/y：起始坐标；text：待绘制文本（可为 nullptr）；color：文字颜色
+// UTF-8 码点长度（1-4 字节）；用于按字符而非单字节做软换行/测量，避免把
+// 中文（3 字节）拆成碎字节导致 LovyanGFX 渲染异常
+static int utf8CharLen(const char *p) {
+  uint8_t c = (uint8_t)*p;
+  if (c < 0x80) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1;
+}
+
 int drawWrapped(lgfx::LovyanGFX &g, int16_t x, int16_t y, int16_t maxW,
                 const char *text, uint16_t color, int maxLines) {
   if (maxLines <= 0) return 0;
@@ -196,13 +220,14 @@ int drawWrapped(lgfx::LovyanGFX &g, int16_t x, int16_t y, int16_t maxW,
   while (pos < src.length() && lines < maxLines) {
     String line;
     while (pos < src.length()) {
-      char c = src[pos];
-      if (c == '\r') { pos++; continue; }  // 丢弃回车，只按 \n 断行
-      if (c == '\n') break;
-      String test = line + c;
+      if (src[pos] == '\r') { pos++; continue; }  // 丢弃回车，只按 \n 断行
+      if (src[pos] == '\n') break;
+      int cl = utf8CharLen(src.c_str() + pos);
+      String cp = src.substring(pos, pos + cl);  // 一个完整码点（含中文）
+      String test = line + cp;
       if (line.length() && g.textWidth(test.c_str()) > maxW) break;  // 超宽则换行
       line = test;
-      pos++;
+      pos += cl;
     }
     while (pos < src.length() && (src[pos] == '\n' || src[pos] == '\r')) pos++;
     if (line.length()) g.drawString(line.c_str(), x, y + lines * kRowH);
@@ -243,6 +268,53 @@ bool updateAtBlock(lgfx::LovyanGFX &g, const StatusInfo &s, String &cache) {
   return true;
 }
 
+// 把状态快照展开为可滚动文本行（标签+数值/AT），供「屏幕显示」页按偏移绘制
+void wrapInto(lgfx::LovyanGFX &g, const char *text, int16_t maxW, uint16_t color,
+              std::vector<std::pair<String, uint16_t>> &out);  // 前向声明
+void buildScreenLines(lgfx::LovyanGFX &g, const StatusInfo &s,
+                      std::vector<std::pair<String, uint16_t>> &out) {
+  auto add = [&](const String &t, uint16_t c) { out.push_back({t, c}); };
+  add("WIFI: " + String(s.wifiUp ? "UP" : (s.apMode ? "AP" : "DOWN")),
+      s.wifiUp ? kOk : (s.apMode ? kCmd : kErr));
+  add("IP: " + String(s.ip), s.wifiUp ? kValue : (s.apMode ? kCmd : kErr));
+  add("RSSI: " + (s.wifiUp ? String(s.rssi) + " dBm" : String("-")), kValue);
+  add("UPTIME: " + String(s.uptimeSec) + " s", kValue);
+  add("HEAP: " + fmtBytes(s.freeHeap), kValue);
+  add("PSRAM: " + (s.psramSize ? fmtBytes(s.freePsram) + "/" + fmtBytes(s.psramSize)
+                               : String("-")),
+      kValue);
+  add("RGB: " + String(s.ledName), kValue);
+  add("", kLine);
+  add("LAST AT", kLabel);
+  if (s.lastPort) add("UART" + String(s.lastPort), kLabel);
+  const int16_t maxW = g.width() - kPad * 2;
+  if (s.lastCmd && *s.lastCmd) wrapInto(g, s.lastCmd, maxW, kCmd, out);
+  if (s.lastResp && *s.lastResp) wrapInto(g, s.lastResp, maxW, kResp, out);
+}
+
+// 按显示宽度对文本软换行，逐行压入 out（与 drawWrapped 同策略）
+void wrapInto(lgfx::LovyanGFX &g, const char *text, int16_t maxW, uint16_t color,
+              std::vector<std::pair<String, uint16_t>> &out) {
+  if (!text) return;
+  String src = text;
+  size_t pos = 0;
+  while (pos < src.length()) {
+    String line;
+    while (pos < src.length()) {
+      if (src[pos] == '\r') { pos++; continue; }
+      if (src[pos] == '\n') { pos++; break; }
+      int cl = utf8CharLen(src.c_str() + pos);
+      String cp = src.substring(pos, pos + cl);  // 完整码点（含中文）
+      String test = line + cp;
+      if (line.length() && g.textWidth(test.c_str()) > maxW) break;
+      line = test;
+      pos += cl;
+    }
+    while (pos < src.length() && (src[pos] == '\n' || src[pos] == '\r')) pos++;
+    if (line.length()) out.push_back({line, color});
+  }
+}
+
 }  // namespace
 
 // ---------- Display ----------
@@ -257,11 +329,24 @@ struct Display::Impl {
   String clockCache;                // 标题栏时钟上一次渲染的文本
   bool screenOn = true;             // 屏幕点亮状态
   uint8_t bright = cfg::kTftBacklight;  // 当前背光亮度百分比（重启复位为默认）
+  Chrome _chrome = Chrome::kStatus;     // 当前已绘制的页面框架类型
+
+  // 屏幕实时预览缓存（方案 B）：主循环预编码 JPEG，HTTP 处理器仅复制返回，
+  // 避免把重编码（~50-200ms）压在 async_tcp 任务上导致整个 Web 卡顿
+  uint8_t *_jpgBuf = nullptr;            // PSRAM 中的 JPEG 缓存（容量 w*h*3）
+  size_t _jpgLen = 0;                    // 当前缓存 JPEG 字节数
+  uint32_t _jpgLastMs = 0;               // 上次编码时间戳（节流用）
+  uint32_t _jpgWantedMs = 0;             // 最近一次被请求预览的时间戳（按需生成门控）
+  SemaphoreHandle_t _jpgMux = nullptr;   // 保护缓存读写（主循环写 / HTTP 读）
 };
 
 Display::Display() : _impl(nullptr) {}
 
 Display::~Display() {
+  if (_impl) {
+    if (_impl->_jpgBuf) { free(_impl->_jpgBuf); _impl->_jpgBuf = nullptr; }
+    if (_impl->_jpgMux) { vSemaphoreDelete(_impl->_jpgMux); _impl->_jpgMux = nullptr; }
+  }
   delete _impl;
   _impl = nullptr;
 }
@@ -286,7 +371,20 @@ bool Display::begin() {
   if (!_impl->hasFb) {
     _log.addf(LogLevel::kWarn, "disp", "帧缓冲分配失败，退化为直绘模式");
   }
-  paintChrome(target());
+  // 实时预览缓存：与帧缓冲同放 PSRAM；容量取原始 RGB 大小（JPEG 必小于原始，留足余量）
+  // 分配失败时 /api/screen 返回 503，不影响其它功能
+  if (_impl->hasFb) {
+    _impl->_jpgBuf = (uint8_t *)ps_malloc((size_t)_impl->lcd.width() * _impl->lcd.height() * 3);
+    _impl->_jpgMux = xSemaphoreCreateMutex();
+    if (!_impl->_jpgBuf || !_impl->_jpgMux) {
+      _log.addf(LogLevel::kWarn, "disp", "屏幕预览缓存分配失败，/api/screen 将不可用");
+      if (_impl->_jpgBuf) { free(_impl->_jpgBuf); _impl->_jpgBuf = nullptr; }
+      if (_impl->_jpgMux) { vSemaphoreDelete(_impl->_jpgMux); _impl->_jpgMux = nullptr; }
+    }
+  }
+  FontCN::instance().init();   // 载入中文点阵字体（资源分区 /cnfont.bin -> PSRAM）
+  paintFrame(target(), "SMS Forwarder", kStatusFooter);
+  _impl->_chrome = Chrome::kStatus;
   pushFrame();
   _log.addf(LogLevel::kInfo, "disp", "ST7789 就绪，帧缓冲 %u KB（%s）",
             (unsigned)(_impl->fb.bufferLength() / 1024),
@@ -324,7 +422,8 @@ void Display::setScreenOn(bool on) {
   if (on) {
     _impl->lcd.wakeup();
     setBrightness(_impl->bright);   // 唤醒后恢复当前亮度（睡眠会关掉 PWM 输出）
-    paintChrome(target());          // 重新铺静态框架（画进帧缓冲）
+    paintFrame(target(), "SMS Forwarder", kStatusFooter);  // 重新铺静态框架
+    _impl->_chrome = Chrome::kStatus;
     for (uint8_t i = 0; i < kRowCount; i++) {
       _impl->rows[i] = String();      // 清缓存，下一帧补画所有字段
       _impl->rowColors[i] = 0;
@@ -347,6 +446,17 @@ bool Display::screenOn() const { return _impl && _impl->screenOn; }
 void Display::render(const StatusInfo &info) {
   if (!_impl || !_impl->screenOn) return;   // 熄屏时完全不推数据
   lgfx::LovyanGFX &g = target();
+  FontCN::instance().applyTo(g);  // 数值/AT 区使用中文点阵字体
+
+  // 从菜单/屏幕显示页切回状态页时，先重铺状态页框架（标题/标签/分隔线/页脚）
+  if (_impl->_chrome != Chrome::kStatus) {
+    paintFrame(g, "SMS Forwarder", kStatusFooter);
+    for (auto &r : _impl->rows) r = String();
+    for (auto &c : _impl->rowColors) c = 0;
+    _impl->atCache = String();
+    _impl->clockCache = String();
+    _impl->_chrome = Chrome::kStatus;
+  }
 
   // 标题栏右端：当前时钟（变化才重绘，约每秒一次）
   bool dirty = updateClock(g, info.time, _impl->clockCache);
@@ -379,4 +489,209 @@ void Display::render(const StatusInfo &info) {
   dirty |= updateAtBlock(g, info, _impl->atCache);
 
   if (dirty) pushFrame();
+}
+
+// 渲染菜单页：整页重绘（菜单切换频率低，无需做局部 diff）
+// 标题栏 + 选项列表（高亮当前项，超出可视区自动滚屏）+ 可选正文 + 页脚
+void Display::renderMenu(const char *title, const char *const items[],
+                         uint8_t itemCount, int8_t sel,
+                         const char *const info[], uint8_t infoCount,
+                         const char *foot) {
+  if (!_impl) return;
+  lgfx::LovyanGFX &g = target();
+
+  g.fillScreen(kBlack);
+  g.setTextDatum(textdatum_t::top_left);
+
+  // 标题栏
+  g.fillRect(0, 0, g.width(), kHeaderH, kHeaderBg);
+  FontCN::instance().applyTo(g);  // 菜单标题与选项使用中文点阵字体
+  g.setTextColor(kValue);
+  g.drawString(title ? title : "", kPad, 8);
+
+  const int16_t top = kHeaderH + 10;
+  const int16_t footerY = g.height() - 14;
+
+  if (infoCount > 0) {
+    // 纯信息页：逐行绘制正文
+    g.setTextColor(kValue);
+    for (uint8_t i = 0; i < infoCount; i++) {
+      int16_t y = top + i * kRowH;
+      if (y > footerY - kRowH) break;
+      g.drawString(info[i] ? info[i] : "", kPad, y);
+    }
+  } else if (itemCount > 0) {
+    // 选项列表：计算可视窗口，保证 sel 始终可见
+    const int maxRows = (footerY - top) / kRowH;
+    int16_t first = 0;
+    if ((int)itemCount > maxRows && sel >= 0) {
+      if (sel - first >= maxRows) first = sel - maxRows + 1;
+      if (sel < first) first = sel;
+    }
+    for (uint8_t i = (uint8_t)first;
+         i < itemCount && (int)(i - first) < maxRows; i++) {
+      const int16_t y = top + (i - first) * kRowH;
+      const bool hi = (int8_t)i == sel;
+      if (hi) g.fillRect(0, y - 2, g.width(), kRowH, kHeaderBg);
+      g.setTextColor(hi ? kValue : kLabel);
+      g.drawString(items[i] ? items[i] : "", kPad, y);
+    }
+  }
+
+  // 页脚提示
+  if (foot) {
+    g.setFont(&lgfx::fonts::Font0);
+    g.setTextColor(kHint);
+    g.drawString(foot, kPad, footerY);
+  }
+  _impl->_chrome = Chrome::kMenu;  // 记下当前框架为菜单，离开时状态页会据此重铺
+  pushFrame();
+}
+
+// 「屏幕显示」页：把状态快照展开为可滚动文本行并整页重绘
+// info：状态快照；scroll：滚动偏移（行）；返回应用后的偏移（已夹紧到有效范围）
+int Display::renderScreenView(const StatusInfo &info, int scroll) {
+  if (!_impl || !_impl->screenOn) return scroll;
+  lgfx::LovyanGFX &g = target();
+
+  g.fillScreen(kBlack);
+  g.setTextDatum(textdatum_t::top_left);
+  FontCN::instance().applyTo(g);  // 屏幕显示页正文使用中文点阵字体
+
+  // 标题栏
+  g.fillRect(0, 0, g.width(), kHeaderH, kHeaderBg);
+  g.setTextColor(kValue);
+  g.drawString("屏幕显示", kPad, 8);
+
+  // 由状态快照展开的可滚动行（实时内容）
+  std::vector<std::pair<String, uint16_t>> lines;
+  buildScreenLines(g, info, lines);
+  const int total = (int)lines.size();
+
+  const int16_t top = kHeaderH + 8;
+  const int16_t footerY = g.height() - 14;
+  const int visible = (footerY - top) / kRowH;
+  if (scroll < 0) scroll = 0;
+  if (scroll > total - visible) scroll = total - visible;
+  if (scroll < 0) scroll = 0;
+
+  for (int i = 0; i < visible && scroll + i < total; i++) {
+    auto &ln = lines[scroll + i];
+    g.setTextColor(ln.second);
+    g.drawString(ln.first.c_str(), kPad, top + i * kRowH);
+  }
+
+  // 页脚：操作提示 + 位置（ASCII，Font0 仅含 ASCII 字形）
+  g.setFont(&lgfx::fonts::Font0);
+  g.setTextColor(kHint);
+  String foot = "U/D:scroll O:ref B:back  " + String(scroll + 1) + "/" + String(total);
+  g.drawString(foot.c_str(), kPad, footerY);
+
+  pushFrame();
+  _impl->_chrome = Chrome::kScreen;
+  return scroll;
+}
+
+// 「屏幕显示」页可视行数（供上层计算翻页步长）
+int Display::screenVisibleLines() const {
+  if (!_impl) return 1;
+  const int16_t top = kHeaderH + 8;
+  const int16_t footerY = _impl->lcd.height() - 14;
+  int v = (footerY - top) / kRowH;
+  return v > 0 ? v : 1;
+}
+
+// 主循环定时预编码：把当前帧缓冲编码为 JPEG 写入预览缓存（方案 B 的「生产者」）
+// 自节流（约 1.4fps），仅做像素转换 + 编码，结果锁存入 _jpgBuf；HTTP 处理器只负责复制返回
+// 仅当最近数秒内有 /api/screen 请求（有人正在看预览）时才生成，否则完全不编码，
+// 避免无人观看时仍持续占用主循环与 PSRAM
+void Display::refreshScreenJpg() {
+  if (!_impl || !_impl->hasFb || !_impl->_jpgBuf || !_impl->_jpgMux) return;
+  const uint32_t now = millis();
+  if (now - _impl->_jpgWantedMs > 3000) return;  // 超过 3s 无请求 -> 停止生成
+  if (!_impl->screenOn) return;   // 熄屏时不更新缓存（保留最后一帧）
+  if (now - _impl->_jpgLastMs < 700) return;   // 节流，约 1.4fps
+  _impl->_jpgLastMs = now;
+
+  lgfx::LGFX_Sprite &fb = _impl->fb;
+  const int w = fb.width(), h = fb.height();
+  // 中转：帧缓冲 RGB565 -> 连续 RGB888（jpge 需要 RGB 交错、逐行自上而下）
+  const size_t rgbBytes = (size_t)w * h * 3;
+  uint8_t *rgb = (uint8_t *)ps_malloc(rgbBytes);
+  if (!rgb) return;
+  // 注意：LovyanGFX 的 rgb565_2Byte 帧缓冲实际以 swap565 存储（两字节顺序与标准
+  // RGB565 相反，便于直传面板），须先交换高低字节还原成标准 RGB565 再展开，否则
+  // 预览会出现 R/B 错位，与屏幕实际显示颜色不一致
+  const uint8_t *src = (const uint8_t *)fb.getBuffer();
+  uint8_t *p = rgb;
+  for (int y = 0; y < h; y++) {
+    const uint8_t *row = src + (size_t)y * w * 2;
+    for (int x = 0; x < w; x++) {
+      // 还原为标准 RGB565：交换高低字节
+      uint16_t px = (uint16_t)row[x * 2 + 1] | ((uint16_t)row[x * 2] << 8);
+      uint8_t r5 = (px >> 11) & 0x1F, g6 = (px >> 5) & 0x3F, b5 = px & 0x1F;
+      *p++ = (uint8_t)((r5 << 3) | (r5 >> 2));   // R
+      *p++ = (uint8_t)((g6 << 2) | (g6 >> 4));   // G
+      *p++ = (uint8_t)((b5 << 3) | (b5 >> 2));   // B
+    }
+  }
+
+  // 注意：jpge::params 是普通聚合结构体、无默认构造函数，必须值初始化（prm{}）把
+  // 全部成员清零；否则 m_subsampling 等会是垃圾值，init() 的 switch 不命中任何 case、
+  // m_mcu_x/m_mcu_y 保持未初始化，随后按垃圾尺寸分配并越界写入 -> panic 重启（黑屏闪退）
+  jpge::params prm{};
+  prm.m_quality = 80;             // 质量 1-100
+  prm.m_subsampling = jpge::H2V2; // 彩色 4:2:0；默认 Y_ONLY 会变灰度
+  int cap = (int)rgbBytes;
+  uint8_t *jbuf = (uint8_t *)ps_malloc(cap);
+  size_t outLen = 0;
+  if (jbuf) {
+    int jsize = cap;
+    if (jpge::compress_image_to_jpeg_file_in_memory(jbuf, jsize, w, h, 3, rgb, prm) && jsize > 0) {
+      outLen = (size_t)jsize;
+    } else {
+      // 容量不足时 jsize 会被置为所需大小，扩容重试一次
+      free(jbuf);
+      jbuf = (uint8_t *)ps_malloc(jsize > 0 ? (size_t)jsize : (size_t)cap * 2);
+      if (jbuf) {
+        int js2 = jsize;
+        if (jpge::compress_image_to_jpeg_file_in_memory(jbuf, js2, w, h, 3, rgb, prm) && js2 > 0)
+          outLen = (size_t)js2;
+      }
+    }
+  }
+  free(rgb);  // rgb 中转缓冲不再需要
+  if (!jbuf || outLen == 0) { if (jbuf) free(jbuf); return; }
+
+  // 锁存到缓存：加锁保证 HTTP 处理器读取到一致的一帧
+  if (xSemaphoreTake(_impl->_jpgMux, pdMS_TO_TICKS(50)) == pdTRUE) {
+    memcpy(_impl->_jpgBuf, jbuf, outLen);
+    _impl->_jpgLen = outLen;
+    xSemaphoreGive(_impl->_jpgMux);
+  }
+  free(jbuf);
+}
+
+// 由 HTTP 处理器在收到 /api/screen 时调用：标记“有人正在看预览”，
+// 主循环据此在最近数秒内持续生成 JPEG 缓存；无人请求则停止生成
+void Display::requestScreenPreview() {
+  if (_impl) _impl->_jpgWantedMs = millis();
+}
+
+// 屏幕实时预览（方案 B 的「消费者」）：仅从缓存复制当前 JPEG 帧，几乎零耗时，
+// 不再做任何编码，避免阻塞 async_tcp 任务导致整个 Web 卡顿。返回 PSRAM 缓冲区（调用方 free）
+uint8_t *Display::takeScreenJpg(size_t &outLen) {
+  outLen = 0;
+  if (!_impl || !_impl->_jpgBuf || !_impl->_jpgMux) return nullptr;
+  if (xSemaphoreTake(_impl->_jpgMux, pdMS_TO_TICKS(50)) != pdTRUE) return nullptr;
+  size_t len = _impl->_jpgLen;
+  uint8_t *out = nullptr;
+  if (len > 0) {
+    out = (uint8_t *)ps_malloc(len);
+    if (out) memcpy(out, _impl->_jpgBuf, len);
+  }
+  xSemaphoreGive(_impl->_jpgMux);
+  if (!out) return nullptr;
+  outLen = len;
+  return out;
 }

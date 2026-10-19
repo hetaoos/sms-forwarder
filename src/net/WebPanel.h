@@ -146,6 +146,13 @@ class WebPanel {
   void handleDispGet(AsyncWebServerRequest *req);
   void handleDispPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+  // 远程按键注入：POST {"key":"up"|"down"|"ok"|"back", "event"?:"click"|"long"|"repeat"}
+  // 事件经 KeyInject 队列交给主循环 UI 状态机，与物理按键同一路径
+  void handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 屏幕实时预览：抓取当前帧缓冲编码为 BMP 返回（方案 B 的 /api/screen）
+  void handleScreenGet(AsyncWebServerRequest *req);
+
   // 系统汇总状态
   void handleStatus(AsyncWebServerRequest *req);
 

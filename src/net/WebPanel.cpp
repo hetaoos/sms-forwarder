@@ -4,9 +4,12 @@
 #include <AsyncJson.h>  // AsyncJsonResponse：OTA 状态等结构化响应
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <memory>       // std::unique_ptr：/api/screen 抓图缓冲自动释放
 
 #include <Arduino.h>
 
+#include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
+#include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
 #include "net/StateJson.h"
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
@@ -410,10 +413,18 @@ void WebPanel::setupRoutes() {
   // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) { handleDispGet(req); });
 
+  // 屏幕实时预览：抓取帧缓冲编码 BMP 返回（方案 B）；前端 <img> 轮询实现 ~1-2fps
+  _server.on("/api/screen", HTTP_GET, [this](AsyncWebServerRequest *req) { handleScreenGet(req); });
+
   // 设置屏幕：JSON {"on":bool?,"bright":0-100?}，两个字段都可选
   // （只传其一即可；bright 越界自动钳制）；返回最新状态
   _server.on("/api/disp", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleDispPost(req, json); });
+
+  // 远程按键注入：POST {"key":"up"|"down"|"ok"|"back"，可选 "event":"click"|"long"|"repeat"}
+  // 仅 click 默认可不传；事件经队列交给主循环 UI 状态机（与物理按键同路径）
+  _server.on("/api/key", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleKeyPost(req, json); });
 
   // ---- 系统 ----
   // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
@@ -942,6 +953,33 @@ void WebPanel::handleDispGet(AsyncWebServerRequest *req) {
   sendJson(req, stateDispJson(_display));
 }
 
+// 屏幕实时预览（方案 B）：抓取当前帧缓冲编码为 JPEG 直接返回
+// PSRAM 缓冲区由 shared_ptr（free 删除器）持有，流式发送完成后随响应对象析构释放
+void WebPanel::handleScreenGet(AsyncWebServerRequest *req) {
+  _display.requestScreenPreview();   // 标记“有人正在看预览”，驱动主循环按需生成 JPEG 缓存
+  size_t len = 0;
+  uint8_t *buf = _display.takeScreenJpg(len);
+  if (!buf || len == 0) {
+    req->send(503, "text/plain", "framebuffer unavailable");
+    return;
+  }
+  // shared_ptr + free 删除器：与 ps_malloc 配对；可拷贝以存入 std::function，
+  // 随响应析构自动释放，避免内存泄漏（std::function 要求目标可拷贝，故不用 unique_ptr）
+  std::shared_ptr<uint8_t> holder(buf, [](uint8_t *p) { free(p); });
+  // 流式填充：按 index 从缓冲区拷贝至多 maxLen 字节；index>=len 返回 0 表示结束
+  AsyncWebServerResponse *res =
+      req->beginResponse("image/jpeg", len,
+          [holder, len](uint8_t *out, size_t maxLen, size_t index) -> size_t {
+            if (index >= len) return 0;
+            size_t n = len - index;
+            if (n > maxLen) n = maxLen;
+            memcpy(out, holder.get() + index, n);
+            return n;
+          });
+  res->addHeader("Cache-Control", "no-store");  // 实时画面，禁用缓存
+  req->send(res);
+}
+
 void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "invalid json");
@@ -958,6 +996,29 @@ void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
     _display.setBrightness((uint8_t)b);
   }
   sendJson(req, stateDispJson(_display));
+}
+
+// 远程按键注入：把 Web 端的 UP/DOWN/OK/BACK 当作物理按键驱动设备 UI
+void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>() || !json["key"].is<const char *>()) {
+    sendErr(req, 400, "key required");
+    return;
+  }
+  String k = json["key"].as<String>();
+  KeyEvent ev = KeyEvent::kClick;   // 默认短按；可显式指定 long/repeat
+  if (json["event"].is<const char *>()) {
+    String e = json["event"].as<String>();
+    if (e == "long") ev = KeyEvent::kLongPress;
+    else if (e == "repeat") ev = KeyEvent::kRepeat;
+  }
+  KeyId key = KeyId::kCount;        // 非法初值
+  if (k == "ok") key = KeyId::kOk;
+  else if (k == "up") key = KeyId::kUp;
+  else if (k == "down") key = KeyId::kDown;
+  else if (k == "back") key = KeyId::kBack;
+  if (key == KeyId::kCount) { sendErr(req, 400, "unknown key"); return; }
+  KeyInject::instance().push(key, ev);
+  sendJson(req, "{\"ok\":true}");
 }
 
 void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {

@@ -118,10 +118,20 @@ def _swap_to_gz(data_dir, src_dir):
         for fname in sorted(files):
             src_path = os.path.join(root, fname)
             rel = os.path.relpath(src_path, src_dir)
-            dst_path = os.path.join(data_dir, rel + ".gz")
-            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             with open(src_path, "rb") as f:
                 content = f.read()
+            # 字体等二进制资源（.bin）保持原样上传，不 gzip：避免运行时解压依赖，
+            # 也能被 LittleFS 直接按名读取（如 /cnfont.bin）。
+            if fname.endswith(".bin"):
+                dst_path = os.path.join(data_dir, rel)
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                with open(dst_path, "wb") as df:
+                    df.write(content)
+                total_raw += len(content)
+                continue
+            # 其余文本资源（html/js/css）gzip 后上传，省 flash
+            dst_path = os.path.join(data_dir, rel + ".gz")
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             # mtime=0：去除时间戳，使 .gz 内容确定性可复现，避免每次构建的
             # LittleFS 镜像哈希都变化（利于缓存与产物校验）
             with gzip.GzipFile(dst_path, "wb", mtime=0) as gf:
