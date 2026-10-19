@@ -583,6 +583,7 @@ function pageSerial() {
   return {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
     cmd: '', localHist: [], localIdx: -1,
+    atStats: {},               // GET /api/at/stats（存储位置/容量等）
     // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
     get entries() { return Alpine.store('live').at; },
     get stats() { return Alpine.store('live').stats; },
@@ -591,8 +592,16 @@ function pageSerial() {
         const r = await apiFetch('/api/at/baud');
         if (r.ok) this.baud = String((await r.json()).default || 115200);
       } catch (e) {}
+      this.loadAtStats();
       // 仓库为空（SSE 尚未送达）时兜底拉一次历史
       if (!Alpine.store('live').at.length) restSnapshot();
+    },
+    // AT 历史存储统计（PSRAM 落点 / 容量），与日志页对称
+    async loadAtStats() {
+      try {
+        const r = await apiFetch('/api/at/stats');
+        if (r.ok) this.atStats = await r.json();
+      } catch (e) {}
     },
     scrollBottom() {
       this.$nextTick(() => {
@@ -628,6 +637,7 @@ function pageSerial() {
       const r = await apiOp('/api/at/clear', null, '已清空历史');
       if (!r) return;
       Alpine.store('live').at = [];
+      this.loadAtStats();
     },
     async reset() {
       const p = parseInt(this.port, 10);
@@ -647,6 +657,19 @@ function pageSerial() {
       }
     },
     portStat(p) { return this.stats[p - 1] || {}; },
+    // 存储位置文案：区分「PSRAM」/「无 PSRAM」/「有 PSRAM 但分配失败」
+    atStoreText() {
+      if (!this.atStats.max) return '-';
+      return this.atStats.psram ? 'PSRAM' : '内部堆';
+    },
+    atStoreHint() {
+      if (this.atStats.psram) return '';
+      const total = this.atStats.psramTotal || 0;
+      return total
+          ? ('设备有 PSRAM（剩余 ' + fmtBytes(this.atStats.psramFree) + ' / ' + fmtBytes(total) +
+             '），但 AT 历史缓冲分配失败，已退化到内部堆；功能不受影响')
+          : '设备未启用 PSRAM（或上电检测失败），AT 历史缓冲落在内部堆；功能不受影响';
+    },
     fmt, fmtBytes,
   };
 }

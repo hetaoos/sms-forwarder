@@ -93,8 +93,23 @@ void SerialBridge::begin() {
   sInstance = this;
   for (uint8_t i = 0; i < 2; i++) _ports[i].mutex = xSemaphoreCreateMutex();
   _histMutex = xSemaphoreCreateMutex();
+  // AT 历史环形缓冲：PSRAM 优先（容量放宽），失败退化内部堆（收紧条数），
+  // 与设备日志 _log 同策略；分配就绪后再起抽数任务，避免历史写入竞态
+  _hist.begin(cfg::kAtHistoryRingSize);
   xTaskCreatePinnedToCore(&SerialBridge::taskEntry, "uart-pump", 8192, this, 2,
                           &_task, 1);
+  _log.addf(LogLevel::kInfo, "uart",
+            "AT 历史缓冲就绪：%u 条 x %u B = %u B，位于 %s", (unsigned)_hist.max(),
+            (unsigned)sizeof(AtHistory::Entry),
+            (unsigned)(sizeof(AtHistory::Entry) * _hist.max()),
+            _hist.psramOk() ? "PSRAM" : "内部堆");
+  // 兜底说明：板子无 PSRAM 时属预期，有 PSRAM 却退化则说明 PSRAM 初始化失败
+  // 或剩余空间不足，串口一眼可辨
+  if (!_hist.psramOk()) {
+    _log.addf(LogLevel::kWarn, "uart",
+              "AT 历史 PSRAM 分配失败，已退化到内部堆（PSRAM %u B，剩余 %u B）",
+              (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
+  }
 }
 
 // FreeRTOS 任务入口：arg 为 SerialBridge 实例指针
@@ -478,6 +493,14 @@ uint32_t SerialBridge::lastHistoryId() {
   uint32_t id = _hist.lastId();
   unlockHist();
   return id;
+}
+
+// AT 历史存储统计（PSRAM 落点 / 容量 / 占用），供 /api/at/stats 使用
+String SerialBridge::historyStats() {
+  lockHist();
+  String json = _hist.statsJson();
+  unlockHist();
+  return json;
 }
 
 // 取最近一条记录内容；port/cmd/resp 为出参，找到返回 true

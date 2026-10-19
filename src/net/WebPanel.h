@@ -126,6 +126,7 @@ class WebPanel {
   void handleAtSend(AsyncWebServerRequest *req);
   void handleAtHist(AsyncWebServerRequest *req);
   void handleAtClear(AsyncWebServerRequest *req);
+  void handleAtStats(AsyncWebServerRequest *req);
   void handleAtReset(AsyncWebServerRequest *req);
   void handleUartStats(AsyncWebServerRequest *req);
   void handleAtBaud(AsyncWebServerRequest *req);

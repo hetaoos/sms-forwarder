@@ -143,6 +143,19 @@ constexpr uint8_t  kLogTagMax = 24;           // 标签字段长度（含 '\0'�
 constexpr uint8_t  kLogMsgMax = 192;          // 正文字段长度（含 '\0'，超出截断）
 constexpr uint8_t  kLogPageSizeMax = 100;     // 分页查询每页条数上限
 
+// ---------------- AT 历史（串口日志，PSRAM 环形缓冲）----------------
+// 与设备日志 _log 同思路：整块缓冲优先分配在 PSRAM，与 WiFi/LwIP/SSL 等
+// 内部堆使用者隔离；有 PSRAM 时容量放宽（kAtHistoryRingSize），无 PSRAM 或
+// 分配失败退化到内部堆并按 kAtHistoryRingSizeNoPsram 收紧，功能不变。
+// 条目为定长结构（cmd/resp 内嵌字符数组，超长截断），写入只做 memcpy，
+// 运行期零堆分配、无碎片，抽数任务 / HTTP 任务等任意上下文可安全调用。
+// 单条目约 4+1+256+1024 = 1285B：PSRAM 下 512 条 ≈ 658KB，足够长时段回溯；
+// 无 PSRAM 时收紧到 30 条 ≈ 38KB，避免挤占本就紧张的内部堆。
+constexpr uint16_t kAtHistoryRingSize = 512;       // PSRAM 下环形缓冲条数上限（FIFO 淘汰最旧）
+constexpr uint16_t kAtHistoryRingSizeNoPsram = 30; // 退化到内部堆时的条数上限
+constexpr uint16_t kAtHistoryCmdMax = 256;         // 命令字段长度（含 '\0'，超长截断）
+constexpr uint16_t kAtHistoryRespMax = 1024;       // 响应字段长度（含 '\0'，超长截断）
+
 // ---------------- 短信（4G 模组） ----------------
 constexpr uint8_t kSmsMaxModems = 2;          // 可接模组数（与双串口一一对应）
 constexpr uint16_t kSmsStoreMax = 1000;       // 短信存储条数上限（FIFO 淘汰）

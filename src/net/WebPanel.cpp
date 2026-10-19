@@ -362,6 +362,9 @@ void WebPanel::setupRoutes() {
   // 清空历史记录
   _server.on("/api/at/clear", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtClear(req); });
 
+  // AT 历史存储统计（PSRAM 环形缓冲，与 /api/logs/stats 对称）
+  _server.on("/api/at/stats", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtStats(req); });
+
   // 串口重新初始化（手动兜底）：?port=1|2
   _server.on("/api/at/reset", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtReset(req); });
 
@@ -696,6 +699,11 @@ void WebPanel::handleAtHist(AsyncWebServerRequest *req) {
 void WebPanel::handleAtClear(AsyncWebServerRequest *req) {
   _bridge.clearHistory();
   sendOk(req);
+}
+
+// AT 历史存储统计（PSRAM/容量等，与 /api/logs/stats 对称）
+void WebPanel::handleAtStats(AsyncWebServerRequest *req) {
+  sendJson(req, _bridge.historyStats());
 }
 
 void WebPanel::handleAtReset(AsyncWebServerRequest *req) {

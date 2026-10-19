@@ -104,6 +104,9 @@ class SerialBridge {
   // 最新历史记录 ID
   uint32_t lastHistoryId();
 
+  // AT 历史存储统计 JSON（PSRAM/容量等，与 /api/logs/stats 对称）
+  String historyStats();
+
   // 取最近一条记录；有则通过引用返回内容并返回 true
   // port/cmd/resp：出参，分别写回串口号/命令/响应
   bool lastEntry(uint8_t &port, String &cmd, String &resp);

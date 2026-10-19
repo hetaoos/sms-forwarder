@@ -10,6 +10,19 @@
     </div>
   </div>
 
+  <!-- 存储信息（与运行日志页对称） -->
+  <div class="stats">
+    <div class="stat"><div class="k">当前条数</div>
+      <div class="v" x-text="(atStats.total == null ? '-' : atStats.total) + ' 条'"></div></div>
+    <div class="stat"><div class="k">缓冲容量</div>
+      <div class="v" x-text="(atStats.max == null ? '-' : atStats.max) + ' 条'"></div></div>
+    <div class="stat"><div class="k">占用</div><div class="v" x-text="fmtBytes(atStats.bytes)"></div></div>
+    <div class="stat"><div class="k">存储位置</div>
+      <div class="v" style="font-size:15px" x-text="atStoreText()"></div></div>
+  </div>
+  <div class="hint" x-show="atStats.max && !atStats.psram" x-text="atStoreHint()"
+       style="margin-top:-6px;margin-bottom:12px"></div>
+
   <!-- 参数栏 -->
   <div class="card">
     <div class="bar">
@@ -63,7 +76,7 @@
 
   <!-- 日志 -->
   <div class="card">
-    <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 300 条）'"></span></h3>
+    <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 ' + (atStats.max || '-') + ' 条）'"></span></h3>
     <div class="console" x-ref="console">
       <template x-for="e in entries" :key="e.id">
         <div class="entry">
