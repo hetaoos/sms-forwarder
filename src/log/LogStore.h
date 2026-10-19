@@ -119,6 +119,13 @@ class LogStore {
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护写入与查询
 };
 
+// 日志 sink：注册后每条日志在 add() 末尾回调（用于 MQTT 实时推送等）。
+// 回调在持锁外的串口镜像之后执行，运行于调用 add() 的任意任务上下文；
+// 参数 ts 为日志时间戳（纪元秒或开机秒数）。回调须自行保证线程安全与轻量
+// （如直接 esp_mqtt enqueue，内部队列已做同步）。
+using LogSinkFn = void (*)(uint8_t level, const char *tag, const char *msg, uint32_t ts);
+void setLogSink(LogSinkFn fn);
+
 // 全局日志实例访问器：全工程唯一的日志出口，各模块与 App 取到的是同一份。
 // 用于不便显式注入依赖的上下文（串口抽数任务回调、命名空间级函数、静态辅助
 // 等）；由 App::begin() 里的 _log.begin() 完成初始化，此前调用只输出到串口。

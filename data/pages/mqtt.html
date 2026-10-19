@@ -1,32 +1,88 @@
-<div class="page-head">
-  <div>
-    <h2>MQTT</h2>
-    <p class="page-desc">接入 MQTT Broker，实现事件上报与远程控制</p>
+<div x-data="pageMqtt()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>MQTT 设置</h2>
+      <p class="page-desc">连接标准 MQTT Broker，把短信 / SIM / 启动 / 上线 / 日志以 JSON 形式实时推送出去，并通过命令主题接收远程控制（发短信、发 AT、重启等）。</p>
+    </div>
+    <button class="btn sm" @click="init()" :disabled="loading">刷新</button>
   </div>
-  <span class="badge warn">规划中</span>
-</div>
 
-<div class="card">
-  <div class="empty">
-    <div class="icon">&#128225;</div>
-    <h3>功能规划中</h3>
-    <p>计划支持连接任意标准 MQTT Broker（TLS 可选），与 Home Assistant 等平台联动。</p>
+  <!-- 总开关 -->
+  <div class="card">
+    <div class="bar">
+      <div>
+        <h3 style="margin:0">功能启用</h3>
+        <div class="hint" style="margin-top:6px">关闭后不再连接 Broker，也不会发布任何事件（已保存的连接 / 主题配置保留）。</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" x-model="f.enabled" @change="setEnabled($event.target.checked)">
+        <span class="slider"></span>
+      </label>
+    </div>
   </div>
-</div>
 
-<div class="grid cols2">
+  <!-- Broker 配置 -->
   <div class="card">
-    <h3>上报（发布）</h3>
-    <div class="row"><span class="k">事件主题</span><span class="v">短信 / 来电 / 状态变化，JSON 报文</span></div>
-    <div class="row"><span class="k">在线状态</span><span class="v">LWT 遗嘱消息，掉线自动感知</span></div>
-    <div class="row"><span class="k">逐条日志</span><span class="v">运行日志实时推送</span></div>
-    <div class="row"><span class="k">QoS</span><span class="v">QoS 1，离线补发</span></div>
+    <h3>Broker 连接 <span class="sub" x-show="!cfg.configured" style="color:var(--warn)">· 尚未配置</span></h3>
+    <div class="bar">
+      <div class="field" style="flex:1;min-width:200px"><label>服务器地址 *</label>
+        <input x-model="f.server" placeholder="例如 192.168.1.10 或 broker.example.com"></div>
+      <div class="field"><label>端口</label>
+        <input x-model.number="f.port" type="number" min="1" max="65535" placeholder="1883"></div>
+    </div>
+    <div class="bar">
+      <label class="check"><input type="checkbox" x-model="f.useTls"><span>使用 TLS（mqtts）</span></label>
+      <div class="field" style="flex:1;min-width:140px"><label>用户名</label>
+        <input x-model="f.user" placeholder="匿名 Broker 可留空" autocomplete="off"></div>
+      <div class="field" style="flex:1;min-width:140px"><label>密码</label>
+        <input x-model="f.pass" type="password" placeholder="留空表示保持已保存密码" autocomplete="new-password"></div>
+    </div>
+    <div class="bar">
+      <div class="field" style="flex:1;min-width:160px"><label>ClientID</label>
+        <input x-model="f.clientId" placeholder="留空则用 SMSFwd-&lt;设备ID&gt;"></div>
+      <div class="field" style="flex:1;min-width:140px"><label>主题前缀</label>
+        <input x-model="f.topicPrefix" placeholder="例如 smsf"></div>
+      <div class="field"><label>保活(s)</label>
+        <input x-model.number="f.keepAlive" type="number" min="10" max="3600" placeholder="60"></div>
+    </div>
+    <div class="bar">
+      <label class="check"><input type="checkbox" x-model="f.subscribeEnabled"><span>订阅命令主题（接收远程控制）</span></label>
+    </div>
+    <div class="bar" style="margin-top:10px">
+      <button class="btn" @click="save()" :disabled="saving" x-text="saving ? '保存中…' : '保存配置'"></button>
+      <button class="btn ghost" @click="test()" :disabled="saving || !cfg.configured" :class="{disabled: !cfg.configured}">发送测试消息</button>
+    </div>
+    <div :class="err ? 'form-err' : 'hint'" x-show="hint"><span class="ico" x-show="err">⚠</span><span x-text="hint"></span></div>
   </div>
+
+  <!-- 事件通知类型 -->
   <div class="card">
-    <h3>控制（订阅）</h3>
-    <div class="row"><span class="k">发送短信</span><span class="v">指令指定号码与内容</span></div>
-    <div class="row"><span class="k">AT 指令</span><span class="v">远程下发任意 AT 命令</span></div>
-    <div class="row"><span class="k">串口重init</span><span class="v">远程复位串口</span></div>
-    <div class="row"><span class="k">重启设备</span><span class="v">远程重启</span></div>
+    <h3>事件通知类型</h3>
+    <div class="hint" style="margin-bottom:10px">勾选的事件会以 JSON 报文发布到 <b>&lt;前缀&gt;/&lt;设备ID&gt;/&lt;类型&gt;</b>（如 <code>smsf/abcd1234ef56/sms</code>）。</div>
+    <div class="checks">
+      <template x-for="t in TYPES" :key="t.bit">
+        <label class="check"><input type="checkbox" :value="t.bit" x-model.number="sel"
+          :disabled="saving"><span x-text="t.label"></span></label>
+      </template>
+    </div>
+  </div>
+
+  <!-- 主题说明 -->
+  <div class="card">
+    <h3>主题与命令说明</h3>
+    <table class="table">
+      <thead><tr><th style="width:240px">主题 / 命令</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/sms</code></td><td>收到短信事件（from / message / time / modem）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/sim</code></td><td>SIM 插拔事件（port / ready）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/boot</code></td><td>设备启动完成（开机首次连上发布一次）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/online</code></td><td>设备（重新）上线通知</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/log</code></td><td>运行日志实时推送（限流 20 条/秒）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/status</code></td><td>设备状态（online/offline 遗嘱，retained）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/command</code></td><td>订阅：发送 JSON 命令（见下）</td></tr>
+        <tr><td><code>&lt;前缀&gt;/&lt;设备ID&gt;/command/response</code></td><td>命令执行结果回执</td></tr>
+      </tbody>
+    </table>
+    <div class="hint" style="margin-top:10px">支持的命令：<code>send_sms</code>(phone,content,可选 modem) · <code>send_at</code>(cmd,可选 modem/timeout) · <code>restart</code> · <code>reinit</code>(modem) · <code>info</code> · <code>help</code>。所有命令均需通过 command 主题下发 JSON，例如：<code>{"action":"send_sms","phone":"10086","content":"YE"}</code></div>
   </div>
 </div>

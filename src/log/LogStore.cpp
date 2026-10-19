@@ -60,6 +60,11 @@ LogStore &devLog() {
   return inst;
 }
 
+// 日志 sink 全局钩子：默认空（不推送）。MqttService 在 begin() 里注册，
+// 把运行日志实时 enqueue 到 MQTT Broker。
+static LogSinkFn g_logSink = nullptr;
+void setLogSink(LogSinkFn fn) { g_logSink = fn; }
+
 // max：条数上限（0 或越界取 cfg::kLogRingSize）。
 // PSRAM 优先分配（与短信/HTTP 等 DRAM 使用者隔离，容量按上限给足）；
 // 失败退化为内部堆，并按 kLogRingSizeNoPsram 收紧条数，避免挤占 DRAM
@@ -113,6 +118,10 @@ void LogStore::add(LogLevel level, const char *tag, const char *msg) {
   // 并发下最坏情况只是两行交错，不影响环形缓冲的一致性。
   Serial.printf("[%u][%s][%s] %s\r\n", (unsigned)id, levelName((uint8_t)level),
                 tag ? tag : "", msg ? msg : "");
+  // 日志 sink：注册的消费方（如 MQTT）在每条日志后拿到结构化字段；
+  // 在锁外调用，回调自身负责线程安全与轻量化（不可再回调 add 造成递归）。
+  if (g_logSink) g_logSink((uint8_t)level, tag ? tag : "", msg ? msg : "",
+                           _timeFn ? _timeFn() : (uint32_t)(millis() / 1000));
 }
 
 // level：级别；tag：模块标签；fmt：格式串（自动截断到 kLogMsgMax-1）

@@ -40,6 +40,8 @@ bool App::begin() {
   _wifi.begin();                       // 读 NVS 配置并启动连接状态机（非阻塞）
   _auth.begin();                       // 读 NVS 管理账号（无记录则写默认值）
   _email.begin(_wifi, _sms, _time);    // 邮件：载入 SMTP 配置（NVS）
+  _mqtt.begin(_wifi, _sms, _time, _log);  // MQTT：载入配置（NVS）+ 注册日志 sink
+  _mqtt.notifyStartup();               // 开机后首次连上 MQTT 时补发启动通知
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
@@ -55,12 +57,14 @@ bool App::begin() {
   _sms.setOnSmsReceivedCb([this](const String &sender, const String &text,
                                  uint32_t ts, int8_t modem) {
     _email.notifySms(sender, text, ts, modem);
+    _mqtt.notifySms(sender, text, ts, modem);
     _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（模组 %d）", sender.c_str(),
               (int)modem);
   });
   // SIM 运行时插拔 -> 邮件通知入队 + 设备日志入库
   _sms.setOnSimChangeCb([this](uint8_t port, bool ready) {
     _email.notifySim(port, ready);
+    _mqtt.notifySim(port, ready);
     _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM %s", (unsigned)port,
               ready ? "已插入" : "已拔出");
   });
@@ -123,6 +127,7 @@ void App::tick() {
   _events.tick();
   _sms.tick();
   _email.tick();                       // 邮件通知发送队列（无待发时零开销）
+  _mqtt.tick();                        // MQTT 连接维护 / 命令执行 / 事件发布
 
   if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
     _lastUiMs = millis();

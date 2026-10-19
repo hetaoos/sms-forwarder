@@ -145,13 +145,14 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events/sms/time/email/log：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/auth/events/sms/time/email/log/mqtt：各模块引用，保存供路由处理器使用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, AdminStore &auth, StatusBus &events,
                    SmsService &sms, TimeSync &time, EmailService &email,
-                   LogStore &log)
+                   LogStore &log, MqttService &mqtt)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events), _sms(sms), _time(time), _email(email), _log(log) {}
+      _events(events), _sms(sms), _time(time), _email(email), _mqtt(mqtt),
+      _log(log) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -510,6 +511,35 @@ void WebPanel::setupRoutes() {
   // schedMode=0 每日定点（schedHour:schedMinute，依赖时间同步）。
   _server.on("/api/email", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleEmailPost(req, json); });
+
+  // ================= MQTT =================
+  // 顺序：/api/mqtt/<子路径> 先注册，/api/mqtt（父路径）放最后
+
+  // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
+  // （停用时销毁客户端停止连接，已保存的连接/主题配置保留）
+  _server.on("/api/mqtt/enabled", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleMqttEnabled(req, json); });
+
+  // 测试发布：只发布一条测试事件并立即返回（{"ok":true}），真正的发布由
+  // MqttService::tick 在 loop 任务完成（与事件同一条链路）。
+  // 这里绝不能同步发布：本回调运行于 async_tcp 任务，其栈不足以支撑 MQTT 握手。
+  _server.on("/api/mqtt/test", HTTP_POST, [this](AsyncWebServerRequest *req) { handleMqttTest(req); });
+
+  // ---- 以下是父路径 /api/mqtt，必须排在上述子路径之后 ----
+  // 配置读取：{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":n,
+  //   "useTls":bool,"user":"..","hasPass":bool,"clientId":"..","topicPrefix":"..",
+  //   "keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n}
+  // 密码不回显（hasPass 表示是否已保存），避免泄露
+  _server.on("/api/mqtt", HTTP_GET, [this](AsyncWebServerRequest *req) { handleMqttGet(req); });
+
+  // 配置保存：JSON {"server":"..","port":1883,"useTls":bool,"user":"..","pass":"..",
+  //   "clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,
+  //   "notifyTypes":n,"enabled":bool}
+  // pass 为空串表示保持已保存的密码不变（表单不回显）；enabled 为 MQTT
+  // 总开关（缺省 false）；notifyTypes 为位掩码（bit0=启动 bit1=SIM bit2=短信
+  // bit3=上线 bit16=日志）；保存后立即重建客户端生效。
+  _server.on("/api/mqtt", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleMqttPost(req, json); });
 
   // ================= OTA 升级 =================
   // 顺序：子路径（/api/ota/status 等）在父路径（/api/ota/upload 等）前注册无冲突，
@@ -1194,6 +1224,76 @@ void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
   sendJson(req, _email.configJson());
 }
 
+// ---- MQTT ----
+void WebPanel::handleMqttGet(AsyncWebServerRequest *req) {
+  sendJson(req, _mqtt.configJson());
+}
+
+void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
+  bool on = false;
+  if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (!_mqtt.setEnabled(on)) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  sendJson(req, _mqtt.configJson());
+}
+
+void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
+  if (!_mqtt.enabled()) {
+    sendErr(req, 400, "MQTT 未启用，请先打开总开关");
+    return;
+  }
+  if (!_mqtt.isConfigured()) {
+    sendErr(req, 400, "MQTT 配置不完整，请先保存服务器地址");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    sendErr(req, 400, "WiFi 未连接，无法发布");
+    return;
+  }
+  if (!_mqtt.notifyTest()) {
+    sendErr(req, 500, "测试消息发布失败，请检查 MQTT 配置与连接状态");
+    return;
+  }
+  sendJson(req, "{\"ok\":true,\"queued\":true}");
+}
+
+void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  String server = json["server"] | "";
+  String user = json["user"] | "";
+  String pass = json["pass"] | "";
+  String clientId = json["clientId"] | "";
+  String topicPrefix = json["topicPrefix"] | "smsf";
+  int port = 1883;
+  int keepAlive = 60;
+  int notifyTypes = 0;
+  bool useTls = false;
+  bool subscribeEnabled = true;
+  bool enabled = false;
+  jsonInt(json["port"], port);
+  jsonInt(json["keepAlive"], keepAlive);
+  jsonBool(json["useTls"], useTls);
+  jsonBool(json["subscribeEnabled"], subscribeEnabled);
+  jsonBool(json["enabled"], enabled);
+  jsonInt(json["notifyTypes"], notifyTypes);
+
+  if (!_mqtt.saveConfig(server, (uint16_t)port, useTls, user, pass, clientId,
+                         topicPrefix, (uint16_t)keepAlive, subscribeEnabled,
+                         (uint32_t)notifyTypes, enabled)) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  sendJson(req, _mqtt.configJson());
+}
+
 // ---- OTA 升级 ----
 // 状态快照：前端轮询此接口渲染进度与「发现新版本」提示
 void WebPanel::handleOtaStatus(AsyncWebServerRequest *req) {
@@ -1319,10 +1419,12 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonObject oAuth  = doc["auth"].to<JsonObject>();
   JsonObject oEmail = doc["email"].to<JsonObject>();
   JsonObject oSms   = doc["sms"].to<JsonObject>();
+  JsonObject oMqtt  = doc["mqtt"].to<JsonObject>();
   _wifi.exportAllTo(oWifi);
   _auth.exportTo(oAuth);
   _email.exportTo(oEmail);
   _sms.exportTo(oSms);
+  _mqtt.exportTo(oMqtt);
 
   String body;
   serializeJsonPretty(doc, body);
@@ -1410,9 +1512,16 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+  if (doc["mqtt"].is<JsonObject>()) {
+    if (!_mqtt.importFrom(doc["mqtt"].as<JsonObject>())) {
+      sendErr(req, 500, "MQTT 配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
 
   if (!anyApplied) {
-    sendErr(req, 400, "配置格式不兼容，未找到可识别的配置节（wifi/auth/email/sms）");
+    sendErr(req, 400, "配置格式不兼容，未找到可识别的配置节（wifi/auth/email/sms/mqtt）");
     return;
   }
 

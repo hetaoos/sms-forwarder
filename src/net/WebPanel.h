@@ -8,6 +8,7 @@
 #include "log/LogStore.h"
 #include "net/AdminStore.h"
 #include "net/EmailService.h"
+#include "net/MqttService.h"
 #include "net/StatusBus.h"
 #include "net/WifiManager.h"
 #include "serial/SerialBridge.h"
@@ -45,7 +46,7 @@ class WebPanel {
   // log：设备日志环形存储（PSRAM，分页查询 / 清空）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
            AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time,
-           EmailService &email, LogStore &log);
+           EmailService &email, LogStore &log, MqttService &mqtt);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -169,6 +170,12 @@ class WebPanel {
   void handleEmailTest(AsyncWebServerRequest *req);
   void handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+  // MQTT：配置读取 / 总开关 / 测试发布 / 配置保存
+  void handleMqttGet(AsyncWebServerRequest *req);
+  void handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleMqttTest(AsyncWebServerRequest *req);
+  void handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // OTA：状态查询 / 触发版本检查 / 启动在线升级 / 本地固件上传 / 本地 Web UI 上传
   // 固件与 LittleFS 镜像均通过 onUpload 分片回调写入，避免一次性把整个文件读进内存
   void handleOtaStatus(AsyncWebServerRequest *req);
@@ -200,5 +207,6 @@ class WebPanel {
   SmsService &_sms;        // 短信服务引用
   TimeSync &_time;         // 时间同步引用
   EmailService &_email;    // SMTP 邮件通知引用
+  MqttService &_mqtt;      // MQTT 服务引用
   LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
 };
