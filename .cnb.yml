@@ -27,9 +27,9 @@
 # docker 只能挂在 Pipeline 级（Job 级没有 docker 字段），所以这里不放 docker，
 # 由下面每个 Pipeline 自己声明，脚本任务自动继承。
 .docker: &docker
-  # 预装 PlatformIO / esptool 的构建镜像，见 .ci/Dockerfile
+  # 预装 PlatformIO / esptool 的构建镜像，见 .cnb/Dockerfile
   build:
-    dockerfile: .ci/Dockerfile
+    dockerfile: .cnb/Dockerfile
   volumes:
     # PlatformIO 工具链缓存，跨流水线复用（构建节点内有效）
     #
@@ -50,7 +50,7 @@
     - ./dist:data
 
 # 版本解析 Stage（单独一段锚点，避免把列表锚点拼进 stages 造成嵌套数组）
-# 注意不要给这个 Job 覆盖 image：缺省的 Pipeline 镜像（.ci/Dockerfile）里有
+# 注意不要给这个 Job 覆盖 image：缺省的 Pipeline 镜像（.cnb/Dockerfile）里有
 # git，脚本才能取到真实短 SHA；一旦覆盖成没有 git 的镜像，构建元数据会静默
 # 退化成 `-local`（构建成功但版本号是错的）。
 .resolve-version: &resolve-version
@@ -78,8 +78,8 @@
     set -euo pipefail
     python3 script/build_release.py --platform "$PLATFORM" --tag "$RELEASE_TAG"
 
-# ---------- push 到 master：编译 + 发布 ----------
-master:
+# ---------- push 到 main：编译 + 发布 ----------
+main:
   push:
     - name: build-and-release
       ifModify:
@@ -89,7 +89,7 @@ master:
         - "platformio.ini"
         - "partitions/**"
         - "script/**"
-        - ".ci/**"
+        - ".cnb/**"
         - ".cnb.yml"
         - "VERSION"
       docker: *docker
@@ -149,7 +149,7 @@ master:
         - "platformio.ini"
         - "partitions/**"
         - "script/**"
-        - ".ci/**"
+        - ".cnb/**"
         - ".cnb.yml"
       docker: *docker
       stages:
