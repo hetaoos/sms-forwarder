@@ -52,12 +52,12 @@
           </label>
         </div>
       </div>
-      <div class="bar" style="margin-top:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#555;margin-top:14px">
+        <input type="checkbox" x-model="cfg.subscribeEnabled"> 订阅命令主题（远程控制）
+      </label>
+      <div class="bar" style="margin-top:10px">
         <button class="btn" type="submit" :disabled="saving"
                 x-text="saving ? '保存中…' : '保存配置'"></button>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#555">
-          <input type="checkbox" x-model="cfg.subscribeEnabled"> 订阅命令主题（远程控制）
-        </label>
         <button class="btn ghost" type="button"
                 :disabled="testing || !configured || !cfg.enabled"
                 @click="test()" x-text="testing ? '发布中…' : '发布测试消息'"></button>

@@ -8,6 +8,64 @@
 /* ---------- 小工具 ---------- */
 const $ = (s, r) => (r || document).querySelector(s);
 
+/* ---------- 主题（深/浅色 + 跟随系统） ----------
+ * 模式存 localStorage 'smsf-theme'：'system' | 'light' | 'dark'，默认 'system'。
+ * head 内的 early script 已按 localStorage / 系统偏好抢先设置 <html data-theme> 防闪烁，
+ * 这里只负责按钮交互、模式切换与系统主题变化的实时跟随。
+ * system 模式下若浏览器不支持 matchMedia 或 prefers-color-scheme，回落浅色。 */
+const THEME_KEY = 'smsf-theme';
+const themeMql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+function themeMode() {
+  let m = 'system';
+  try { m = localStorage.getItem(THEME_KEY) || 'system'; } catch (e) {}
+  return (m === 'light' || m === 'dark' || m === 'system') ? m : 'system';
+}
+// 计算实际生效主题：system -> 读系统偏好（不支持则回落浅色）
+function effectiveTheme() {
+  if (themeMode() === 'system') return (themeMql && themeMql.matches) ? 'dark' : 'light';
+  return themeMode();
+}
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', effectiveTheme());
+  updateThemeBtn();
+}
+function setThemeMode(mode) {
+  try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+  applyTheme();
+}
+// 三态循环：system -> light -> dark -> system
+function cycleTheme() {
+  const order = ['system', 'light', 'dark'];
+  setThemeMode(order[(order.indexOf(themeMode()) + 1) % order.length]);
+}
+// 主题按钮图标与文案：system=半明半暗, light=太阳, dark=月亮
+function updateThemeBtn() {
+  const btn = document.getElementById('themeBtn');
+  if (!btn) return;
+  const m = themeMode();
+  const eff = effectiveTheme();
+  const ICON = {
+    system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>',
+    light:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    dark:   '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+  };
+  const LABEL = {
+    system: '主题：跟随系统（当前' + (eff === 'dark' ? '深色' : '浅色') + '）',
+    light: '主题：浅色',
+    dark:  '主题：深色',
+  };
+  btn.innerHTML = ICON[m] || ICON.system;
+  btn.title = LABEL[m] || LABEL.system;
+  btn.setAttribute('aria-pressed', m !== 'system' ? 'true' : 'false');
+}
+// 跟随系统：系统偏好变化时，若处于 system 模式则实时更新
+if (themeMql) {
+  const onSysChange = () => { if (themeMode() === 'system') applyTheme(); };
+  if (themeMql.addEventListener) themeMql.addEventListener('change', onSysChange);
+  else if (themeMql.addListener) themeMql.addListener(onSysChange);  // 旧版 Safari 兜底
+}
+
 function fmtUptime(s) {
   s = Math.max(0, Math.floor(s || 0));
   const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
@@ -488,6 +546,9 @@ async function bootstrap() {
   $('#logoutBtn').addEventListener('click', logout);
   $('#menuBtn').addEventListener('click', openSidebar);
   $('#mask').addEventListener('click', closeSidebar);
+  // 主题：按钮交互 + 同步图标/文案（data-theme 已由 head early script 抢先设置）
+  $('#themeBtn').addEventListener('click', cycleTheme);
+  applyTheme();
   window.addEventListener('hashchange', route);
   if (!location.hash) location.hash = '#/dashboard';
   connectSSE();     // SSE 连接（外壳级单例，跨页面共享）

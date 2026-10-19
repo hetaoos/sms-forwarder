@@ -53,6 +53,12 @@ a{color:var(--primary);text-decoration:none}
 .mask{display:none}
 .icon-btn{display:none;border:none;background:none;padding:6px;cursor:pointer;color:var(--text)}
 .icon-btn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8}
+/* 顶栏右侧按钮（主题切换等）：常显、图标风格 */
+.top-btn{display:inline-flex;align-items:center;justify-content:center;border:none;background:none;
+  padding:6px;cursor:pointer;color:var(--text);border-radius:8px;flex:none;transition:background .15s}
+.top-btn:hover{background:rgba(127,127,127,.14)}
+.top-btn svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round;display:block}
 
 /* ================= 通用组件 ================= */
 .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
@@ -257,3 +263,39 @@ input.mono{font-family:var(--mono)}
   .view{padding:14px}
   .chip{display:none}
 }
+
+/* ================= 深色主题 =================
+ * 由 <html data-theme="dark"> 触发；浅色为 :root 默认值。
+ * system 模式下跟随系统偏好，由 app.js 实时切换 data-theme。 */
+[data-theme="dark"]{
+  --primary:#5b7cfa; --primary-deep:#4f6ef7; --primary-soft:rgba(91,124,250,.2);
+  --bg:#0f1117; --card:#1a1d26; --text:#e6e8ee; --muted:#9aa3b2; --faint:#6b7280;
+  --border:#2a2e3a; --danger:#ff6b6b; --success:#34d399; --warn:#f5b843;
+  --shadow:0 1px 3px rgba(0,0,0,.4);
+}
+/* 顶栏毛玻璃底色：浅色用白、深色用深灰 */
+[data-theme="dark"] .topbar{background:rgba(20,22,30,.85);border-bottom-color:var(--border)}
+/* 输入/下拉等硬编码白底 -> 卡片色 */
+[data-theme="dark"] input,
+[data-theme="dark"] select{background:var(--card);color:var(--text)}
+[data-theme="dark"] .btn.ghost{background:var(--card);color:var(--text)}
+[data-theme="dark"] .btn.ghost:hover{background:rgba(255,255,255,.06)}
+[data-theme="dark"] .chip{background:var(--card);color:var(--muted)}
+/* 卡片内分隔线 / 表格线用主题边框色 */
+[data-theme="dark"] .row{border-bottom-color:var(--border)}
+[data-theme="dark"] .table td{border-bottom-color:var(--border)}
+[data-theme="dark"] .msg-item:hover{background:rgba(255,255,255,.04)}
+/* 颜色预设色块底 */
+[data-theme="dark"] .palette .sw{background:var(--card)}
+/* Toast / 模态框底 */
+[data-theme="dark"] .toast{background:var(--card);border-color:var(--border);color:var(--text)}
+[data-theme="dark"] .modal{background:var(--card);color:var(--text)}
+[data-theme="dark"] .modal p{color:var(--muted)}
+/* 登录卡：深色主题下由白底改为卡片色，与暗色渐变背景协调 */
+[data-theme="dark"] .login-card{background:var(--card);color:var(--text)}
+[data-theme="dark"] .login-card h1{color:var(--text)}
+[data-theme="dark"] .login-card .sub{color:var(--muted)}
+[data-theme="dark"] .login-tip{color:var(--faint)}
+[data-theme="dark"] .login-err{color:#ff8585}
+/* 移动端遮罩在深色下加重 */
+[data-theme="dark"] .mask.show{background:rgba(0,0,0,.55)}

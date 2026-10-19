@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>短信转发器</title>
+<!-- 抢先在首帧前按 localStorage / 系统偏好设置主题，避免浅色闪一下 -->
+<script>
+(function(){
+  try{
+    var m = localStorage.getItem('smsf-theme') || 'system';
+    var dark = m === 'dark' ||
+      (m === 'system' && window.matchMedia &&
+       window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
+})();
+</script>
 <link rel="stylesheet" href="/assets/app.css">
 <!-- x-cloak：Alpine 初始化前隐藏带该属性的元素，避免未编译模板闪现 -->
 <style>[x-cloak]{display:none!important}</style>
@@ -24,6 +36,8 @@
       </button>
       <div class="topbar-title" id="pageTitle">仪表盘</div>
       <div class="topbar-right">
+        <!-- 主题切换：system(跟随系统) -> light -> dark 三态循环，状态存 localStorage -->
+        <button class="top-btn" id="themeBtn" aria-label="主题切换" title="主题切换"></button>
         <!-- SSE 连接状态：绿=已连接 黄=连接/重连中 红=断开（降级轮询）。
              不使用 Alpine 绑定：Alpine.start() 以微任务先于 defer 的 app.js 执行，
              彼时 store 尚未注册、绑定会失效，故由 app.js renderConnDot() 驱动 -->
