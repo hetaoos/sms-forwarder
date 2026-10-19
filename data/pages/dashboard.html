@@ -77,26 +77,6 @@
     </div>
   </div>
 
-  <!-- 串口流量 -->
-  <div class="card">
-    <h3>串口流量 <span class="sub">AT 透传 · 双 4G 模组</span></h3>
-    <template x-for="s in stats" :key="s.port">
-      <div class="row">
-        <span class="k">串口 <span x-text="s.port"></span>
-          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
-        <span class="v">
-          <span x-text="'RX ' + fmtBytes(s.rx)"></span>
-          <span x-text="' · TX ' + fmtBytes(s.tx)"></span>
-          <span x-show="s.err" x-text="' · 错误 ' + s.err"></span>
-          <span x-show="s.recovers" x-text="' · 自愈 ' + s.recovers"></span>
-        </span>
-      </div>
-    </template>
-    <div class="bar" style="margin-top:12px">
-      <button class="btn ghost sm" @click="go('serial')">AT 控制台</button>
-    </div>
-  </div>
-
   <!-- 4G 模组状态 -->
   <div class="card">
     <h3>4G 模组状态 <span class="sub">信号 · 运营商 · 注册</span></h3>
@@ -130,6 +110,26 @@
     </template>
     <div class="bar" style="margin-top:12px">
       <button class="btn ghost sm" @click="go('modem')">模组管理</button>
+    </div>
+  </div>
+
+  <!-- 串口流量 -->
+  <div class="card">
+    <h3>串口流量 <span class="sub">AT 透传 · 双 4G 模组</span></h3>
+    <template x-for="s in stats" :key="s.port">
+      <div class="row">
+        <span class="k">串口 <span x-text="s.port"></span>
+          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
+        <span class="v">
+          <span x-text="'RX ' + fmtBytes(s.rx)"></span>
+          <span x-text="' · TX ' + fmtBytes(s.tx)"></span>
+          <span x-show="s.err" x-text="' · 错误 ' + s.err"></span>
+          <span x-show="s.recovers" x-text="' · 自愈 ' + s.recovers"></span>
+        </span>
+      </div>
+    </template>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost sm" @click="go('serial')">AT 控制台</button>
     </div>
   </div>
 
