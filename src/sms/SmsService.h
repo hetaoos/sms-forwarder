@@ -91,8 +91,8 @@ class SmsService {
   // 从给定 JSON 对象导入模组配置并落盘；json 同 exportTo；成功返回 true
   bool importFrom(const JsonObject &o);
 
-  // ---------------- AT 控制台 ----------------
-  // 经短信模块发送一条 AT 命令（供 Web AT 控制台）。与短信收发共用同一端口锁，
+  // ---------------- 串口调试 ----------------
+  // 经短信模块发送一条 AT 命令（供 Web 串口调试）。与短信收发共用同一端口锁，
   // 串行无锁层面冲突；发送期间令初始化/心跳轮询让行；模组就绪时自动还原
   // CMGF/CNMI，防止控制台命令误改短信配置导致收发失效。返回 AT 历史记录（含响应）。
   SerialBridge::Result sendAt(uint8_t port, uint32_t baud, const String &cmd,

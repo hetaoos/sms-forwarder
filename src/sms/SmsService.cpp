@@ -311,7 +311,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   return storedOk ? id : kIdSentUnstored;
 }
 
-// ---------------- AT 控制台 ----------------
+// ---------------- 串口调试 ----------------
 // 经短信模块发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
 // 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
 // 置 lastSendMs 令 pollInit 让行，避免与心跳 AT 互相干扰。模组就绪后自动还原
