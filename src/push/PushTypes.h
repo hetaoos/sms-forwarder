@@ -4,7 +4,8 @@
 
 // 推送通道类型（移植自 esp32-sms-forwarding）。
 // 仅纳入 webhook 类通道；MAILGUN 走 Web API（Basic 认证），同样受本框架调度。
-// 不含 PUSH_TYPE_SMS（短信回传备份，依赖通信模组发短信，定位不同，留作二期）。
+// PUSH_TYPE_SMS（短信回传备份）不经 HTTP：网络不可用时改走通信模组发短信，
+// 是「互联网全断」场景下的最后通知手段，故不受 isHttpPush 的 WiFi 判定约束。
 enum PushType {
   PUSH_TYPE_NONE         = 0,   // 占位/未配置
   PUSH_TYPE_POST_JSON    = 1,   // 通用 HTTP POST：按固定 JSON 结构 POST 到 url
@@ -18,6 +19,7 @@ enum PushType {
   PUSH_TYPE_GOTIFY       = 9,   // Gotify：自托管 Android 推送
   PUSH_TYPE_TELEGRAM     = 10,  // Telegram Bot：通过 Bot API 发 sendMessage
   PUSH_TYPE_WECHAT_WORK  = 11,  // 企业微信机器人（签名）
+  PUSH_TYPE_SMS          = 12,  // 短信回传备份：把消息经 SIM 卡以短信发到 url（目标手机号）
   PUSH_TYPE_MAILGUN      = 13   // Mailgun 邮件 API（HTTP POST，Basic 认证）
 };
 
@@ -42,6 +44,8 @@ struct PushChannel {
   String   key5;                 // 额外参数5（Mailgun：邮件标题模板）
   String   customBody;           // 自定义请求体模板（PUSH_TYPE_CUSTOM 使用，支持占位符）
   bool     retryOnFail = false;  // 发送失败时是否自动重试
+  int8_t   modemSlot = -1;       // PUSH_TYPE_SMS 备份通道从哪个通信模组发出（串口号 1..2）；
+                                 // <0 = 自动挑第一个就绪模组（单卡用户无需关心此概念）
 };
 
 // 消息类型（与参考项目一致，但本框架当前主要触发 SMS）。

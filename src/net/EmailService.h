@@ -125,6 +125,11 @@ class EmailService {
   // SIM 状态变更（运行时插卡/拔卡，由 SmsService 状态切换触发）
   void notifySim(uint8_t port, bool ready);
 
+  // 来电提醒（+CLIP/+CLCC 检测，由 SmsService 来电状态机派发时触发）。
+  // number：主叫号码（未获取到时为「未知号码」/「号码保密」）；
+  // modem：收到来电的通信模组串口号（1..kSmsMaxModems，<0 未知）
+  void notifyCall(const String &number, uint32_t ts, int8_t modem);
+
   // 排入启动邮件（App::begin 调用一次）。发送时机：
   //   1. 先等 kMailBootDelayMs（WiFi 通常此时还没连上）；
   //   2. WiFi 未连：每 15s 探一次，超过 kMailBootWaitMaxMs 放弃（无网发不出）；
@@ -207,6 +212,7 @@ class EmailService {
     kSim,        // SIM 状态变更
     kStartup,    // 设备启动完成
     kOnline,     // 定时在线通知
+    kCall,       // 来电提醒
     kTest,       // 测试邮件
   };
 
@@ -273,6 +279,8 @@ class EmailService {
   void buildSmsMail(const String &sender, const String &message, uint32_t ts,
                     int8_t modem, String &subject, PsBuffer &html,
                     String &text) const;
+  void buildCallMail(const String &number, uint32_t ts, int8_t modem,
+                     String &subject, PsBuffer &html, String &text) const;
   void buildTestMail(String &subject, PsBuffer &html, String &text) const;
 
   // 判定开关与配置后入队（tick 调用，loop 任务上下文；只做浅入队）

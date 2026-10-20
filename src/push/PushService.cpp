@@ -91,6 +91,24 @@ void PushService::notifySms(const String& sender, const String& message,
   }
 }
 
+void PushService::notifyCall(const String& number, uint32_t ts, int8_t modem) {
+  {
+    Guard g(_mutex);
+    if (!_enabled) return;
+    if (_count == 0) return;
+  }
+  PushJob job;
+  job.sender = number;
+  job.message = "来电号码: " + number;
+  job.timestamp = String(ts);
+  job.modem = modem;
+  job.type = MSG_TYPE_CALL;
+  {
+    Guard g(_mutex);
+    enqueueJobLocked(job);
+  }
+}
+
 bool PushService::requestTest() {
   {
     Guard g(_mutex);

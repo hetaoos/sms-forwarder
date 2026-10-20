@@ -35,6 +35,10 @@ class PushService {
   void notifySms(const String &sender, const String &message, uint32_t ts,
                  int8_t modem);
 
+  // 来电提醒：入队一条推送任务（number 为主叫号码，可能为「未知号码」/
+  // 「号码保密」）。短信备份通道对来电同样生效（SIM/启动/在线事件除外）。
+  void notifyCall(const String &number, uint32_t ts, int8_t modem);
+
   // 立即排入一条测试推送（立即返回，由 tick 在 loop 任务执行）
   bool requestTest();
 

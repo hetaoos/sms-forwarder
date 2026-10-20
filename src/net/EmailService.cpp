@@ -682,6 +682,19 @@ void EmailService::notifyStartup() {
   _startupDueMs = millis() + cfg::kMailBootDelayMs;
 }
 
+void EmailService::notifyCall(const String &number, uint32_t ts, int8_t modem) {
+  // 运行于 tick 主循环上下文（SmsService 来电派发）：只做浅入队
+  Guard g(_mutex);
+  if (!activeLocked()) return;
+  if (!(_notifyTypes & cfg::kEmailNotifyCall)) return;
+  MailJob job;
+  job.kind = kCall;
+  job.sender = number;  // 复用 sender 字段存主叫号码
+  job.ts = ts;
+  job.modem = modem;
+  enqueueLocked(job);
+}
+
 void EmailService::notifyOnline() {
   Guard g(_mutex);
   if (!activeLocked()) return;
@@ -721,6 +734,7 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
     case kSim:     bit = cfg::kEmailNotifySim; break;
     case kStartup: bit = cfg::kEmailNotifyStartup; break;
     case kOnline:  bit = cfg::kEmailNotifyOnline; break;
+    case kCall:    bit = cfg::kEmailNotifyCall; break;
     case kTest:    break;  // 测试邮件不受通知类型限制
   }
   if (bit && !(_notifyTypes & bit)) return false;
@@ -738,6 +752,9 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
       break;
     case kOnline:
       buildOnlineMail(subject, html, text);
+      break;
+    case kCall:
+      buildCallMail(job.sender, job.ts, job.modem, subject, html, text);
       break;
     case kTest:
       buildTestMail(subject, html, text);
@@ -1432,6 +1449,46 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
   text += "\n内容:\n" + message;
 }
 
+// 来电提醒邮件：卡片展示主叫号码 / 时间 / 接入通信模组。
+// 号码可能为「未知号码」（模组不发 +CLIP/+CLCC 且主动查询也无果）或
+// 「号码保密」（主叫方开通了号码隐藏），均为正常取值，不做特殊处理。
+void EmailService::buildCallMail(const String &number, uint32_t ts, int8_t modem,
+                                 String &subject, PsBuffer &html,
+                                 String &text) const {
+  subject = "来电: " + number;
+
+  String tsText = formatTs(ts);
+  if (tsText == "时间未同步" && _time && _time->isSynced()) {
+    tsText = _time->dateStr();
+  }
+
+  PsBuffer inner;
+  appendBadge(inner, String("📞 ") + escape(number), String("检测到来电"),
+              number != "未知号码");
+  inner.append("<div class=\"rows\"><table class=\"tb\">");
+  inner.append("<tr><td class=\"kn\">主叫号码</td><td class=\"vn\">");
+  appendEscaped(inner, number);
+  inner.append("</td></tr>");
+  inner.append("<tr><td class=\"kn\">时间</td><td class=\"vn\">");
+  appendEscaped(inner, tsText);
+  inner.append("</td></tr>");
+  String mlabel = modemLabelOf(modem);
+  if (mlabel.length() > 0) {
+    inner.append("<tr><td class=\"kn\">接入通信模组</td><td class=\"vn\">");
+    appendEscaped(inner, mlabel);
+    inner.append("</td></tr>");
+  }
+  inner.append("</table></div>");
+
+  buildHtml(html, String("📞 来电提醒"), inner, 600);
+
+  text = "主叫号码: " + number;
+  text += "\n时间: " + tsText;
+  if (mlabel.length() > 0) {
+    text += "\n接入通信模组: " + mlabel;
+  }
+}
+
 void EmailService::buildTestMail(String &subject, PsBuffer &html,
                                  String &text) const {
   subject = "测试邮件";
@@ -1445,6 +1502,7 @@ void EmailService::buildTestMail(String &subject, PsBuffer &html,
   if (_notifyTypes & cfg::kEmailNotifySim) types += "SIM状态变更 / ";
   if (_notifyTypes & cfg::kEmailNotifyStartup) types += "设备启动 / ";
   if (_notifyTypes & cfg::kEmailNotifyOnline) types += "定时在线通知 / ";
+  if (_notifyTypes & cfg::kEmailNotifyCall) types += "来电提醒 / ";
   if (types.length() >= 3) types = types.substring(0, types.length() - 3);
   if (types.length() == 0) types = "无（全部关闭）";
 

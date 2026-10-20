@@ -93,9 +93,11 @@ void SmsService::begin() {
   _lastSmsId = _store.maxId();
 }
 
-// 周期调用（主循环）：仅长短信重组超时清理；通信模组初始化由抽数任务轮询驱动
+// 周期调用（主循环）：长短信重组超时清理 + 来电检测派发；
+// 通信模组初始化由抽数任务轮询驱动
 void SmsService::tick() {
   _codec.pruneTimeouts(_concat);
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) pollCall(p);
 }
 
 // 判断一行是否为 PDU 十六进制串（偶数长度、全为 hex 字符）
@@ -167,6 +169,30 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     if (line.startsWith("+CMTI:") || line.startsWith("+CDS:")) {
       consumed = true;
       continue;
+    }
+    // 来电相关 URC（AT+CLIP=1 已下发）：RING/+CRING 起一轮，+CLIP/+CLCC 带号码，
+    // NO CARRIER 等收口。仅处理启用中的通信模组；解析只置状态，派发在 tick。
+    if (m.enabled) {
+      if (line == "RING" || line.startsWith("+CRING:")) {
+        handleCallRing(port);
+        consumed = true;
+        continue;
+      }
+      if (line.startsWith("+CLIP:")) {
+        handleCallClip(port, line);
+        consumed = true;
+        continue;
+      }
+      if (line.startsWith("+CLCC:")) {
+        handleCallClcc(port, line);
+        consumed = true;
+        continue;
+      }
+      if (line == "NO CARRIER" || line == "BUSY" || line == "NO ANSWER") {
+        handleCallEnd(port, line);
+        consumed = true;
+        continue;
+      }
     }
     // 非短信流量：不消费（由调用方决定是否入 AT 历史）
   }
@@ -497,6 +523,183 @@ void SmsService::setSimReady(uint8_t port, bool ready) {
   }
 }
 
+// ---------------- 来电检测（移植自 esp32-sms-forwarding 的 Call）----------------
+// 线程模型：handleCallXxx 在抽数任务上下文运行（只置状态，不回调、不发 AT）；
+// pollCall / dispatchCall 在 tick 主循环运行（派发通知、主动 AT+CLCC 查询）。
+// 全部用 millis() 比较，单核无关 mutual exclusion 问题；跨任务共享的布尔/时刻
+// 最多让读侧差一拍，不存在一致性风险（与 _modems 其余字段同策略）。
+
+// RING / +CRING：开始一轮来电。去重窗口内的重复 RING（模组每响铃周期都重发）忽略。
+void SmsService::handleCallRing(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  uint32_t now = millis();
+  if (now - m.callLastNotifyMs < kCallDedupMs) return;
+  m.callPending = true;
+  m.callDispatch = false;
+  m.callNumber = "";
+  m.callClipWaitUntilMs = now + kCallClipWaitMs;
+  m.callClccTried = false;
+  m.callClccDueMs = now + kCallClccDelayMs;
+  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 检测到来电（RING），等待主叫号码",
+            (unsigned)port);
+}
+
+// 提取一行中第一个引号对之间的内容（+CLIP: "138...",129,... 的号码）
+static String firstQuoted(const String &line) {
+  int q1 = line.indexOf('"');
+  if (q1 < 0) return "";
+  int q2 = line.indexOf('"', q1 + 1);
+  if (q2 <= q1) return "";
+  return line.substring(q1 + 1, q2);
+}
+
+// +CLIP: 已带齐一条通知所需的全部信息（谁、何时），无先导 RING 时也按来电处理，
+// 而不是丢弃——否则一次响铃指示没被认出就丢掉整通来电。
+void SmsService::handleCallClip(uint8_t port, const String &line) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  String num = firstQuoted(line);
+  uint32_t now = millis();
+  if (!m.callPending) {
+    if (now - m.callLastNotifyMs < kCallDedupMs) return;
+    m.callNumber = num.length() > 0 ? num : String("号码保密");
+    m.callDispatch = true;
+    _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的 +CLIP，按来电处理：%s",
+              (unsigned)port, m.callNumber.c_str());
+    return;
+  }
+  if (num.length() > 0 || m.callNumber.length() == 0) {
+    m.callNumber = num.length() > 0 ? num : String("号码保密");
+  }
+  m.callPending = false;
+  m.callDispatch = true;
+}
+
+// 主动上报的 +CLCC:（ML307A + 中国电信的即时号码来源，格式同 AT+CLCC 响应）
+void SmsService::handleCallClcc(uint8_t port, const String &line) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  String num = parseClccNumber(line);
+  if (num.length() == 0) return;
+  uint32_t now = millis();
+  if (!m.callPending) {
+    if (now - m.callLastNotifyMs < kCallDedupMs) return;
+    m.callNumber = num;
+    m.callDispatch = true;
+    _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的主动 +CLCC，按来电处理：%s",
+              (unsigned)port, num.c_str());
+    return;
+  }
+  m.callNumber = num;
+  m.callPending = false;
+  m.callDispatch = true;
+  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 从主动 +CLCC 获取到来电号码：%s",
+            (unsigned)port, num.c_str());
+}
+
+// 通话结束：号码已拿到就立即派发，不再等满窗口；主叫已走，再等也不会有 +CLCC
+void SmsService::handleCallEnd(uint8_t port, const String &line) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  if (!m.callPending) return;
+  m.callPending = false;
+  m.callDispatch = true;
+  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 通话结束（%s），以已知号码派发：%s",
+            (unsigned)port, line.c_str(),
+            m.callNumber.length() ? m.callNumber.c_str() : "未知号码");
+}
+
+// tick 驱动：派发、超时收口、主动 AT+CLCC 兜底查询
+void SmsService::pollCall(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  if (!m.enabled) return;
+
+  if (m.callDispatch) {
+    m.callDispatch = false;
+    dispatchCall(port);
+    return;
+  }
+  if (!m.callPending) return;
+  uint32_t now = millis();
+
+  // 主动 AT+CLCC 兜底：等 kCallClccDelayMs 仍无 +CLIP/+CLCC 时查一次。
+  // 只能发给产生这通来电的那个通信模组——换一个模组查不到对方号码。
+  // trySend 非阻塞取端口锁：端口忙（如在发短信）本轮跳过，下轮 tick 再试。
+  if (!m.callClccTried && (int32_t)(now - m.callClccDueMs) >= 0) {
+    SerialBridge::Result r;
+    if (_bridge.trySend(port, cfg::kUartBaud, "AT+CLCC", SerialBridge::kCrlf,
+                        kCallClccTimeoutMs, true, r)) {
+      m.callClccTried = true;
+      String num = parseClccNumber(r.resp);
+      if (num.length() > 0) {
+        _log.addf(LogLevel::kInfo, "call", "通信模组 %u AT+CLCC 获取到来电号码：%s",
+                  (unsigned)port, num.c_str());
+        m.callNumber = num;
+        m.callPending = false;
+        dispatchCall(port);
+        return;
+      }
+      _log.addf(LogLevel::kInfo, "call",
+                "通信模组 %u AT+CLCC 未获取到号码（可能已挂断），继续等待",
+                (unsigned)port);
+    }
+  }
+
+  // 等待窗口截止：以已知号码（或「未知号码」）派发
+  if ((int32_t)(now - m.callClipWaitUntilMs) >= 0) {
+    m.callPending = false;
+    dispatchCall(port);
+  }
+}
+
+// 实际派发：黑名单（来电作用域）判定 + 回调。运行于 tick 主循环上下文。
+void SmsService::dispatchCall(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return;
+  ModemState &m = _modems[port];
+  m.callLastNotifyMs = millis();
+  String num = m.callNumber.length() > 0 ? m.callNumber : String("未知号码");
+
+  // 黑名单命中：不派发（来电是瞬时事件，模组与 SIM 均无存储，拦了就是拦了）
+  if (_blacklist && _blacklist->enabled() && _blacklist->match(num, BlackList::kCall)) {
+    String note = _blacklist->lastNote();
+    _log.addf(LogLevel::kInfo, "black", "命中黑名单，拦截来电 %s%s%s", num.c_str(),
+              note.length() ? "（" : "", note.length() ? (note + "]").c_str() : "");
+    return;
+  }
+
+  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 来电通知：%s", (unsigned)port,
+            num.c_str());
+  if (_onCall) _onCall(num, nowTs(), (int8_t)port);
+}
+
+// 从 +CLCC: 行 / AT+CLCC 响应中提取主叫号：
+// 格式 +CLCC: <id>,<dir>,<stat>,<mode>,<mpty>,"<number>",<type>,...（第 5 字段后首个引号对）
+String SmsService::parseClccNumber(const String &text) {
+  int pos = 0;
+  while (true) {
+    int idx = text.indexOf("+CLCC:", pos);
+    if (idx < 0) break;
+    int c1 = text.indexOf(',', idx + 6);
+    if (c1 < 0) break;
+    int c2 = text.indexOf(',', c1 + 1);
+    if (c2 < 0) break;
+    int c3 = text.indexOf(',', c2 + 1);
+    if (c3 < 0) break;
+    int c4 = text.indexOf(',', c3 + 1);
+    if (c4 < 0) break;
+    int q1 = text.indexOf('"', c4);
+    if (q1 < 0) break;
+    int q2 = text.indexOf('"', q1 + 1);
+    if (q2 <= q1) break;
+    String num = text.substring(q1 + 1, q2);
+    if (num.length() > 0) return num;
+    pos = idx + 6;
+  }
+  return "";
+}
+
 // 启动异步初始化：仅置初始态与计数，真正的 AT 交互由 pollInit（抽数任务轮询）驱动
 void SmsService::startInit(uint8_t port) {
   ModemState &m = _modems[port];
@@ -511,6 +714,10 @@ void SmsService::startInit(uint8_t port) {
   m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.act = 0; m.num = "";
   m.vendor = ""; m.model = ""; m.revision = ""; m.operCode = "";
   m.simReady = false; m.nextTeleMs = 0; m.teleStep = 0;
+  // 清空来电检测状态（重新初始化：进行中的来电不再派发）
+  m.callPending = false; m.callDispatch = false; m.callNumber = "";
+  m.callClipWaitUntilMs = 0; m.callLastNotifyMs = 0;
+  m.callClccTried = false; m.callClccDueMs = 0;
   // 若配置了 EN 复位引脚，先走硬上下电；否则直接等 AT 就绪
   m.initState = (enPin(port) >= 0) ? ModemInitState::kPowerOn : ModemInitState::kWaitAt;
   m.nextPollMs = millis();  // 下一轮泵立即开始
@@ -523,6 +730,7 @@ void SmsService::stopInit(uint8_t port) {
   m.enabled = false;
   m.waitingPdu = false;
   m.needReinit = false;
+  m.callPending = false; m.callDispatch = false; m.callNumber = "";
   m.initState = ModemInitState::kDown;
   _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已禁用", (unsigned)port);
 }

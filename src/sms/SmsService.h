@@ -68,6 +68,13 @@ class SmsService {
   using SimChangeFn = std::function<void(uint8_t port, bool ready)>;
   void setOnSimChangeCb(SimChangeFn fn) { _onSim = fn; }
 
+  // 来电事件（tick 主循环上下文触发，回调内只允许轻量入队）：
+  // number 为主叫号码（未获取到时为「未知号码」/「号码保密」）；
+  // modem 为收到来电的通信模组串口号。命中黑名单（来电作用域）时不触发。
+  using CallReceivedFn = std::function<void(const String &number, uint32_t ts,
+                                           int8_t modem)>;
+  void setOnCallReceivedCb(CallReceivedFn fn) { _onCall = fn; }
+
   // 通信模组是否已就绪（启用且初始化完成，可收发短信）；port 越界返回 false
   bool modemReady(uint8_t port) const;
 
@@ -131,6 +138,17 @@ class SmsService {
   // ---------------- 存储 ----------------
   SmsStore &store() { return _store; }
 
+  // ---------------- 来电检测参数（移植自 esp32-sms-forwarding 的 Call）----------------
+  // 同号码去重窗口（ms）：模组每个响铃周期都会重发 RING/+CLIP，一通电话不能变成多条
+  static constexpr uint32_t kCallDedupMs     = 10000;
+  // RING 后等待 +CLIP / 主动 +CLCC 的最大时长（ms），超时以「未知号码」派发
+  static constexpr uint32_t kCallClipWaitMs  = 10000;
+  // RING 后多久主动发 AT+CLCC 查询来电号码（ms）。实测 ML307A + 电信不发 +CLIP，
+  // 而是在 RING 后主动报一条 +CLCC:——那条才是即时的号码来源，本查询只是兜底
+  static constexpr uint32_t kCallClccDelayMs = 3000;
+  // 主动 AT+CLCC 查询的响应收集超时（ms）
+  static constexpr uint32_t kCallClccTimeoutMs = 2000;
+
   // 最新短信记录 ID（SSE diff 用）
   uint32_t lastSmsId() const { return _lastSmsId; }
 
@@ -170,6 +188,15 @@ class SmsService {
     bool needReinit = false;   // 运行时检测到通信模组重启 -> 重新开始初始化
     bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
     bool simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
+
+    // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
+    bool     callPending = false;        // RING 已到：等待号码或通话结束
+    bool     callDispatch = false;       // 有来电待派发（tick 消费后清位）
+    String   callNumber;                 // 已获取到的主叫号码（空=未知）
+    uint32_t callClipWaitUntilMs = 0;    // 等 +CLIP/+CLCC 的窗口截止时刻
+    uint32_t callLastNotifyMs = 0;       // 上次派发时刻（去重窗口，见 kCallDedupMs）
+    bool     callClccTried = false;      // 本轮是否已主动查询过 AT+CLCC
+    uint32_t callClccDueMs = 0;          // 主动查询 AT+CLCC 的时刻
 
     // ---- 就绪后遥测（周期轮询，供 UI 展示）----
     int8_t  csq = -1;          // 信号质量 0..31（99=未知），-1 表示未查询
@@ -219,6 +246,22 @@ class SmsService {
   // 均不触发事件，避免每次开机/通信模组重启都误报「SIM 已插入」。
   void setSimReady(uint8_t port, bool ready);
 
+  // ---- 来电检测（URC 在抽数任务上下文解析，派发在 tick 主循环）----
+  // RING / +CRING：开始一轮来电（去重窗口内的重复 RING 忽略）
+  void handleCallRing(uint8_t port);
+  // +CLIP: 主动上报主叫号码；无先导 RING 时也按来电处理（该行已带齐通知所需信息）
+  void handleCallClip(uint8_t port, const String &line);
+  // 主动上报的 +CLCC:（ML307A + 电信的即时号码来源）；解析格式同 AT+CLCC 响应
+  void handleCallClcc(uint8_t port, const String &line);
+  // 通话结束上报（NO CARRIER / BUSY / NO ANSWER）：已有号码立即派发，不再等满窗口
+  void handleCallEnd(uint8_t port, const String &line);
+  // tick 驱动：派发待通知来电、超时收口、主动 AT+CLCC 兜底查询
+  void pollCall(uint8_t port);
+  // 实际派发（黑名单判定 + 回调）；运行于 tick 主循环上下文
+  void dispatchCall(uint8_t port);
+  // 从 +CLCC: 行/响应中提取主叫号码（第 4 个字段后的首个引号对），失败返回空串
+  static String parseClccNumber(const String &text);
+
   // 载入 / 保存 NVS 配置；返回是否有有效记录
   bool loadConfig();
   bool saveConfig();
@@ -239,6 +282,7 @@ class SmsService {
   ModemReadyFn _onReady;    // 通信模组就绪回调（抽数任务上下文触发）
   SmsReceivedFn _onSms;     // 短信接收回调（抽数任务上下文触发）
   SimChangeFn _onSim;       // SIM 就绪状态变更回调（抽数任务上下文触发）
+  CallReceivedFn _onCall;   // 来电视题回调（tick 主循环上下文触发）
   TimeProviderFn _timeFn;   // 时间戳供给（App 注入；为空则开机秒数）
   BlackList *_blacklist = nullptr;  // 黑名单过滤器（App 注入；空表示不拦截）
 };

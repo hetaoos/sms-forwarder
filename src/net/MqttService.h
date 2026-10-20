@@ -36,6 +36,7 @@ enum class MqttMsgType : uint8_t {
   kSim = 1,     // SIM 状态变更
   kBoot = 2,    // 设备启动完成（开机首次连上发布一次）
   kOnline = 3,  // （重新）上线通知（每次连接建立发布）
+  kCall = 4,    // 来电提醒（发布到 .../call 主题）
 };
 
 class MqttService {
@@ -103,6 +104,8 @@ class MqttService {
                  int8_t modem);
   // SIM 状态变更（port：串口号；ready：true=已插入 false=已拔出）
   void notifySim(uint8_t port, bool ready);
+  // 来电提醒（number：主叫号码，可能为「未知号码」/「号码保密」；modem：串口号）
+  void notifyCall(const String &number, uint32_t ts, int8_t modem);
   // 启动完成（开机后首次连上发布一次）
   void notifyStartup();
   // 上线通知（每次（重）连接发布一次）

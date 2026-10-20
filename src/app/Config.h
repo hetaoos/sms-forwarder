@@ -82,31 +82,35 @@ constexpr uint32_t kEmailNotifyStartup = 1u << 0;  // 设备启动完成
 constexpr uint32_t kEmailNotifySim     = 1u << 1;  // SIM 状态变更（运行时插入/拔出）
 constexpr uint32_t kEmailNotifySms     = 1u << 2;  // 收到短信
 constexpr uint32_t kEmailNotifyOnline  = 1u << 3;  // 定时在线通知（确认设备仍在线）
+constexpr uint32_t kEmailNotifyCall    = 1u << 4;  // 来电提醒（+CLIP/+CLCC 检测，号码可能未知）
 // 全部已知位（保存配置时过滤越界位用）
 constexpr uint32_t kEmailNotifyAll = kEmailNotifyStartup | kEmailNotifySim |
-                                     kEmailNotifySms | kEmailNotifyOnline;
-// 出厂默认：四类全开
+                                     kEmailNotifySms | kEmailNotifyOnline |
+                                     kEmailNotifyCall;
+// 出厂默认：五类全开
 constexpr uint32_t kEmailNotifyDefault = kEmailNotifyAll;
 
 // ---------------- MQTT 事件上报（与 esp32-sms-forwarding 复用同一套位定义）----------------
 // 通知类型位掩码：每个位代表一类「会发布到 MQTT」的事件。
-// 低 4 位与邮件 kEmailNotify* 完全一致（语义相同），便于 Web 表单与固件对照；
+// 低 5 位与邮件 kEmailNotify* 完全一致（语义相同），便于 Web 表单与固件对照；
 // LOG 为 MQTT 专属位（运行日志实时推送，邮件不支持）。
 // 新增类型时：这里加一位 → MqttService 加发布分支 → Web 表单加一个复选框。
 constexpr uint32_t kMqttNotifyStartup = 1u << 0;  // 设备启动完成
 constexpr uint32_t kMqttNotifySim     = 1u << 1;  // SIM 状态变更（插入/拔出）
 constexpr uint32_t kMqttNotifySms     = 1u << 2;  // 收到短信
 constexpr uint32_t kMqttNotifyOnline  = 1u << 3;  // （重新）上线通知（确认设备在线）
+constexpr uint32_t kMqttNotifyCall    = 1u << 4;  // 来电提醒（发布到 .../call 主题）
 constexpr uint32_t kMqttNotifyLog     = 1u << 16; // 运行日志实时推送（仅 MQTT）
 // 全部已知位（保存配置时过滤越界位用）
 constexpr uint32_t kMqttNotifyAll = kMqttNotifyStartup | kMqttNotifySim |
                                     kMqttNotifySms | kMqttNotifyOnline |
-                                    kMqttNotifyLog;
+                                    kMqttNotifyCall | kMqttNotifyLog;
 // 出厂默认：除「运行日志」外全部开启（日志推送默认关闭，避免日志风暴；
 // 用户可在页面单独勾选开启）。注意：运行日志为 MQTT 专属位（1<<16），
 // 不纳入默认，与邮件通知类型默认全开区分。
 constexpr uint32_t kMqttNotifyDefault = kMqttNotifyStartup | kMqttNotifySim |
-                                        kMqttNotifySms | kMqttNotifyOnline;
+                                        kMqttNotifySms | kMqttNotifyOnline |
+                                        kMqttNotifyCall;
 
 // SMTP 默认端口：465 为隐式 TLS（握手即加密，多数服务商推荐）。
 // 587（STARTTLS 明文起连后升级）不适用——底层直接用 WiFiClientSecure 连接。

@@ -42,6 +42,19 @@ bool matchAt(const String &s, int pos, const char *pfx) {
   return true;
 }
 
+// 判断 s 的 pos 处（行首）是否正好是裸词 word，且后随行尾或串尾。
+// 用于识别无冒号的主动上报行（RING / NO CARRIER 等），防止把 "RINGX"
+// 之类以该词开头的其它行误判为 URC。
+bool matchWordAt(const String &s, int pos, const char *word) {
+  int n = (int)strlen(word);
+  if (pos < 0 || pos + n > (int)s.length()) return false;
+  for (int i = 0; i < n; i++) {
+    if (s[pos + i] != word[i]) return false;
+  }
+  char after = (pos + n < (int)s.length()) ? s[pos + n] : '\n';
+  return after == '\r' || after == '\n';
+}
+
 // 确保串口处于打开状态；已打开且波特率不同时热更新
 // p：端口状态；baud：目标波特率
 void SerialBridge::ensureOpen(Port &p, uint32_t baud) {
@@ -191,21 +204,31 @@ void SerialBridge::reportErrors(uint8_t i) {
             (unsigned)p.errCount, (unsigned)p.rxBytes, (unsigned)p.txBytes);
 }
 
-// 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
+// 把 AT 响应收集窗口内混入的自发上报（短信 URC +CMT/+CMTI/+CDS，来电 URC
+// RING/+CRING/+CLIP/+CLCC/NO CARRIER 等）交回 pend：
 // readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
-// 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信丢失。
+// 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信/来电丢失。
 // 本方法持端口锁把 URC 段追加到 p.pend，由抽数任务按常规自发上报流程
 // （120ms 静默后回调 _urc）归档；resp 本身不改动，调用方解析不受影响。
 // p：端口状态（调用方须持有端口锁）；resp：刚收集到的 AT 响应
 void SerialBridge::stashUrc(Port &p, const String &resp) {
-  // 找响应中第一个短信类 URC 起始位置
+  // 找响应中第一个自发上报起始位置
   int idx = -1;
   for (int i = 0; i < (int)resp.length(); i++) {
-    if (resp[i] != '+') continue;
-    if (matchAt(resp, i, "+CMT:") || matchAt(resp, i, "+CMTI:") ||
-        matchAt(resp, i, "+CDS:")) {
-      idx = i;
-      break;
+    if (resp[i] == '+') {
+      if (matchAt(resp, i, "+CMT:") || matchAt(resp, i, "+CMTI:") ||
+          matchAt(resp, i, "+CDS:") || matchAt(resp, i, "+CLIP:") ||
+          matchAt(resp, i, "+CLCC:") || matchAt(resp, i, "+CRING:")) {
+        idx = i;
+        break;
+      }
+    } else if (i == 0 || resp[i - 1] == '\n') {
+      // 行首裸词：来电指示与通话结束上报（本固件从不拨号，只可能是主动上报）
+      if (matchWordAt(resp, i, "RING") || matchWordAt(resp, i, "NO CARRIER") ||
+          matchWordAt(resp, i, "BUSY") || matchWordAt(resp, i, "NO ANSWER")) {
+        idx = i;
+        break;
+      }
     }
   }
   if (idx < 0) return;  // 无 URC 混入：零行为变化
@@ -269,7 +292,7 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
 
   String resp = readResponse(p, timeoutMs, 80);
 
-  // 响应窗口内混入的短信 URC 交回 pend，避免被当作 AT 响应丢弃（新短信丢失）
+  // 响应窗口内混入的自发上报（短信 / 来电 URC）交回 pend，避免被当作 AT 响应丢弃
   stashUrc(p, resp);
 
   // 自愈：连续多次无响应 -> 复位串口
@@ -318,7 +341,7 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
 
   String resp = readResponse(p, timeoutMs, 80);
 
-  // 响应窗口内混入的短信 URC 交回 pend，避免被当作 AT 响应丢弃（新短信丢失）
+  // 响应窗口内混入的自发上报（短信 / 来电 URC）交回 pend，避免被当作 AT 响应丢弃
   stashUrc(p, resp);
 
   // 自愈：连续多次无响应 -> 复位串口（与 send 一致）

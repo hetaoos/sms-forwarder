@@ -207,6 +207,7 @@ void MqttService::publishEvent(MqttMsgType type, const String &sender,
     case MqttMsgType::kSim:    bit = cfg::kMqttNotifySim;    sub = "sim";    break;
     case MqttMsgType::kBoot:   bit = cfg::kMqttNotifyStartup; sub = "boot";  break;
     case MqttMsgType::kOnline: bit = cfg::kMqttNotifyOnline; sub = "online"; break;
+    case MqttMsgType::kCall:   bit = cfg::kMqttNotifyCall;   sub = "call";   break;
     default: return;
   }
   if (!_enabled || !isConfigured()) return;
@@ -219,7 +220,8 @@ void MqttService::publishEvent(MqttMsgType type, const String &sender,
   doc["timestamp"] = ts;
   doc["time"]      = mqttFormatTs(ts);
 
-  if (type == MqttMsgType::kSms) {
+  if (type == MqttMsgType::kSms || type == MqttMsgType::kCall) {
+    // 短信：from=发件人；来电：from=主叫号码（可能为「未知号码」/「号码保密」）
     doc["from"]      = sender;
     doc["message"]   = message;
     if (typeLabel.length() > 0) doc["typeLabel"] = typeLabel;
@@ -774,6 +776,14 @@ void MqttService::notifySim(uint8_t port, bool ready) {
   if (!(_notifyTypes & cfg::kMqttNotifySim)) return;
   publishEvent(MqttMsgType::kSim, "设备", ready ? "ready" : "removed",
                0, "", ("通信模组" + String(port)), (int8_t)port);
+}
+
+void MqttService::notifyCall(const String &number, uint32_t ts, int8_t modem) {
+  if (!_enabled || !isConfigured()) return;
+  if (!(_notifyTypes & cfg::kMqttNotifyCall)) return;
+  String label = (modem >= 1 && modem <= cfg::kSmsMaxModems)
+                     ? ("通信模组" + String(modem)) : String("");
+  publishEvent(MqttMsgType::kCall, number, "来电", ts, "", label, modem);
 }
 
 void MqttService::notifyStartup() {
