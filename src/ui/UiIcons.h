@@ -23,6 +23,9 @@
 #define UI_ICON_MAIL       "\xEF\x83\xA0"   // U+F0E0  envelope
 #define UI_ICON_PUSH       "\xEF\x87\x98"   // U+F1D8  paper-plane
 #define UI_ICON_TERMINAL   "\xEF\x84\xA0"   // U+F120  terminal
+#define UI_ICON_MAC        "\xEF\x8B\x82"   // U+F2C2  id-card
+#define UI_ICON_CPU        "\xEF\x98\xA5"   // U+F625  gauge-high
+#define UI_ICON_MQTT       "\xEF\x9F\x80"   // U+F7C0  satellite-dish
 // ---- 菜单 / 通用 ----
 #define UI_ICON_HOME       "\xEF\x80\x95"   // U+F015  house
 #define UI_ICON_SUN        "\xEF\x86\x85"   // U+F185  sun

@@ -88,6 +88,13 @@ class SmsService {
   // 模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
   String modemsJson() const;
 
+  // 单个模组的 LCD 简报（状态页一行用，短文本）：
+  //   "未启用" / "等AT" / "等SIM" / "等注册" / "配置中" / "故障" /
+  //   "就绪 <运营商> <CSQ>"
+  // port 越界返回空串。与 modemsJson 同样不加锁：只读若干 POD 字段，
+  // 抽数任务并发改写最多让读数差一拍，不存在一致性风险。
+  String modemBrief(uint8_t port) const;
+
   // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象：
   // o["max"]=n, o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]
   void exportTo(JsonObject &o) const;

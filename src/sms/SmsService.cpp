@@ -210,6 +210,31 @@ String SmsService::modemsJson() const {
   return js;
 }
 
+// 单个模组的 LCD 简报：状态机阶段给中文短词，就绪态补上运营商与信号强度
+String SmsService::modemBrief(uint8_t port) const {
+  if (port == 0 || port > cfg::kSmsMaxModems) return String();
+  const ModemState &m = _modems[port];
+  if (!m.enabled) return String("未启用");
+
+  String s;
+  switch (m.initState) {
+    case ModemInitState::kReady: s = "就绪"; break;
+    case ModemInitState::kFault: s = "故障"; break;
+    case ModemInitState::kPowerOn: s = "上电中"; break;
+    case ModemInitState::kWaitAt: s = "等 AT"; break;
+    case ModemInitState::kWaitCpin: s = "等 SIM"; break;
+    case ModemInitState::kBringRf: s = "开射频"; break;
+    case ModemInitState::kWaitReg: s = "等注册"; break;
+    case ModemInitState::kConfig: s = "配置中"; break;
+    default: s = "未知"; break;
+  }
+  if (m.initState == ModemInitState::kReady) {
+    if (m.oper.length()) { s += " "; s += m.oper; }
+    if (m.csq >= 0) { s += " "; s += String(m.csq); }
+  }
+  return s;
+}
+
 // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象
 void SmsService::exportTo(JsonObject &o) const {
   o["max"] = _max;

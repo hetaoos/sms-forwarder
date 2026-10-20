@@ -1,10 +1,12 @@
 #include "app/App.h"
 
 #include <Arduino.h>
+#include <WiFi.h>
 
 #include "app/Config.h"
 #include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
 #include "app/UserFs.h"
+#include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
 
 // 初始化调试串口与所有子模块；返回 true 表示装配完成
@@ -35,14 +37,10 @@ bool App::begin() {
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
     return _sms.onUnsolicited(port, text);
   });
-  {
-    // 先出一帧状态页，避免开机黑屏（此时中文字库还没加载，用 ASCII 兜底字体）
-    // 必须在 _bridge.begin() 之后：collectStatus() 会读串口桥的 AT 历史，
-    // 其互斥量由 _bridge.begin() 创建，提前调用会拿到 NULL 句柄直接断言重启
-    StatusInfo bootSnap;
-    collectStatus(bootSnap);
-    _ui.renderStatus(bootSnap);
-  }
+  // 开机先出 Logo 页（纯图标 + ASCII，不取任何业务数据），避免初始化期黑屏；
+  // 展示时长由 tick 里的开机窗口控制，期间不采集状态，彻底避开「模块还没 begin
+  // 就被取数」这一类冲突（互斥量句柄为 NULL 会直接断言重启）。
+  ui::instance().bootUpdate(0);
 
   // WiFi 连上（含重连）即启动 NTP 同步；须在 _wifi.begin() 前注册
   _wifi.setOnConnectCb([this] {
@@ -59,6 +57,8 @@ bool App::begin() {
   _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   _sms.setBlackList(&_blacklist);     // 注入黑名单拦截器（handleCmt 内先于落盘/转发判定）
+  // 至此邮件 / MQTT / 推送 / 短信都已持有各自的互斥量，状态快照可以放心读它们了
+  _svcReady = true;
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
   _sms.setOnModemReadyCb([this](uint8_t port) {
@@ -115,10 +115,70 @@ void App::collectStatus(StatusInfo &out) {
 
   static String sIp;         // 需要持有字符串，供 const char* 引用
   static String sCmd, sResp, sTime;
+  static String sSsid, sPass;
   sIp = _wifi.ip();
   out.ip = sIp.c_str();
   sTime = _time.clockStr();  // LCD 标题栏时钟（未同步显示 --:--:--）
   out.time = sTime.c_str();
+
+  // 网络名：STA 已连显示 SSID，AP 模式显示热点名，未连接显示配置名
+  sSsid = _wifi.ssid();
+  out.ssid = sSsid.length() ? sSsid.c_str() : "-";
+  // AP 为开放热点（无密码），这里直接给可读文本而非空串
+  sPass = out.apMode ? "开放无密码" : "-";
+  out.apPass = sPass.c_str();
+
+  // ---- 现场拼装：本机信息 / 资源 / 模组 / 服务 ----
+  WiFi.macAddress().toCharArray(out.mac, sizeof(out.mac));
+  fmtUptime(out.uptimeSec, out.uptime, sizeof(out.uptime));
+
+  // 内存：内部堆剩余 / PSRAM 剩余（无 PSRAM 只显示前者）
+  if (out.psramSize) {
+    snprintf(out.mem, sizeof(out.mem), "%s / %s", fmtBytes(out.freeHeap),
+             fmtBytes(out.freePsram));
+  } else {
+    snprintf(out.mem, sizeof(out.mem), "%s", fmtBytes(out.freeHeap));
+  }
+
+  // 负载：CPU 使用率（不可用时用 -）与芯片温度
+  const float cpu = CpuMonitor::usage();
+  const float t = temperatureRead();
+  snprintf(out.load, sizeof(out.load), "%s %s",
+           cpu >= 0 ? String(cpu, 1).c_str() : "-",
+           isnan(t) ? "-" : (String(t, 1) + "℃").c_str());
+
+  if (_svcReady) {
+    for (uint8_t i = 0; i < 2; i++) {
+      String b = _sms.modemBrief((uint8_t)(i + 1));   // 串口号 1/2
+      snprintf(out.modem[i], sizeof(out.modem[i]), "%s",
+               b.length() ? b.c_str() : "-");
+    }
+
+#if defined(ENABLE_MQTT) && ENABLE_MQTT
+    if (!MqttService::isEnabled()) {
+      snprintf(out.mqtt, sizeof(out.mqtt), "已关闭");
+    } else if (!MqttService::isConfigured()) {
+      snprintf(out.mqtt, sizeof(out.mqtt), "未配置");
+    } else {
+      snprintf(out.mqtt, sizeof(out.mqtt), "%s",
+               MqttService::connected() ? "已连接" : "未连接");
+    }
+#else
+    snprintf(out.mqtt, sizeof(out.mqtt), "未编译");
+#endif
+
+    if (!_email.enabled()) snprintf(out.mail, sizeof(out.mail), "已关闭");
+    else snprintf(out.mail, sizeof(out.mail), "%s",
+                  _email.isConfigured() ? "已配置" : "未配置");
+
+    if (!_push.enabled()) {
+      snprintf(out.push, sizeof(out.push), "已关闭");
+    } else {
+      const int n = _push.validChannelCount();
+      snprintf(out.push, sizeof(out.push), n > 0 ? "%d 个通道" : "未配置", n);
+    }
+  }
+  // 未就绪（开机首帧）时上述字段保持结构体默认的 "-"，下一帧就会补上
 
   uint8_t port = 0;
   if (_bridge.lastEntry(port, sCmd, sResp)) {
@@ -126,6 +186,29 @@ void App::collectStatus(StatusInfo &out) {
     out.lastCmd = sCmd.c_str();
     out.lastResp = sResp.c_str();
   }
+}
+
+// 秒 -> "1天02:03:04" / "02:03:04"（超过一天加天数前缀，便于长时间运行读数）
+void App::fmtUptime(uint32_t sec, char *out, size_t n) {
+  const uint32_t d = sec / 86400;
+  const uint32_t h = (sec % 86400) / 3600;
+  const uint32_t m = (sec % 3600) / 60;
+  const uint32_t s = sec % 60;
+  if (d) snprintf(out, n, "%u天%02u:%02u:%02u", (unsigned)d, (unsigned)h,
+                  (unsigned)m, (unsigned)s);
+  else snprintf(out, n, "%02u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+}
+
+// 字节数紧凑格式：>=1MB 显示 "7.80M"，>=1KB 显示 "123.4K"，否则 "512B"
+const char *App::fmtBytes(uint32_t bytes) {
+  static char buf[4][16];   // 一次调用可能用到多个（内存行拼两个值）
+  static uint8_t idx = 0;
+  char *b = buf[idx];
+  idx = (idx + 1) & 3;
+  if (bytes >= 1024u * 1024u) snprintf(b, 16, "%.2fM", bytes / 1048576.0);
+  else if (bytes >= 1024u) snprintf(b, 16, "%.1fK", bytes / 1024.0);
+  else snprintf(b, 16, "%uB", (unsigned)bytes);
+  return b;
 }
 
 // 主循环调度逻辑：
@@ -148,15 +231,41 @@ void App::tick() {
   // 轮询 4 键，事件交给菜单状态机处理（状态页下任意键切入菜单）
   KeyId key;
   KeyEvent ev;
-  if (_keypad.poll(millis(), key, ev)) _ui.handle(key, ev);
+  if (_keypad.poll(millis(), key, ev)) {
+    _bootDone = true;   // 开机页期间有按键：立即结束开机页，按正常流程走
+    _ui.handle(key, ev);
+  }
 
   // 远程注入的按键（Web /api/key）与物理按键走同一处理路径
   KeyId ikey; KeyEvent iev;
-  while (KeyInject::instance().pop(ikey, iev)) _ui.handle(ikey, iev);
+  while (KeyInject::instance().pop(ikey, iev)) {
+    _bootDone = true;
+    _ui.handle(ikey, iev);
+  }
 
   // 无操作超时：由 UI 状态机按屏幕设置处理（自动退回状态页 / 自动熄屏，
   // 两项均可关闭）；兼管菜单连调亮度后的落盘防抖
   _ui.tick();
+
+  // 开机窗口：只画开机页（Logo + 进度条），不采集任何业务状态。
+  // 计时从首轮 tick 起算，保证「Logo 实际在屏上停留 kBootScreenMs」——
+  // 若从 begin() 起算，初始化耗时可能把这段窗口吃掉。
+  if (!_bootDone) {
+    if (_bootMs == 0) _bootMs = millis();
+    const uint32_t el = millis() - _bootMs;
+    if (el >= cfg::kBootScreenMs) {
+      _bootDone = true;                 // 下一轮起进入常规渲染（状态页）
+      _lastUiMs = 0;                    // 让状态页立刻出首帧，不等 500ms 节流
+    } else if (el - _lastBootBarMs >= cfg::kBootBarStepMs) {
+      _lastBootBarMs = el;
+      ui::instance().bootUpdate((uint8_t)(el * 100 / cfg::kBootScreenMs));
+    }
+    // 开机窗口内不渲染其它页面，避免与初始化中的模块抢数据
+    ui::instance().tick();
+    _display.lvglTick();
+    delay(5);
+    return;
+  }
 
   if (_ui.inScreenView()) {
     // 「屏幕显示」页：实时跟随，按固定周期重绘（滚动/刷新由按键驱动）

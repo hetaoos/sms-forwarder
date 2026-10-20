@@ -36,6 +36,11 @@ class Ui {
   // 每轮调用：推进中文字库加载，就绪后自动刷新一次全部页面
   void tick();
 
+  // ---- 开机页 ----
+  // 切到开机页并按 0~100 推进进度条。开机页不依赖中文字库（纯图标 + ASCII），
+  // 因此可以在字库加载、模块初始化期间安全显示。
+  void bootUpdate(uint8_t percent);
+
   // ---- 实时状态页 ----
   // 切到状态页并按快照更新内容（内容无变化时不会触发重绘）
   void statusUpdate(const StatusInfo &s);
@@ -60,6 +65,7 @@ class Ui {
   void buildStatus();
   void buildMenu();
   void buildScreenView();
+  void buildBoot();
 
   // 建立一个受管理的标签（登记后可在字库就绪时统一换字体）
   // kind：0 图标 / 1 正文 / 2 标题 / 3 ASCII；align：LV_TEXT_ALIGN_*
@@ -72,14 +78,16 @@ class Ui {
   lv_obj_t *_scrStatus = nullptr;   // 实时状态页
   lv_obj_t *_scrMenu = nullptr;     // 菜单页
   lv_obj_t *_scrView = nullptr;     // 屏幕显示页
+  lv_obj_t *_scrBoot = nullptr;     // 开机页（Logo + 进度条）
+  lv_obj_t *_bootBar = nullptr;
 
-  // 状态页：标题栏时钟 + 7 个状态行的数值标签
+  // 状态页：标题栏时钟 + 13 个状态行（其中 2 个按模式互斥显隐，实际同时可见 12 行）
+  static constexpr uint8_t kStatusRows = 13;
   lv_obj_t *_stClock = nullptr;
-  lv_obj_t *_stValue[7] = {};
-  String _stCache[7];
-  lv_obj_t *_atCmd = nullptr;    // 最近一条 AT 命令
-  lv_obj_t *_atResp = nullptr;   // 最近一条 AT 响应
-  String _atCache;               // AT 区内容指纹（变化才重设文本）
+  lv_obj_t *_stRow[kStatusRows] = {};      // 行容器（AP 模式下切换显隐）
+  lv_obj_t *_stValue[kStatusRows] = {};    // 各行右对齐的值
+  String _stCache[kStatusRows];            // 上次的值（变化才重设文本）
+  bool _stHidden[kStatusRows] = {};        // 上一次的显隐状态（变化才改）
 
   // 菜单页：标题 + 固定数量的行槽位（用显隐切换，避免反复建/删对象）
   static constexpr uint8_t kMaxMenuRows = 8;
@@ -105,7 +113,7 @@ class Ui {
   };
   LabelRef _labels[kMaxLabels];
   uint8_t _labelCount = 0;
-  uint8_t _current = 0;   // 当前活动页：0 状态 / 1 菜单 / 2 屏幕显示
+  uint8_t _current = 0;   // 当前活动页：0 状态 / 1 菜单 / 2 屏幕显示 / 3 开机
   bool _built = false;    // begin() 是否已装配完成（部件只建一次）
 };
 

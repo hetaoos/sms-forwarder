@@ -33,6 +33,11 @@ class App {
   // 从各模块聚合一份屏幕渲染用的状态快照，填充到 out
   void collectStatus(StatusInfo &out);
 
+  // 秒 -> "1天02:03:04" / "02:03:04"
+  static void fmtUptime(uint32_t sec, char *out, size_t n);
+  // 字节数 -> "7.80M" / "123.4K" / "512B"；返回静态缓冲（一轮内可同时用 4 个）
+  static const char *fmtBytes(uint32_t bytes);
+
   RgbLed _led;              // 板载 RGB 灯（WS2812）
   Display _display;         // ST7789 屏幕
   Keypad _keypad;           // 4 键输入（OK/UP/DOWN/BACK）
@@ -55,5 +60,15 @@ class App {
   WebPanel _panel{_bridge, _led, _wifi, _display, _ui, _auth, _events, _sms, _time,
                   _email, _log, _mqtt, _push, _blacklist};
 
+  // 邮件 / MQTT / 推送 / 短信是否已完成 begin()。
+  // 开机首帧状态页会先于这些模块初始化采集一次，此时它们的互斥量句柄还是 NULL，
+  // 碰到就断言重启；采集里凡是要碰这些模块的分支都必须先看这个标记。
+  bool _svcReady = false;
+
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
+
+  // ---- 开机页窗口 ----
+  bool _bootDone = false;     // 开机页是否已展示完毕（之后按常规渲染状态页）
+  uint32_t _bootMs = 0;       // 开机页起始时刻（0 = 首轮 tick 时才起算）
+  uint32_t _lastBootBarMs = 0;  // 上次推进进度条的相对时刻
 };

@@ -11,8 +11,12 @@ static LogStore &_log = devLog();
 // 递归互斥锁守卫（配置/队列/重试表的读写可能嵌套加锁）
 struct Guard {
   SemaphoreHandle_t m;
-  explicit Guard(SemaphoreHandle_t m_) : m(m_) { xSemaphoreTakeRecursive(m, portMAX_DELAY); }
-  ~Guard() { xSemaphoreGiveRecursive(m); }
+  explicit Guard(SemaphoreHandle_t m_) : m(m_) {
+    // 允许 NULL 句柄：模块 begin() 前（如开机首帧状态采集）也会读到配置，
+    // 直接 xSemaphoreTakeRecursive(NULL) 会触发断言并无限重启
+    if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
+  }
+  ~Guard() { if (m) xSemaphoreGiveRecursive(m); }
 };
 
 // 将控制字符（0x00-0x1F，保留 \t \n \r \b \f）替换为 \uXXXX 字面量，防止
@@ -345,6 +349,15 @@ void PushService::enqueueRetryLocked(const RetryItem& item) {
 bool PushService::enabled() const {
   Guard g(_mutex);
   return _enabled;
+}
+
+int PushService::validChannelCount() const {
+  Guard g(_mutex);
+  int n = 0;
+  for (int i = 0; i < _count; i++) {
+    if (pushChannelValid(_channels[i])) n++;
+  }
+  return n;
 }
 
 bool PushService::setEnabled(bool on) {

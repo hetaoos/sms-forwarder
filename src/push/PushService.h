@@ -41,6 +41,10 @@ class PushService {
   // ---------------- 配置 ----------------
   bool enabled() const;
 
+  // 有效推送通道数（启用且字段齐全，与 configJson 的 configured 同一判定）。
+  // 加锁读取，供 LCD 状态页展示「N 个通道」
+  int validChannelCount() const;
+
   // 设置总开关并落盘 NVS
   bool setEnabled(bool on);
 

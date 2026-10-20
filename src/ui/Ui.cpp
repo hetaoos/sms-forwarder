@@ -21,7 +21,6 @@ LogStore &_log = devLog();
 // ---------- 配色 ----------
 constexpr uint32_t C_BG = 0x090D13;      // 页面底色
 constexpr uint32_t C_HEADER = 0x132A44;  // 标题栏底色
-constexpr uint32_t C_PANEL = 0x121A26;   // 卡片/区块底色
 constexpr uint32_t C_SEL = 0x1C3A5E;     // 菜单选中行底色
 constexpr uint32_t C_LINE = 0x1F2A38;    // 分隔线
 constexpr uint32_t C_TEXT = 0xE8EEF6;    // 主文字
@@ -30,8 +29,6 @@ constexpr uint32_t C_HINT = 0x5C6878;    // 页脚提示
 constexpr uint32_t C_ACCENT = 0x4DA3FF;  // 强调色（图标 / AP 模式）
 constexpr uint32_t C_OK = 0x3AD97A;      // 正常
 constexpr uint32_t C_ERR = 0xE5544B;     // 异常
-constexpr uint32_t C_CMD = 0x5AC8FF;     // AT 命令
-constexpr uint32_t C_RESP = 0x9BE36F;    // AT 响应
 
 // ---------- 版式 ----------
 // 屏宽取自 LVGL（已经过旋转换算），避免把 240 写死在多处
@@ -40,27 +37,54 @@ lv_coord_t kScreenW = 240;
 constexpr lv_coord_t kPad = 8;                 // 左右边距
 constexpr lv_coord_t kHeaderH = 34;            // 标题栏高度
 constexpr lv_coord_t kRowTop = kHeaderH + 4;   // 状态区首行 Y：38
-constexpr lv_coord_t kRowH = 28;               // 状态行高
-constexpr lv_coord_t kRowCount = 7;            // 状态行数
-constexpr lv_coord_t kAtTop = kRowTop + kRowCount * kRowH + 4;  // AT 区 Y：238
-constexpr lv_coord_t kAtH = 54;                // AT 区高度
-constexpr lv_coord_t kFootTop = kAtTop + kAtH + 2;              // 页脚 Y：294
-constexpr lv_coord_t kFootH = 20;              // 页脚高度
+// 行高取 23：图标字体（20px）行高就是 23，再矮会把图标裁掉；
+// 12 行同时可见 = 276px（38~314），屏底留 6px
+constexpr lv_coord_t kRowH = 23;
 constexpr lv_coord_t kMenuTop = kHeaderH + 6;  // 菜单首行 Y：40
 constexpr lv_coord_t kMenuRowH = 30;           // 菜单行高
 constexpr lv_coord_t kViewTop = kHeaderH + 4;  // 屏幕显示区 Y：38
 constexpr lv_coord_t kViewH = 254;             // 屏幕显示区高度（38~292）
+constexpr lv_coord_t kFootTop = 294;           // 菜单/屏幕显示页的页脚行
+constexpr lv_coord_t kLabelW = 48;             // 状态行标签列宽
+constexpr lv_coord_t kGap = 4;                 // 行内元素间距
 
-// 状态行定义（左侧图标 + 标签，值在右侧）
+// 状态行定义（左侧图标 + 标签，值在右侧右对齐）。
+// 顺序即屏幕自上而下的顺序；kRowSsid/kRowPass 见下方「按模式互斥」说明。
+enum : uint8_t {
+  kRowWifi = 0,
+  kRowPass,    // AP 热点密码：仅 AP 模式显示
+  kRowIp,
+  kRowRssi,    // STA 信号：AP 模式下无意义，隐藏
+  kRowMac,
+  kRowUptime,
+  kRowMem,
+  kRowLoad,
+  kRowModem1,
+  kRowModem2,
+  kRowMqtt,
+  kRowMail,
+  kRowPush,
+  kStatusRowCnt
+};
+
 struct RowDef {
   const char *icon;
   const char *label;
 };
-constexpr RowDef kStatusRows[kRowCount] = {
-    {UI_ICON_WIFI, "WIFI"},       {UI_ICON_GLOBE, "IP"},
-    {UI_ICON_SIGNAL, "RSSI"},     {UI_ICON_CLOCK, "UPTIME"},
-    {UI_ICON_MEMORY, "HEAP"},     {UI_ICON_MICROCHIP, "PSRAM"},
-    {UI_ICON_LIGHTBULB, "RGB"},
+constexpr RowDef kStatusRowDef[kStatusRowCnt] = {
+    {UI_ICON_WIFI, "WIFI"},        // 已连：SSID；AP：热点名
+    {UI_ICON_INFO, "密码"},        // AP 时才显示（开放热点）
+    {UI_ICON_GLOBE, "IP"},
+    {UI_ICON_SIGNAL, "RSSI"},
+    {UI_ICON_MAC, "MAC"},
+    {UI_ICON_CLOCK, "运行"},        // 运行时长（已格式化）
+    {UI_ICON_MEMORY, "内存"},       // 内部堆剩余 / PSRAM 剩余
+    {UI_ICON_CPU, "负载"},          // CPU 使用率 / 芯片温度
+    {UI_ICON_SIM, "模组1"},
+    {UI_ICON_SIM, "模组2"},
+    {UI_ICON_MQTT, "MQTT"},
+    {UI_ICON_MAIL, "邮件"},
+    {UI_ICON_PUSH, "推送"},
 };
 
 // 字节数紧凑格式：>=1MB 显示 "x.xxM"，>=1KB 显示 "xxx.xK"，否则 "xxxB"
@@ -77,11 +101,13 @@ String fmtBytes(uint32_t bytes) {
 }
 
 // 按 kind 取字体（ui::UiFonts 负责实现细节）
+//   0 图标 / 1 正文 / 2 标题 / 3 ASCII / 4 开机页 Logo
 const lv_font_t *fontFor(uint8_t kind) {
   switch (kind) {
     case 0: return fontIcon();
     case 2: return fontTitle();
     case 3: return fontAscii();
+    case 4: return fontLogo();
     default: return fontText();
   }
 }
@@ -129,6 +155,12 @@ lv_obj_t *Ui::newLabel(lv_obj_t *parent, uint8_t kind, uint32_t color, const cha
   }
   lv_obj_t *l = lv_label_create(parent);
   lv_obj_remove_style_all(l);
+  // 注意：remove_style_all 连类默认的宽高样式也一起清掉了，而样式缺失时高度解析不到，
+  // flex 就会按 0 高度去算交叉轴居中 -> 文字整体下偏（label 只在自己盒子的顶部起画，
+  // 不会自动垂直居中）。这里必须显式设回 LV_SIZE_CONTENT，让标签高度等于真实文本
+  // 高度，居中才成立；多行的（AT 命令/响应、信息页）也会随行数自动长高。
+  lv_obj_set_width(l, LV_SIZE_CONTENT);
+  lv_obj_set_height(l, LV_SIZE_CONTENT);
   lv_obj_set_scrollable(l, false);
   lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
   lv_obj_set_style_text_align(l, align, 0);
@@ -166,14 +198,70 @@ void Ui::begin() {
   buildStatus();
   buildMenu();
   buildScreenView();
-  lv_screen_load(_scrStatus);
-  _current = 0;
+  buildBoot();
+  // 开机先落在开机页：此时中文字库与各业务模块都还没就绪，状态页还不能取数
+  lv_screen_load(_scrBoot);
+  _current = 3;
   fontsBegin();      // 中文字库走延迟加载（等 LittleFS 挂载）
   _built = true;
 }
 
+// ---- 开机页 ----
+// 纯图标 + ASCII：不等中文字库，也不读任何业务模块，因此可以在初始化期间安全显示。
+// 布局：居中 Logo（48px 图标）+ 产品名 + 进度条 + 一行提示。
+void Ui::buildBoot() {
+  _scrBoot = lv_obj_create(NULL);
+  lv_obj_remove_style_all(_scrBoot);
+  lv_obj_set_scrollable(_scrBoot, false);
+  lv_obj_set_style_bg_color(_scrBoot, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(_scrBoot, LV_OPA_COVER, 0);
+
+  // 整块内容（Logo + 产品名 + 进度条 + 提示）在 320 高的屏上大致垂直居中
+  lv_obj_t *logo = newLabel(_scrBoot, 4, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(logo, 0, 102);
+  lv_obj_set_width(logo, kScreenW);
+  lv_obj_set_height(logo, 49);   // Logo 字体行高
+
+  lv_obj_t *ttl = newLabel(_scrBoot, 3, C_TEXT, "SMS Forwarder", LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(ttl, 0, 164);
+  lv_obj_set_width(ttl, kScreenW);
+
+  // 进度条：底槽 + 指示块，宽度由 bootUpdate 按百分比推进
+  constexpr lv_coord_t barW = 140, barH = 6;
+  lv_obj_t *bar = lv_bar_create(_scrBoot);
+  lv_obj_remove_style_all(bar);
+  lv_obj_set_pos(bar, (kScreenW - barW) / 2, 192);
+  lv_obj_set_size(bar, barW, barH);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_LINE), 0);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(bar, 3, 0);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_ACCENT), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+  lv_bar_set_range(bar, 0, 100);
+  lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+  _bootBar = bar;
+
+  lv_obj_t *hint = newLabel(_scrBoot, 3, C_HINT, "Starting...", LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(hint, 0, 208);
+  lv_obj_set_width(hint, kScreenW);
+}
+
+// 切到开机页并推进进度条（App 在开机窗口内每 ~100ms 调一次）
+void Ui::bootUpdate(uint8_t percent) {
+  if (!_scrBoot) return;
+  if (_current != 3) {
+    lv_screen_load(_scrBoot);
+    _current = 3;
+  }
+  if (_bootBar) lv_bar_set_value(_bootBar, percent, LV_ANIM_OFF);
+}
+
 // ---- 实时状态页 ----
 void Ui::buildStatus() {
+  // 行定义与成员数组容量必须对齐（改行定义时忘记同步会越界写成员数组）
+  static_assert(kStatusRowCnt == kStatusRows, "状态行定义与槽位数不一致");
+
   _scrStatus = lv_obj_create(NULL);
   lv_obj_remove_style_all(_scrStatus);
   lv_obj_set_scrollable(_scrStatus, false);
@@ -187,56 +275,32 @@ void Ui::buildStatus() {
   lv_obj_set_flex_grow(ttl, 1);
   _stClock = newLabel(hdr, 1, C_TEXT, "--:--:--", LV_TEXT_ALIGN_RIGHT);
 
-  // 状态行：图标 / 标签放在左侧，值右对齐
+  // 状态行：图标 / 标签在左侧，值右对齐。
+  // 用 flex 列容器承载：隐藏某行（AP 模式下隐藏 RSSI）后续行会自动上移，
+  // 不需要重新计算坐标。
   lv_obj_t *body = lv_obj_create(_scrStatus);
   lv_obj_remove_style_all(body);
   lv_obj_set_scrollable(body, false);
   lv_obj_set_pos(body, 0, kRowTop);
-  lv_obj_set_size(body, LV_PCT(100), kRowCount * kRowH);
+  lv_obj_set_size(body, LV_PCT(100), (kStatusRowCnt - 1) * kRowH);
   lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
 
-  for (uint8_t i = 0; i < kRowCount; i++) {
+  for (uint8_t i = 0; i < kStatusRowCnt; i++) {
     lv_obj_t *row = makeRow(body, kRowH, kPad);
+    lv_obj_set_style_pad_gap(row, kGap, 0);
     lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_border_color(row, lv_color_hex(C_LINE), 0);
-    newLabel(row, 0, C_LABEL, kStatusRows[i].icon, LV_TEXT_ALIGN_LEFT);
-    lv_obj_t *nm = newLabel(row, 1, C_LABEL, kStatusRows[i].label, LV_TEXT_ALIGN_LEFT);
-    lv_obj_set_width(nm, 74);
-    // 值由 statusUpdate 填充，这里先留空，保证首帧一定被判定为“有变化”
+    _stRow[i] = row;
+    newLabel(row, 0, C_LABEL, kStatusRowDef[i].icon, LV_TEXT_ALIGN_LEFT);
+    lv_obj_t *nm = newLabel(row, 1, C_LABEL, kStatusRowDef[i].label, LV_TEXT_ALIGN_LEFT);
+    lv_obj_set_width(nm, kLabelW);
+    // 值由 statusUpdate 填充，这里先留空，保证首帧一定被判定为“有变化”；
+    // 超长值（SSID / MAC / 运营商）以省略号截断，不撑破行
     _stValue[i] = newLabel(row, 1, C_TEXT, "", LV_TEXT_ALIGN_RIGHT);
     lv_obj_set_flex_grow(_stValue[i], 1);
+    lv_label_set_long_mode(_stValue[i], LV_LABEL_LONG_MODE_DOTS);
   }
-
-  // 最近一条 AT 命令 / 响应
-  lv_obj_t *at = lv_obj_create(_scrStatus);
-  lv_obj_remove_style_all(at);
-  lv_obj_set_scrollable(at, false);
-  lv_obj_set_pos(at, kPad, kAtTop);
-  lv_obj_set_size(at, kScreenW - kPad * 2, kAtH);
-  lv_obj_set_style_bg_color(at, lv_color_hex(C_PANEL), 0);
-  lv_obj_set_style_bg_opa(at, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(at, 6, 0);
-  lv_obj_set_style_pad_all(at, 6, 0);
-  lv_obj_set_style_pad_gap(at, 2, 0);
-  lv_obj_set_flex_flow(at, LV_FLEX_FLOW_COLUMN);
-
-  lv_obj_t *atTitle = makeRow(at, 16, 0);
-  newLabel(atTitle, 0, C_LABEL, UI_ICON_TERMINAL, LV_TEXT_ALIGN_LEFT);
-  newLabel(atTitle, 1, C_LABEL, "LAST AT", LV_TEXT_ALIGN_LEFT);
-
-  _atCmd = newLabel(at, 1, C_CMD, "", LV_TEXT_ALIGN_LEFT);
-  lv_obj_set_width(_atCmd, LV_PCT(100));
-  lv_label_set_long_mode(_atCmd, LV_LABEL_LONG_WRAP);
-  _atResp = newLabel(at, 1, C_RESP, "", LV_TEXT_ALIGN_LEFT);
-  lv_obj_set_width(_atResp, LV_PCT(100));
-  lv_label_set_long_mode(_atResp, LV_LABEL_LONG_WRAP);
-
-  // 页脚：接口与串口引脚一览（纯 ASCII，用兜底字体即可）
-  lv_obj_t *foot = newLabel(_scrStatus, 3, C_HINT, "HTTP :80  U1 17/18  U2 41/40",
-                            LV_TEXT_ALIGN_LEFT);
-  lv_obj_set_pos(foot, kPad, kFootTop + 2);
-  lv_obj_set_width(foot, kScreenW - kPad * 2);
 }
 
 // ---- 菜单页 ----
@@ -271,7 +335,7 @@ void Ui::buildMenu() {
     lv_obj_t *lb = newLabel(_scrMenu, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
     lv_obj_set_pos(lb, kPad, kMenuTop + i * 26);
     lv_obj_set_width(lb, kScreenW - kPad * 2);
-    lv_label_set_long_mode(lb, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_hidden(lb, true);
     _mnInfo[i] = lb;
   }
@@ -334,39 +398,61 @@ void Ui::statusUpdate(const StatusInfo &s) {
   String t = s.time && *s.time ? s.time : "--:--:--";
   if (t != lv_label_get_text(_stClock)) lv_label_set_text(_stClock, t.c_str());
 
-  String v[kRowCount];
-  uint32_t c[kRowCount];
-  v[0] = s.wifiUp ? "UP" : (s.apMode ? "AP" : "DOWN");
-  c[0] = s.wifiUp ? C_OK : (s.apMode ? C_ACCENT : C_ERR);
-  v[1] = s.ip ? s.ip : "-";
-  c[1] = s.wifiUp ? C_TEXT : (s.apMode ? C_ACCENT : C_ERR);
-  v[2] = s.wifiUp ? String(s.rssi) + " dBm" : "-";
-  c[2] = C_TEXT;
-  v[3] = String(s.uptimeSec) + " s";
-  c[3] = C_TEXT;
-  v[4] = fmtBytes(s.freeHeap);
-  c[4] = C_TEXT;
-  v[5] = s.psramSize ? fmtBytes(s.freePsram) + "/" + fmtBytes(s.psramSize) : "-";
-  c[5] = C_TEXT;
-  v[6] = s.ledName ? s.ledName : "-";
-  c[6] = C_TEXT;
+  String v[kStatusRows];
+  uint32_t c[kStatusRows];
+  for (uint8_t i = 0; i < kStatusRows; i++) c[i] = C_TEXT;
 
-  for (uint8_t i = 0; i < kRowCount; i++) {
+  // WIFI：已连显示 SSID，AP 模式显示热点名，未连显示连接状态
+  if (s.wifiUp) {
+    v[kRowWifi] = String("已连 ") + (s.ssid ? s.ssid : "-");
+    c[kRowWifi] = C_OK;
+  } else if (s.apMode) {
+    v[kRowWifi] = String("AP ") + (s.ssid ? s.ssid : "-");
+    c[kRowWifi] = C_ACCENT;
+  } else {
+    v[kRowWifi] = "未连接";
+    c[kRowWifi] = C_ERR;
+  }
+  v[kRowPass] = s.apPass ? s.apPass : "-";
+  v[kRowIp] = s.ip ? s.ip : "-";
+  v[kRowRssi] = s.wifiUp ? String(s.rssi) + " dBm" : "-";
+  v[kRowMac] = s.mac;
+  v[kRowUptime] = s.uptime;
+  v[kRowMem] = s.mem;
+  v[kRowLoad] = s.load;
+  v[kRowModem1] = s.modem[0];
+  v[kRowModem2] = s.modem[1];
+  v[kRowMqtt] = s.mqtt;
+  v[kRowMail] = s.mail;
+  v[kRowPush] = s.push;
+  // 服务三行按状态着色：已就绪绿、已关闭灰、中间态用普通色
+  for (uint8_t i = kRowMqtt; i <= kRowPush; i++) {
+    if (v[i] == "已连接" || v[i] == "已配置" || v[i].endsWith("个通道")) c[i] = C_OK;
+    else if (v[i] == "已关闭") c[i] = C_HINT;
+  }
+  // 模组行：就绪绿、故障红，其余中间态用普通色
+  for (uint8_t i = kRowModem1; i <= kRowModem2; i++) {
+    if (v[i].startsWith("就绪")) c[i] = C_OK;
+    else if (v[i] == "故障") c[i] = C_ERR;
+  }
+
+  // 按模式互斥：AP 模式显示「密码」隐藏「RSSI」，反之亦然（两者只显示一个，
+  // 保证始终 12 行、不会挤出屏幕）
+  const bool hide[2] = {!s.apMode, s.apMode};   // 密码行、RSSI 行是否隐藏
+  const uint8_t toggle[2] = {kRowPass, kRowRssi};
+  for (uint8_t k = 0; k < 2; k++) {
+    const uint8_t i = toggle[k];
+    if (_stRow[i] && _stHidden[i] != hide[k]) {
+      _stHidden[i] = hide[k];
+      lv_obj_set_hidden(_stRow[i], hide[k]);
+    }
+  }
+
+  for (uint8_t i = 0; i < kStatusRows; i++) {
     if (!_stValue[i] || _stCache[i] == v[i]) continue;
     _stCache[i] = v[i];
     lv_label_set_text(_stValue[i], v[i].c_str());
     lv_obj_set_style_text_color(_stValue[i], lv_color_hex(c[i]), 0);
-  }
-
-  // AT 区：把三条内容合成一个指纹，只有真变了才去动 label
-  String key = String((unsigned)s.lastPort) + "|" + (s.lastCmd ? s.lastCmd : "") + "|" +
-               (s.lastResp ? s.lastResp : "");
-  if (key != _atCache) {
-    _atCache = key;
-    String cmd = s.lastPort ? "UART" + String(s.lastPort) + "  " : String();
-    cmd += s.lastCmd && *s.lastCmd ? s.lastCmd : "(none)";
-    if (_atCmd) lv_label_set_text(_atCmd, cmd.c_str());
-    if (_atResp) lv_label_set_text(_atResp, s.lastResp ? s.lastResp : "");
   }
 }
 

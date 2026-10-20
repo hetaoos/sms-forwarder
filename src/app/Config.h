@@ -184,6 +184,10 @@ constexpr uint32_t kUiFontGlyphCacheCnt = 256;
 // ---------------- 其它 ----------------
 constexpr uint16_t kHttpPort = 80;      // HTTP 控制台端口
 constexpr uint32_t kUiRefreshMs = 500;  // 屏幕刷新周期
+// 开机页（Logo + 进度条）展示时长：这段时间里只画开机页，不去采集业务状态，
+// 让中文字库加载与各模块初始化都发生在「不取数」的窗口内，避免初始化期冲突
+constexpr uint32_t kBootScreenMs = 2500;
+constexpr uint32_t kBootBarStepMs = 100;  // 进度条推进间隔
 
 // ---------------- SSE 实时推送 ----------------
 constexpr const char *kSsePath = "/api/sse";  // SSE 事件流路径（需认证，同 /api/）

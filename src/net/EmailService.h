@@ -219,9 +219,11 @@ class EmailService {
   struct Guard {
     SemaphoreHandle_t m;
     explicit Guard(SemaphoreHandle_t m_) : m(m_) {
-      xSemaphoreTakeRecursive(m, portMAX_DELAY);
+      // 允许 NULL 句柄：本模块 begin() 之前（如开机首帧状态采集）也可能被读取，
+      // xSemaphoreTakeRecursive(NULL) 会触发断言并导致无限重启
+      if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
     }
-    ~Guard() { xSemaphoreGiveRecursive(m); }
+    ~Guard() { if (m) xSemaphoreGiveRecursive(m); }
   };
 
   // NVS 配置读写；载入失败时保持出厂默认

@@ -15,6 +15,9 @@
 // 图标字体定义在 .c 里（C 链接），这里必须在全局作用域 extern "C" 声明，
 // 放到 namespace ui 内会被 C++ 名字改编，链接时找不到符号。
 extern "C" const lv_font_t ui_font_icon_20;
+// 开机页 Logo：同一个图标字体的 48px 版本（script/gen_iconfont.py --size 48
+// --icons comment-sms --out ui_font_logo.c），同样是编译进 flash 的位图字体
+extern "C" const lv_font_t ui_font_logo;
 
 namespace ui {
 
@@ -29,6 +32,9 @@ bool fontsReady();
 
 // 图标字体（始终可用）
 const lv_font_t *fontIcon();
+
+// 开机页 Logo 字体（48px 图标，始终可用）
+const lv_font_t *fontLogo();
 
 // 正文 / 菜单 / 状态值（中文字库未就绪时返回 ASCII 兜底字体）
 const lv_font_t *fontText();

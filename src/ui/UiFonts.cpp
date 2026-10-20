@@ -99,6 +99,7 @@ void fontsTick() {
 bool fontsReady() { return g_ready; }
 
 const lv_font_t *fontIcon() { return &ui_font_icon_20; }
+const lv_font_t *fontLogo() { return &ui_font_logo; }
 
 const lv_font_t *fontText() { return g_ready && g_text ? g_text : g_ascii; }
 

@@ -43,10 +43,13 @@ ICONS = [
     "microchip",        # PSRAM
     "lightbulb",        # RGB 指示灯
     "tower-broadcast",  # 模组 / 基站
-    "sim-card",         # SIM 卡状态
+    "sim-card",         # SIM 卡状态（状态页模组行）
     "comment-sms",      # 短信
     "envelope",         # 邮件通知
     "paper-plane",      # Webhook 推送
+    "id-card",          # 本机 MAC
+    "gauge-high",       # CPU 负载
+    "satellite-dish",   # MQTT
     "terminal",         # AT 命令
     # ---- 菜单 / 通用 ----
     "house",            # 回到状态页
@@ -108,6 +111,10 @@ def main():
     ap.add_argument("--bpp", type=int, default=4, choices=[1, 2, 3, 4, 8],
                     help="抗锯齿位深")
     ap.add_argument("--meta", help="FontAwesome icon-families.json 路径")
+    # 生成开机 Logo 用的大字字体时指定这两个参数：
+    #   python3 script/gen_iconfont.py --size 48 --icons comment-sms --out ui_font_logo.c
+    ap.add_argument("--icons", help="逗号分隔的图标名，默认用脚本内的 ICONS 列表")
+    ap.add_argument("--out", help="输出文件名，默认 ui_font_icon_<size>.c")
     args = ap.parse_args()
 
     ttf_path = args.ttf
@@ -126,10 +133,11 @@ def main():
     if not os.path.exists(meta_path):
         sys.exit("缺少图标元数据 %s：先 npm i @fortawesome/fontawesome-free" % meta_path)
 
-    codes = resolve_codepoints(ICONS, meta_path, ttf_path)
+    names = [s.strip() for s in args.icons.split(",") if s.strip()] if args.icons else ICONS
+    codes = resolve_codepoints(names, meta_path, ttf_path)
     print("[iconfont] 选中 %d 个图标" % len(codes))
 
-    out_name = "ui_font_icon_%d.c" % args.size
+    out_name = args.out or ("ui_font_icon_%d.c" % args.size)
     out_path = os.path.join(PROJECT_DIR, "src", "ui", "fonts", out_name)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
