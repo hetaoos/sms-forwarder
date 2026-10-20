@@ -108,10 +108,10 @@ struct SmsPreview {
 // 对外提供读写接口与导入导出，供 Web「屏幕显示」页直接操作。
 class UIMenu {
  public:
-  // 菜单槽位上限：与 UI 层 ui::Ui 的 kMaxMenuRows 保持一致（超出部分靠滚动查看）
-  static constexpr uint8_t kMenuSlots = 8;
+  // 菜单槽位上限：与 UI 层 ui::Ui 的 kMaxMenuRows 保持一致（超出部分由 UI 滚动查看）
+  static constexpr uint8_t kMenuSlots = 12;
   // 正文行上限：与 UI 层 ui::Ui 的 kMaxInfoRows 保持一致
-  static constexpr uint8_t kInfoSlots = 9;
+  static constexpr uint8_t kInfoSlots = 16;
 
   explicit UIMenu(Display &disp) : _disp(disp) {}
 
@@ -152,7 +152,8 @@ class UIMenu {
 
   // 是否处于实时状态页（App 据此决定渲染路径）
   bool inStatusMode() const { return _statusMode; }
-  void enterStatusMode() { _statusMode = true; }
+  // 回到实时状态页；顺手记下根菜单当前选中的项，下次进菜单时接着用
+  void enterStatusMode();
 
   // 是否处于可滚动文本页（屏幕显示 / 短信详情）
   bool inView() const { return _view; }
@@ -202,8 +203,9 @@ class UIMenu {
   void openView(const char *title, const String &text);
   // 「屏幕显示」页的文本构建（实时数据源，每次刷新重新抓取状态快照）
   void fillStatusView(String &out);
-  // 短信详情文本（短信页选中项）
+  // 短信详情文本：短信页取选中项，弹窗取弹窗里那份
   void fillSmsView(String &out) const;
+  static void fillSmsViewOf(const SmsPreview &m, String &out);
 
   // ---- 动态页 ----
   // 按当前状态快照填充 pg 的选项 / 正文（pg 是 *_current 的副本，可安全改写）
@@ -241,11 +243,18 @@ class UIMenu {
   bool _statusMode = true;        // 默认停留在实时状态页
   const MenuPage *_current = nullptr;  // 当前所在页面
   int8_t _cursor = 0;             // 当前高亮项
-  uint8_t _top = 0;               // 菜单视口首行下标（选项多于槽位时滚动）
+
+  // 导航栈：除页面外还记住离开时的光标位置——返回时回到上次选中的那一项，
+  // 而不是一律回到第一项（层层下钻再返回时体验差别很大）
+  struct Frame {
+    const MenuPage *page;
+    int8_t cursor;
+  };
   static constexpr uint8_t kMaxDepth = 8;  // 导航栈深度上限
-  const MenuPage *_stack[kMaxDepth];       // 上级页面栈（返回用）
+  Frame _stack[kMaxDepth];
   uint8_t _depth = 0;             // 当前栈深（0 = 根页面）
   uint8_t _dynCount = 0;          // 当前动态页的条目数（静态页无意义）
+  int8_t _rootCursor = 0;         // 根菜单上次选中的项（从状态页再进来时恢复）
 
   // ---- 可滚动文本页 ----
   bool _view = false;             // 是否处于可滚动文本页

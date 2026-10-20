@@ -40,10 +40,11 @@ constexpr lv_coord_t kRowTop = kHeaderH + 4;   // 状态区首行 Y：38
 // 行高取 23：图标字体（20px）行高就是 23，再矮会把图标裁掉；
 // 12 行同时可见 = 276px（38~314），屏底留 6px
 constexpr lv_coord_t kRowH = 23;
-constexpr lv_coord_t kMenuTop = kHeaderH + 6;  // 菜单首行 Y：40
 constexpr lv_coord_t kMenuRowH = 30;           // 菜单行高
-constexpr lv_coord_t kInfoRowH = 24;           // 正文行距（固定坐标，故正文不折行）
-constexpr lv_coord_t kBarTopMax = 284;         // 底部进度条的 Y 上限（不让位给页脚）
+constexpr lv_coord_t kBodyTop = kHeaderH + 4;  // 菜单正文区 Y：38
+constexpr lv_coord_t kBodyH = 254;             // 菜单正文区高度（无进度条时 38~292）
+constexpr lv_coord_t kBodyHBar = 218;          // 有进度条时正文区收窄（38~256）
+constexpr lv_coord_t kBarTopMax = 262;         // 底部进度条 Y（正文区收窄后腾出）
 constexpr lv_coord_t kViewTop = kHeaderH + 4;  // 屏幕显示区 Y：38
 constexpr lv_coord_t kViewH = 254;             // 屏幕显示区高度（38~292）
 constexpr lv_coord_t kFootTop = 294;           // 菜单/屏幕显示页的页脚行
@@ -166,6 +167,41 @@ lv_obj_t *Ui::newLabel(lv_obj_t *parent, uint8_t kind, uint32_t color, const cha
   return l;
 }
 
+// 标题栏标签：除了登记字体，还要在字体切换后重算基线偏移
+lv_obj_t *Ui::newHeaderLabel(lv_obj_t *parent, uint8_t kind, uint32_t color,
+                             const char *text, lv_text_align_t align) {
+  lv_obj_t *l = newLabel(parent, kind, color, text, align);
+  if (!l) return l;
+  // 高度铺满整条标题栏：文本的竖直位置由 layoutHeader() 用 pad_top 摆放，
+  // 不再依赖 flex 的交叉轴居中（那会把不同字号摆成一高一低）
+  lv_obj_set_height(l, kHeaderH);
+  if (_hdrCount < kMaxHeaderLabels) {
+    _hdrLabels[_hdrCount].obj = l;
+    _hdrLabels[_hdrCount].kind = kind;
+    _hdrCount++;
+  }
+  return l;
+}
+
+// 标题栏按基线对齐（详见 Ui.h 的声明注释）：
+// 以标题字体的行盒为基准竖直居中，得到一条公共基线；图标 / 标题 / 时钟
+// 各自的基线都落到这条线上，字号不同也不会错落。
+void Ui::layoutHeader() {
+  const lv_font_t *ft = fontTitle();
+  const int32_t lhT = ft ? (int32_t)ft->line_height : (int32_t)kHeaderH;
+  const int32_t blT = ft ? (int32_t)ft->base_line : 0;
+  const int32_t baseline = (kHeaderH - lhT) / 2 + (lhT - blT);
+  for (uint8_t i = 0; i < _hdrCount; i++) {
+    lv_obj_t *l = _hdrLabels[i].obj;
+    if (!l) continue;
+    const lv_font_t *f = fontFor(_hdrLabels[i].kind);
+    const int32_t off = f ? (int32_t)(f->line_height - f->base_line) : 0;
+    lv_obj_set_style_pad_top(l, baseline - off, 0);
+    lv_obj_set_style_pad_bottom(l, 0, 0);
+    lv_obj_invalidate(l);
+  }
+}
+
 void Ui::applyFonts() {
   for (uint8_t i = 0; i < _labelCount; i++) {
     LabelRef &r = _labels[i];
@@ -173,6 +209,7 @@ void Ui::applyFonts() {
     lv_obj_set_style_text_font(r.obj, fontFor(r.kind), 0);
     lv_obj_invalidate(r.obj);   // 强制重画，让新字体立即生效
   }
+  layoutHeader();   // 字号变了，标题栏的基线偏移要跟着重算
   // 此刻字形缓存已随首屏文本逐个建立起来（同样落在 PSRAM），这里把账目打明白：
   // 渲染缓冲 + TTF 正文 + 字形缓存的总占用一目了然，便于判断是否需要压缩 cache
   _log.addf(LogLevel::kInfo, "ui",
@@ -194,6 +231,7 @@ void Ui::begin() {
   buildView();
   buildPopup();
   buildBoot();
+  layoutHeader();   // 标题栏按基线对齐（此时已登记完所有标题栏标签）
   // 开机先落在开机页：此时中文字库与各业务模块都还没就绪，状态页还不能取数
   lv_screen_load(_scrBoot);
   _current = 3;
@@ -265,10 +303,10 @@ void Ui::buildStatus() {
 
   // 标题栏：图标 + 产品名 + 右侧时钟
   lv_obj_t *hdr = makeHeader(_scrStatus);
-  newLabel(hdr, 0, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_LEFT);
-  lv_obj_t *ttl = newLabel(hdr, 2, C_TEXT, "短信转发器", LV_TEXT_ALIGN_LEFT);
+  newHeaderLabel(hdr, 0, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_LEFT);
+  lv_obj_t *ttl = newHeaderLabel(hdr, 2, C_TEXT, "短信转发器", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_flex_grow(ttl, 1);
-  _stClock = newLabel(hdr, 1, C_TEXT, "--:--:--", LV_TEXT_ALIGN_RIGHT);
+  _stClock = newHeaderLabel(hdr, 1, C_TEXT, "--:--:--", LV_TEXT_ALIGN_RIGHT);
 
   // 状态行：图标 / 标签在左侧，值右对齐。
   // 用 flex 列容器承载：隐藏某行（AP 模式下隐藏 RSSI）后续行会自动上移，
@@ -307,38 +345,54 @@ void Ui::buildMenu() {
   lv_obj_set_style_bg_opa(_scrMenu, LV_OPA_COVER, 0);
 
   lv_obj_t *hdr = makeHeader(_scrMenu);
-  newLabel(hdr, 0, C_ACCENT, UI_ICON_MENU, LV_TEXT_ALIGN_LEFT);
-  _mnTitle = newLabel(hdr, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+  newHeaderLabel(hdr, 0, C_ACCENT, UI_ICON_MENU, LV_TEXT_ALIGN_LEFT);
+  _mnTitle = newHeaderLabel(hdr, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_flex_grow(_mnTitle, 1);
+
+  // 正文区：可竖向滚动的列容器。
+  // 之前是「固定槽位 + 写死坐标」，条目或正文一多就只能截断；换成 flex 列 +
+  // LVGL 原生滚动后，两件事一并解决：条目多于一屏可以滚（高亮行自动滚入视野），
+  // 正文过长自动换行并整体滚动。隐藏的部件不参与 flex 布局，剩余行自动上移。
+  _mnBody = lv_obj_create(_scrMenu);
+  lv_obj_remove_style_all(_mnBody);
+  lv_obj_set_pos(_mnBody, 0, kBodyTop);
+  lv_obj_set_size(_mnBody, LV_PCT(100), kBodyH);
+  lv_obj_set_flex_flow(_mnBody, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(_mnBody, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_START);
+  lv_obj_set_scroll_dir(_mnBody, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(_mnBody, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_pad_all(_mnBody, 0, 0);
+  lv_obj_set_style_pad_gap(_mnBody, 0, 0);
 
   // 选项槽位：固定数量，靠显隐 + 改文本复用，避免反复创建/销毁部件
   for (uint8_t i = 0; i < kMaxMenuRows; i++) {
-    lv_obj_t *row = makeRow(_scrMenu, kMenuRowH, kPad);
+    lv_obj_t *row = makeRow(_mnBody, kMenuRowH, kPad);
     // 整行铺满宽度（高亮底色也跟着通栏），文字由 makeRow 的内边距缩进
-    lv_obj_set_pos(row, 0, kMenuTop + i * kMenuRowH);
     lv_obj_set_style_radius(row, 6, 0);
     _mnRow[i] = row;
     _mnIcon[i] = newLabel(row, 0, C_LABEL, "", LV_TEXT_ALIGN_LEFT);
     lv_obj_t *lb = newLabel(row, 1, C_LABEL, "", LV_TEXT_ALIGN_LEFT);
     lv_obj_set_flex_grow(lb, 1);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_DOTS);
     _mnLabel[i] = lb;
     lv_obj_set_hidden(row, true);
   }
 
   // 正文槽位：与选项互斥（信息页用它）。
-  // 行距固定 24px，因此正文一律用 DOTS 截断而不是 WRAP——一旦某行折行就会
-  // 压到下一行上（槽位坐标是写死的），宁可截断也不叠字。
+  // 用 WRAP：正文过长时自动折行，由外层滚动容器承载，不再靠写死行距截断。
   for (uint8_t i = 0; i < kMaxInfoRows; i++) {
-    lv_obj_t *lb = newLabel(_scrMenu, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
-    lv_obj_set_pos(lb, kPad, kMenuTop + i * kInfoRowH);
-    lv_obj_set_width(lb, kScreenW - kPad * 2);
-    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_t *lb = newLabel(_mnBody, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+    lv_obj_set_width(lb, LV_PCT(100));
+    lv_obj_set_style_pad_left(lb, kPad, 0);
+    lv_obj_set_style_pad_right(lb, kPad, 0);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_hidden(lb, true);
     _mnInfo[i] = lb;
   }
 
   // 底部进度条：调节类页面（亮度 / 超时）用它直观显示当前值。
-  // 位置紧跟在选项区下方，右侧留一列显示数值文本；不显示时整组隐藏。
+  // 位置固定在正文区与页脚之间，显示时正文区同步收窄（见 menuUpdate）。
   constexpr lv_coord_t barW = 150, barH = 8;
   lv_obj_t *bar = lv_bar_create(_scrMenu);
   lv_obj_remove_style_all(bar);
@@ -379,8 +433,8 @@ void Ui::buildView() {
   lv_obj_set_style_bg_opa(_scrView, LV_OPA_COVER, 0);
 
   lv_obj_t *hdr = makeHeader(_scrView);
-  newLabel(hdr, 0, C_ACCENT, UI_ICON_DISPLAY, LV_TEXT_ALIGN_LEFT);
-  _svTitle = newLabel(hdr, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+  newHeaderLabel(hdr, 0, C_ACCENT, UI_ICON_DISPLAY, LV_TEXT_ALIGN_LEFT);
+  _svTitle = newHeaderLabel(hdr, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_flex_grow(_svTitle, 1);
 
   // 定高容器 + 一个可整体上下偏移的长文本，实现「按行滚动」
@@ -412,8 +466,8 @@ void Ui::buildPopup() {
   lv_obj_set_style_bg_opa(_scrPopup, LV_OPA_COVER, 0);
 
   lv_obj_t *hdr = makeHeader(_scrPopup);
-  newLabel(hdr, 0, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_LEFT);
-  lv_obj_t *ttl = newLabel(hdr, 2, C_TEXT, "新短信", LV_TEXT_ALIGN_LEFT);
+  newHeaderLabel(hdr, 0, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_LEFT);
+  lv_obj_t *ttl = newHeaderLabel(hdr, 2, C_TEXT, "新短信", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_flex_grow(ttl, 1);
 
   // 号码（标题字号，整行放不下就截断）
@@ -538,6 +592,14 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
   if (infoCount > kMaxInfoRows) infoCount = kMaxInfoRows;
   if (barPct > 100) barPct = 100;
 
+  // 换了页面（标题变了）就把滚动位置复位到顶部，
+  // 否则从长页面退回短页面时会停在一个不存在的偏移上
+  String t = title ? title : "";
+  if (t != _mnTitlePrev) {
+    _mnTitlePrev = t;
+    if (_mnBody) lv_obj_scroll_to_y(_mnBody, 0, LV_ANIM_OFF);
+  }
+
   // 内容指纹：标题/选中/页脚/选项/正文/进度条任一变化才重设整页，
   // 避免按键连发时的重排（连发每秒 5 次，内容多数时候没变）
   String fp = (title ? title : "");
@@ -593,26 +655,50 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
     lv_label_set_text(_mnInfo[i], info[i] ? info[i] : "");
   }
 
-  // 进度条：紧跟在选项区下方（选项少时贴近内容，选项多时退到页脚上方让位）
+  // 进度条：固定在正文区与页脚之间；显示时正文区收窄，避免被压住
   const bool showBar = (barPct >= 0);
+  if (_mnBody) lv_obj_set_height(_mnBody, showBar ? kBodyHBar : kBodyH);
   if (_mnBar) {
     if (showBar) {
-      lv_coord_t y = kMenuTop + n * kMenuRowH + 6;
-      if (y > kBarTopMax) y = kBarTopMax;
-      lv_obj_set_y(_mnBar, y);
+      lv_obj_set_y(_mnBar, kBarTopMax);
       lv_bar_set_value(_mnBar, barPct, LV_ANIM_OFF);
     }
     lv_obj_set_hidden(_mnBar, !showBar);
   }
   if (_mnBarVal) {
     if (showBar) {
-      lv_obj_set_y(_mnBarVal, (_mnBar ? lv_obj_get_y(_mnBar) : kBarTopMax) - 4);
+      lv_obj_set_y(_mnBarVal, kBarTopMax - 4);
       lv_label_set_text(_mnBarVal, barText ? barText : "");
     }
     lv_obj_set_hidden(_mnBarVal, !showBar);
   }
 
+  // 高亮行滚入视野：条目多于一屏时，上下键移动光标即可带动滚动，
+  // 业务侧不用自己算视口。布局先刷新一次，否则拿到的是上一帧的坐标。
+  if (sel >= 0 && sel < (int8_t)n && _mnRow[sel]) {
+    lv_obj_update_layout(_mnBody);
+    lv_obj_scroll_to_view(_mnRow[sel], LV_ANIM_OFF);
+  }
+
   lv_label_set_text(_mnFoot, foot ? foot : "");
+}
+
+void Ui::menuScrollBy(int dy) {
+  if (!_mnBody) return;
+  lv_obj_scroll_by(_mnBody, 0, dy, LV_ANIM_OFF);
+}
+
+int Ui::menuScrollStep() const {
+  const int32_t lh = (int32_t)lv_font_get_line_height(fontText());
+  return lh > 0 ? (int)lh : 20;
+}
+
+int Ui::menuScrollPage() const {
+  const int32_t lh = (int32_t)lv_font_get_line_height(fontText());
+  if (lh <= 0) return 100;
+  int visible = kBodyH / lh;
+  if (visible < 1) visible = 1;
+  return (int)(lh * (visible - 1));
 }
 
 int Ui::textViewUpdate(const char *title, const char *text, int scroll) {
@@ -628,9 +714,12 @@ int Ui::textViewUpdate(const char *title, const char *text, int scroll) {
   fp += '\n';
   fp += (text ? text : "");
 
+  // 行数按正文统计（不含标题），与页脚的「第 n / 共 m 行」口径一致
   int lines = 1;
-  for (size_t i = 0; i < fp.length(); i++) {
-    if (fp[i] == '\n') lines++;
+  if (text) {
+    for (const char *p = text; *p; p++) {
+      if (*p == '\n') lines++;
+    }
   }
   const int lineH = (int)lv_font_get_line_height(fontText());
   if (lineH <= 0) return scroll;

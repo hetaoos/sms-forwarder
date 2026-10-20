@@ -50,13 +50,20 @@ class Ui {
   void statusUpdate(const StatusInfo &s);
 
   // ---- 菜单页 ----
-  // rows/n：选项；sel：高亮下标（-1 表示纯信息页，展示 info）；
-  // info/infoCount：正文；foot：页脚（可为 nullptr）；
+  // rows/n：选项（可多于可见行数，区域自带滚动，高亮行会自动滚入视野）；
+  // sel：高亮下标（-1 表示纯信息页，展示 info）；
+  // info/infoCount：正文（过长自动换行 + 随区域滚动）；foot：页脚（可为 nullptr）；
   // barPct：底部进度条取值（0-100，负数 = 不显示进度条）；
   // barText：进度条右侧的数值文本（如 "80%" / "60秒"，可为 nullptr）
   void menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t sel,
                   const char *const *info, uint8_t infoCount, const char *foot,
                   int barPct = -1, const char *barText = nullptr);
+
+  // 菜单正文区滚动（纯信息页用：dy > 0 向下看更多内容）；返回一行的像素高
+  void menuScrollBy(int dy);
+  // 一行 / 一页的滚动步长（像素），供业务侧换算上下键与长按翻页
+  int menuScrollStep() const;
+  int menuScrollPage() const;
 
   // ---- 可滚动文本页（屏幕显示 / 短信详情）----
   // title：标题栏文案；text：正文（可含换行）；scroll：期望滚动偏移（行）
@@ -87,6 +94,16 @@ class Ui {
   lv_obj_t *newLabel(lv_obj_t *parent, uint8_t kind, uint32_t color, const char *text,
                      lv_text_align_t align);
 
+  // 建立标题栏内的标签：登记进 _hdr*，由 layoutHeader() 统一按基线对齐
+  lv_obj_t *newHeaderLabel(lv_obj_t *parent, uint8_t kind, uint32_t color,
+                           const char *text, lv_text_align_t align);
+
+  // 标题栏按基线对齐：LVGL 只居中「行盒」，而各字号字体在行盒内的上下留白
+  // 不同，直接居中会让标题与时钟一高一低。这里以标题字体的行盒为基准竖直居中，
+  // 算出一条公共基线，其余标签按各自字体基线摆到这条线上。
+  // 字体切换（中文字库就绪）后必须重算，故在 applyFonts() 里也调一次。
+  void layoutHeader();
+
   // 中文字库就绪后把所有标签的字体刷一遍，避免挂 UI 时用的是 ASCII 兜底字体
   void applyFonts();
 
@@ -105,16 +122,21 @@ class Ui {
   String _stCache[kStatusRows];            // 上次的值（变化才重设文本）
   bool _stHidden[kStatusRows] = {};        // 上一次的显隐状态（变化才改）
 
-  // 菜单页：标题 + 固定数量的行槽位（用显隐切换，避免反复建/删对象）。
-  // 选项多于槽位时由业务侧做视口滚动，这里只管画传入的这几行。
-  static constexpr uint8_t kMaxMenuRows = 8;
-  static constexpr uint8_t kMaxInfoRows = 9;
+  // 菜单页：标题 + 可滚动正文区（列容器）。
+  // 选项与正文都放进这个可竖向滚动的列容器：
+  //   - 条目多于一屏可以滚（高亮行自动滚入视野，业务侧无需再算视口）；
+  //   - 正文过长自动换行并整体滚动，不再靠写死坐标截断。
+  // 槽位仍是固定数量（避免反复建/删部件），隐藏的部件不参与 flex 布局。
+  static constexpr uint8_t kMaxMenuRows = 12;
+  static constexpr uint8_t kMaxInfoRows = 16;
   lv_obj_t *_mnTitle = nullptr;
+  lv_obj_t *_mnBody = nullptr;
   lv_obj_t *_mnRow[kMaxMenuRows] = {};
   lv_obj_t *_mnIcon[kMaxMenuRows] = {};
   lv_obj_t *_mnLabel[kMaxMenuRows] = {};
   lv_obj_t *_mnInfo[kMaxInfoRows] = {};
   lv_obj_t *_mnFoot = nullptr;
+  String _mnTitlePrev;          // 上次渲染的标题（变了就说明换了页，滚动回顶）
   lv_obj_t *_mnBar = nullptr;      // 底部进度条（调节类页面显示）
   lv_obj_t *_mnBarVal = nullptr;   // 进度条右侧的数值文本
   String _mnCache;               // 上次渲染的内容指纹（相同则跳过整页更新）
@@ -140,6 +162,10 @@ class Ui {
   };
   LabelRef _labels[kMaxLabels];
   uint8_t _labelCount = 0;
+  // 标题栏标签登记表（layoutHeader 需要按字号逐个算基线偏移）
+  static constexpr uint8_t kMaxHeaderLabels = 16;
+  LabelRef _hdrLabels[kMaxHeaderLabels];
+  uint8_t _hdrCount = 0;
   // 当前活动页：0 状态 / 1 菜单 / 2 文本 / 3 开机 / 4 弹窗
   uint8_t _current = 0;
   bool _built = false;    // begin() 是否已装配完成（部件只建一次）

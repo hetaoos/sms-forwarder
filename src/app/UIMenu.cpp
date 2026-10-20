@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include "app/Config.h"
 #include "ui/Ui.h"
@@ -165,7 +166,7 @@ void UIMenu::begin() {
   _statusMode = true;
   _current = nullptr;
   _cursor = 0;
-  _top = 0;
+  _rootCursor = 0;
   _depth = 0;
   _view = false;
   _viewScroll = 0;
@@ -173,6 +174,13 @@ void UIMenu::begin() {
   _dirty = true;
   _dynCount = 0;
   loadConfig();   // 恢复背光亮度 / 自动熄屏 / 自动返回状态页（无记录时保持默认）
+}
+
+// 回到实时状态页：顺手记下根菜单当前选中的项，下次从状态页进菜单时接着用
+void UIMenu::enterStatusMode() {
+  if (_current == &kPageRoot) _rootCursor = _cursor;
+  _statusMode = true;
+  _dirty = true;
 }
 
 // ================= 按键 =================
@@ -190,18 +198,24 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     return;
   }
 
-  // 新短信弹窗期间：任意键收起弹窗（不穿透到下面的页面）
+  // 新短信弹窗期间：OK 打开全文（可滚动），其余任意键收起
   if (_popup) {
-    dismissPopup();
+    if (ev == KeyEvent::kClick && key == KeyId::kOk) {
+      String t;
+      fillSmsViewOf(_popMsg, t);   // 正文长时到可滚动文本页里看全文
+      openView("短信详情", t);
+      dismissPopup();
+    } else {
+      dismissPopup();
+    }
     return;
   }
 
-  // 状态页下任意键 -> 进入主菜单（吞掉这一下）
+  // 状态页下任意键 -> 进入主菜单（吞掉这一下），并回到上次选中的那一项
   if (_statusMode) {
     _statusMode = false;
     _current = &kPageRoot;
-    _cursor = 0;
-    _top = 0;
+    _cursor = _rootCursor;
     _depth = 0;
     _dirty = true;
     return;
@@ -234,15 +248,26 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     return;  // 熄屏后无需重绘
   }
 
+  // 纯信息页（无选项）的 UP/DOWN 是滚正文，有选项时才是移动光标
+  const bool infoPage = (currentItemCount() == 0);
+  const int step = ui::instance().menuScrollStep();
+  const int page = ui::instance().menuScrollPage();
+
   if (ev == KeyEvent::kClick) {
-    if (key == KeyId::kUp) moveCursor(-1);
-    else if (key == KeyId::kDown) moveCursor(1);
+    if (key == KeyId::kUp) {
+      if (infoPage) ui::instance().menuScrollBy(-step); else moveCursor(-1);
+    } else if (key == KeyId::kDown) {
+      if (infoPage) ui::instance().menuScrollBy(step); else moveCursor(1);
+    }
     else if (key == KeyId::kOk) activate();
     else if (key == KeyId::kBack) back();
   } else if (ev == KeyEvent::kRepeat) {
-    // 连发仅对 UP/DOWN/OK 有意义（移动光标 / 重复执行动作）
-    if (key == KeyId::kUp) moveCursor(-1);
-    else if (key == KeyId::kDown) moveCursor(1);
+    // 连发仅对 UP/DOWN/OK 有意义（滚动 / 移动光标 / 重复执行动作）
+    if (key == KeyId::kUp) {
+      if (infoPage) ui::instance().menuScrollBy(-page); else moveCursor(-1);
+    } else if (key == KeyId::kDown) {
+      if (infoPage) ui::instance().menuScrollBy(page); else moveCursor(1);
+    }
     else if (key == KeyId::kOk) activate();
     // BACK 连发忽略
   }
@@ -261,35 +286,25 @@ void UIMenu::render() {
   MenuPage pg = *_current;
   if (pg.id != PageId::kNone) buildDynamic(pg);
 
-  // 视口滚动：条目多于槽位时，保证光标行始终可见
+  // 条目全部交给 UI 层（区域自带滚动，高亮行会自动滚入视野）
   const uint8_t n = pg.itemCount;
   _dynCount = n;
-  if (n > kMenuSlots) {
-    if ((uint8_t)_cursor < _top) _top = (uint8_t)_cursor;
-    if ((uint8_t)_cursor >= _top + kMenuSlots) _top = (uint8_t)_cursor - kMenuSlots + 1;
-    if (_top + kMenuSlots > n) _top = n - kMenuSlots;
-  } else {
-    _top = 0;
-  }
   if ((uint8_t)_cursor >= n && n > 0) _cursor = n - 1;
 
-  uint8_t shown = n - _top;
-  if (shown > kMenuSlots) shown = kMenuSlots;
-
   ui::MenuRow rows[kMenuSlots];
-  for (uint8_t i = 0; i < shown; i++) {
-    const MenuItem &it = pg.items[_top + i];
-    rows[i].icon = it.icon;
-    rows[i].label = it.label;
+  for (uint8_t i = 0; i < n && i < kMenuSlots; i++) {
+    rows[i].icon = pg.items[i].icon;
+    rows[i].label = pg.items[i].label;
   }
 
-  // 页脚：滚动位置 + 操作提示（RGB 页改报当前颜色）
+  // 页脚：选项页给「第几项/共几项 + 操作提示」，信息页提示可滚动
   String foot;
-  if (n > kMenuSlots) foot += String(_cursor + 1) + "/" + String(n) + " ";
-  if (pg.id == PageId::kRgb) {
-    foot += "OK切换  " + String(_snap.rgbName);
+  if (n > 0) {
+    foot += String(_cursor + 1) + "/" + String(n) + " ";
+    if (pg.id == PageId::kRgb) foot += "OK切换  " + String(_snap.rgbName);
+    else foot += "OK进入 BACK返回";
   } else {
-    foot += "OK进入 BACK返回";
+    foot += "U/D滚动 BACK返回";
   }
 
   // 底部进度条（调节类页面）
@@ -298,8 +313,8 @@ void UIMenu::render() {
   const bool hasBar = barOf(pg, pct, barText);
 
   // 菜单页只给出「该显示什么」，具体排版/绘制交给 LVGL 页面层
-  ui::instance().menuUpdate(pg.title, rows, shown, (int8_t)(_cursor - _top), pg.info,
-                            pg.infoCount, foot.c_str(), hasBar ? pct : -1,
+  ui::instance().menuUpdate(pg.title, rows, n, (int8_t)_cursor, pg.info, pg.infoCount,
+                            foot.c_str(), hasBar ? pct : -1,
                             hasBar ? barText.c_str() : nullptr);
   _dirty = false;
 }
@@ -328,16 +343,19 @@ void UIMenu::activate() {
   const uint8_t n = currentItemCount();
   if (n == 0 || _cursor < 0 || (uint8_t)_cursor >= n) return;
   const MenuItem &it = items[_cursor];
-  if (it.sub) {  // 进入子页面：压栈当前页，再下钻
-    if (_depth < kMaxDepth) _stack[_depth++] = _current;
+  if (it.sub) {  // 进入子页面：压栈当前页（连同光标位置），再下钻
+    if (_depth < kMaxDepth) {
+      _stack[_depth].page = _current;
+      _stack[_depth].cursor = _cursor;
+      _depth++;
+    }
     _current = it.sub;
     _cursor = 0;
-    _top = 0;
     return;
   }
   switch (it.action) {
     case UiAction::kBackToStatus:
-      _statusMode = true;
+      enterStatusMode();
       break;
     case UiAction::kBrightnessUp:
       setBright((int)_disp.brightness() + 10);
@@ -390,20 +408,23 @@ void UIMenu::activate() {
 }
 
 void UIMenu::back() {
-  if (_depth > 0) {  // 弹出上一级页面
+  if (_depth > 0) {  // 弹出上一级页面，并恢复到离开时选中的那一项
     _depth--;
-    _current = _stack[_depth];
-    _cursor = 0;
-    _top = 0;
+    _current = _stack[_depth].page;
+    _cursor = _stack[_depth].cursor;
   } else {
-    _statusMode = true;  // 根页面再返回 -> 状态页
+    enterStatusMode();  // 根页面再返回 -> 状态页
   }
 }
 
 // ================= 可滚动文本页 =================
 
 void UIMenu::openView(const char *title, const String &text) {
-  if (_depth < kMaxDepth) _stack[_depth++] = _current;
+  if (_depth < kMaxDepth) {
+    _stack[_depth].page = _current ? _current : &kPageRoot;
+    _stack[_depth].cursor = _cursor;
+    _depth++;
+  }
   _view = true;
   _viewLive = false;
   _viewTitle = title ? title : "";
@@ -417,14 +438,14 @@ void UIMenu::leaveView() {
   _view = false;
   _viewLive = false;
   _viewScroll = 0;
-  if (_depth > 0) {
+  if (_depth > 0) {   // 回到打开文本页时所在的菜单页（含当时选中的项）
     _depth--;
-    _current = _stack[_depth];
+    _current = _stack[_depth].page;
+    _cursor = _stack[_depth].cursor;
   } else {
     _current = &kPageRoot;
+    _cursor = _rootCursor;
   }
-  _cursor = 0;
-  _top = 0;
   _dirty = true;
 }
 
@@ -492,7 +513,10 @@ void UIMenu::fillStatusView(String &out) {
 
 // 短信详情文本（「短信」页选中项）
 void UIMenu::fillSmsView(String &out) const {
-  const SmsPreview &m = _smsPrev[_smsSel];
+  fillSmsViewOf(_smsPrev[_smsSel], out);
+}
+
+void UIMenu::fillSmsViewOf(const SmsPreview &m, String &out) {
   out = "号码: ";
   out += m.phone[0] ? m.phone : "-";
   out += "\n时间: ";
