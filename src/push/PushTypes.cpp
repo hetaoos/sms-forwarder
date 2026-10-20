@@ -13,6 +13,7 @@ const char* pushTypeLabel(PushType t) {
     case PUSH_TYPE_GOTIFY:      return "Gotify";
     case PUSH_TYPE_TELEGRAM:    return "Telegram Bot";
     case PUSH_TYPE_WECHAT_WORK: return "企业微信机器人";
+    case PUSH_TYPE_SMS:         return "SMS 短信备份";
     case PUSH_TYPE_MAILGUN:     return "Mailgun 邮件";
     default:                    return "未知";
   }
@@ -43,6 +44,7 @@ bool pushChannelValid(const PushChannel& ch) {
     case PUSH_TYPE_SERVERCHAN:  return ch.url.length() > 0 || ch.key1.length() > 0;
     case PUSH_TYPE_GOTIFY:      return ch.url.length() > 0 && ch.key1.length() > 0;
     case PUSH_TYPE_TELEGRAM:    return ch.key1.length() > 0 && ch.key2.length() > 0;
+    case PUSH_TYPE_SMS:         return ch.url.length() > 0;  // url = 目标手机号
     case PUSH_TYPE_MAILGUN:     return ch.key1.length() > 0 && ch.key2.length() > 0 && ch.key3.length() > 0;
     default:                    return false;
   }

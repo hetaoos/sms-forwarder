@@ -11,6 +11,8 @@
 #include "push/MsgContext.h"
 #include "push/PushChannels.h"
 
+class SmsService;  // 前向声明：SMS 备份通道的发送入口（App 装配时注入）
+
 // PushService：统一的 webhook 推送通道框架（参考 esp32-sms-forwarding 的 push 通信模组，
 // 适配本项目「按功能自管 NVS」架构）。
 //
@@ -26,6 +28,10 @@ class PushService {
  public:
   // 载入 NVS 配置并初始化队列（App::begin 调用）
   void begin();
+
+  // 注入短信服务（SMS 备份推送通道的发送入口）。App 装配时调用；
+  // 未注入时 SMS 备份通道一律判失败（其余通道不受影响）。
+  void setSms(SmsService *sms) { _sms = sms; }
 
   // 主循环调用（loop 任务上下文）：发送队列中的推送任务与重试项
   void tick();
@@ -116,7 +122,8 @@ class PushService {
   // 内部辅助：按通道配置分发单次推送（不含跳过判断）
   bool _sendOneChannel(const PushChannel &ch, const MessageContext &ctx,
                        const String &sender, const String &message,
-                       const String &renderedBody, const String &timestamp);
+                       const String &renderedBody, const String &timestamp,
+                       MsgType type);
 
   // 构建消息上下文（内部辅助）
   MessageContext buildMsgContext(const PushJob &job, const String &messageType);
@@ -140,6 +147,8 @@ class PushService {
   static String localDateStr();
 
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护配置、队列与重试表（递归锁）
+
+  SmsService *_sms = nullptr;   // 短信服务（SMS 备份通道发送入口；未注入时该通道判失败）
 
   bool     _enabled = false;                   // 推送总开关（NVS 无记录默认关）
   PushStrategy _strategy = PUSH_STRATEGY_BROADCAST;

@@ -138,6 +138,14 @@ bool App::begin() {
     _log.addf(LogLevel::kInfo, "sim", "通信模组 %u SIM %s", (unsigned)port,
               ready ? "已插入" : "已拔出");
   });
+  // 来电（+CLIP/+CLCC 检测）-> 邮件 / MQTT / webhook 推送入队 + 设备日志入库。
+  // 回调运行于 tick 主循环（SmsService 派发点），各 notify 均为浅入队，安全。
+  _sms.setOnCallReceivedCb([this](const String &number, uint32_t ts, int8_t modem) {
+    _email.notifyCall(number, ts, modem);
+    _mqtt.notifyCall(number, ts, modem);
+    _push.notifyCall(number, ts, modem);
+  });
+  _push.setSms(&_sms);  // SMS 备份推送通道的发送入口（无注入时该通道判失败）
   // OTA 升级状态初始化（需在 HTTP 路由注册前完成，确保 /api/ota/status 立即可用）
   Ota::init();
   _panel.begin();                      // 启动 HTTP 服务

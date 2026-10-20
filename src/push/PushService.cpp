@@ -36,9 +36,23 @@ static String sanitizeText(const String& s) {
   return out;
 }
 
-// 全部通道均为 HTTP 类，依赖 WiFi 上网
+// HTTP 类通道依赖 WiFi 上网；PUSH_TYPE_SMS（短信备份）走通信模组，正是为
+// 网络不可用场景准备的兜底通道，故不受 WiFi 判定约束。
 static bool isHttpPush(PushType t) {
-  return t >= PUSH_TYPE_POST_JSON && t <= PUSH_TYPE_MAILGUN && t != PUSH_TYPE_NONE;
+  return t >= PUSH_TYPE_POST_JSON && t <= PUSH_TYPE_MAILGUN && t != PUSH_TYPE_NONE &&
+         t != PUSH_TYPE_SMS;
+}
+
+// SMS 备份通道只对「短信 / 来电」两类事件有意义：SIM / 启动 / 在线事件
+// 本身与具体某封信无关，且启动/在线时模组多半还没就绪，发了也发不出。
+static bool smsPushSkipped(MsgType t) {
+  return t == MSG_TYPE_SIM || t == MSG_TYPE_BOOT || t == MSG_TYPE_ONLINE;
+}
+
+// 归一化 modemSlot：<=0（含缺失 / 空串 / 0 / 非法值）一律视为「自动挑就绪模组」
+static int8_t normModemSlot(int v) {
+  if (v < 1) return -1;
+  return (int8_t)constrain(v, 1, cfg::kSmsMaxModems);
 }
 
 // ---------------- 标识 / 时间 ----------------
@@ -212,6 +226,11 @@ void PushService::executeChain(const PushJob& job) {
       _log.addf(LogLevel::kInfo, "push", "WiFi未连接，跳过HTTP通道: %s", ch.name.c_str());
       continue;
     }
+    if (ch.type == PUSH_TYPE_SMS && smsPushSkipped(job.type)) {
+      _log.addf(LogLevel::kInfo, "push", "%s事件跳过SMS备份通道: %s",
+                MsgTypeInfo(job.type, job.modem).toString().c_str(), ch.name.c_str());
+      continue;
+    }
 
     anyAction = true;
     String name = ch.name.length() > 0 ? ch.name : ("通道" + String(i + 1));
@@ -221,7 +240,8 @@ void PushService::executeChain(const PushJob& job) {
     ctx.channelType = pushTypeLabel(ch.type);
     String renderedBody = renderChannelBody(ch, ctx);
 
-    bool ok = _sendOneChannel(ch, ctx, job.sender, job.message, renderedBody, job.timestamp);
+    bool ok = _sendOneChannel(ch, ctx, job.sender, job.message, renderedBody, job.timestamp,
+                              job.type);
 
     if (snapStrategy == PUSH_STRATEGY_FAILOVER) {
       if (ok) {
@@ -274,19 +294,22 @@ bool PushService::executeChannel(int channelIdx, const PushJob& job) {
   }
   if (!pushChannelValid(ch)) return false;
   if (isHttpPush(ch.type) && WiFi.status() != WL_CONNECTED) return false;
+  if (ch.type == PUSH_TYPE_SMS && smsPushSkipped(job.type)) return false;
 
   String messageType = MsgTypeInfo(job.type, job.modem).toString();
   MessageContext ctx = buildMsgContext(job, messageType);
   ctx.channelName = ch.name;
   ctx.channelType = pushTypeLabel(ch.type);
   String renderedBody = renderChannelBody(ch, ctx);
-  return _sendOneChannel(ch, ctx, job.sender, job.message, renderedBody, job.timestamp);
+  return _sendOneChannel(ch, ctx, job.sender, job.message, renderedBody, job.timestamp,
+                         job.type);
 }
 
 // ---------------- 单通道分发 ----------------
 bool PushService::_sendOneChannel(const PushChannel& ch, const MessageContext& ctx,
                                   const String& sender, const String& message,
-                                  const String& renderedBody, const String& timestamp) {
+                                  const String& renderedBody, const String& timestamp,
+                                  MsgType type) {
   // 在通道副本中渲染 key1/key2/key5（不修改原通道配置）
   PushChannel rendered = ch;
   rendered.key1 = MsgContext::render(ch.key1, ctx);
@@ -315,6 +338,7 @@ bool PushService::_sendOneChannel(const PushChannel& ch, const MessageContext& c
     case PUSH_TYPE_TELEGRAM:    ok = PushChannels::sendTelegram(rendered, sender, body, timestamp);     break;
     case PUSH_TYPE_WECHAT_WORK: ok = PushChannels::sendWechatWork(rendered, sender, body, timestamp);   break;
     case PUSH_TYPE_MAILGUN:     ok = PushChannels::sendMailgun(rendered, sender, body, timestamp, ctx.simSlot); break;
+    case PUSH_TYPE_SMS:         ok = PushChannels::sendSmsBackup(rendered, sender, body, timestamp, type, _sms); break;
     default:
       _log.addf(LogLevel::kWarn, "push", "未知推送类型: %d", (int)rendered.type);
       break;
@@ -446,6 +470,7 @@ String PushService::configJson() const {
     if (String(secret) != "key5") o["key5"] = ch.key5;
     o["customBody"]  = ch.customBody;
     o["retryOnFail"] = ch.retryOnFail;
+    o["modemSlot"]   = (int)ch.modemSlot;  // SMS 备份通道的发出模组（-1=自动）
     o["enabled"]     = ch.enabled;            // 单通道启用位（覆盖在 valid 之外）
     o["valid"]       = pushChannelValid(ch);
   }
@@ -487,6 +512,7 @@ String PushService::typesJson() {
   add(PUSH_TYPE_GOTIFY, "url,key1", "name", false, "key1");
   add(PUSH_TYPE_TELEGRAM, "key1,key2", "url,name", false, "key2");
   add(PUSH_TYPE_WECHAT_WORK, "url", "name,key1", false, "key1");
+  add(PUSH_TYPE_SMS, "url", "name,modemSlot", true, "");
   add(PUSH_TYPE_MAILGUN, "key1,key2,key3", "url,key4,key5,name", false, "key1");
 
   String out;
@@ -523,6 +549,18 @@ bool PushService::saveFromJson(const JsonObject& o) {
         dst.key5        = ch["key5"] | "";
         dst.customBody  = ch["customBody"] | "";
         dst.retryOnFail = ch["retryOnFail"] | false;
+        // modemSlot：SMS 备份通道的发出模组（-1=自动挑就绪模组）。
+        // 接受数字或数字字符串（Web 表单是文本输入）；非 SMS 通道一律复位，
+        // 避免通道改类型后残留旧值。
+        dst.modemSlot = -1;
+        if (dst.type == PUSH_TYPE_SMS) {
+          if (ch["modemSlot"].is<int>()) {
+            dst.modemSlot = normModemSlot(ch["modemSlot"].as<int>());
+          } else if (ch["modemSlot"].is<const char *>()) {
+            dst.modemSlot =
+                normModemSlot(String(ch["modemSlot"].as<const char *>()).toInt());
+          }
+        }
         if (dst.name.length() == 0) dst.name = "通道" + String(cnt + 1);
         cnt++;
       }
@@ -555,6 +593,7 @@ void PushService::exportTo(JsonObject& o) const {
     c["key5"]       = ch.key5;
     c["customBody"] = ch.customBody;
     c["retryOnFail"] = ch.retryOnFail;
+    c["modemSlot"]  = (int)ch.modemSlot;
   }
 }
 
@@ -582,6 +621,7 @@ bool PushService::importFrom(const JsonObject& o) {
         dst.key5        = ch["key5"] | "";
         dst.customBody  = ch["customBody"] | "";
         dst.retryOnFail = ch["retryOnFail"] | false;
+        dst.modemSlot   = normModemSlot(ch["modemSlot"] | -1);
         cnt++;
       }
     }
@@ -628,6 +668,7 @@ bool PushService::loadConfig() {
       dst.key5        = ch["key5"] | "";
       dst.customBody  = ch["customBody"] | "";
       dst.retryOnFail = ch["retryOnFail"] | false;
+      dst.modemSlot   = normModemSlot(ch["modemSlot"] | -1);
       cnt++;
     }
   }
@@ -655,6 +696,7 @@ bool PushService::persistConfig() {
     c["key5"]        = ch.key5;
     c["customBody"]  = ch.customBody;
     c["retryOnFail"] = ch.retryOnFail;
+    c["modemSlot"]   = (int)ch.modemSlot;
   }
   String out;
   serializeJson(doc, out);

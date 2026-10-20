@@ -529,12 +529,19 @@ void SmsService::setSimReady(uint8_t port, bool ready) {
 // 全部用 millis() 比较，单核无关 mutual exclusion 问题；跨任务共享的布尔/时刻
 // 最多让读侧差一拍，不存在一致性风险（与 _modems 其余字段同策略）。
 
+// 是否处于去重窗口内（上次派发后 kCallDedupMs 内）。
+// callLastNotifyMs==0 表示「本次开机从未派发过」——不可当作 window 计算，
+// 否则开机前 10 秒内的来电会被 now-0 误判为窗口内而整通丢弃。
+static bool inCallDedupWindow(uint32_t lastNotifyMs, uint32_t now) {
+  return lastNotifyMs != 0 && (now - lastNotifyMs) < SmsService::kCallDedupMs;
+}
+
 // RING / +CRING：开始一轮来电。去重窗口内的重复 RING（模组每响铃周期都重发）忽略。
 void SmsService::handleCallRing(uint8_t port) {
   if (port < 1 || port > cfg::kSmsMaxModems) return;
   ModemState &m = _modems[port];
   uint32_t now = millis();
-  if (now - m.callLastNotifyMs < kCallDedupMs) return;
+  if (inCallDedupWindow(m.callLastNotifyMs, now)) return;
   m.callPending = true;
   m.callDispatch = false;
   m.callNumber = "";
@@ -562,7 +569,7 @@ void SmsService::handleCallClip(uint8_t port, const String &line) {
   String num = firstQuoted(line);
   uint32_t now = millis();
   if (!m.callPending) {
-    if (now - m.callLastNotifyMs < kCallDedupMs) return;
+    if (inCallDedupWindow(m.callLastNotifyMs, now)) return;
     m.callNumber = num.length() > 0 ? num : String("号码保密");
     m.callDispatch = true;
     _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的 +CLIP，按来电处理：%s",
@@ -584,7 +591,7 @@ void SmsService::handleCallClcc(uint8_t port, const String &line) {
   if (num.length() == 0) return;
   uint32_t now = millis();
   if (!m.callPending) {
-    if (now - m.callLastNotifyMs < kCallDedupMs) return;
+    if (inCallDedupWindow(m.callLastNotifyMs, now)) return;
     m.callNumber = num;
     m.callDispatch = true;
     _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的主动 +CLCC，按来电处理：%s",
@@ -644,6 +651,9 @@ void SmsService::pollCall(uint8_t port) {
       _log.addf(LogLevel::kInfo, "call",
                 "通信模组 %u AT+CLCC 未获取到号码（可能已挂断），继续等待",
                 (unsigned)port);
+    } else {
+      // 端口忙（如在发短信）：500ms 后重试，避免每轮 tick 空转
+      m.callClccDueMs = now + 500;
     }
   }
 
@@ -664,8 +674,12 @@ void SmsService::dispatchCall(uint8_t port) {
   // 黑名单命中：不派发（来电是瞬时事件，模组与 SIM 均无存储，拦了就是拦了）
   if (_blacklist && _blacklist->enabled() && _blacklist->match(num, BlackList::kCall)) {
     String note = _blacklist->lastNote();
-    _log.addf(LogLevel::kInfo, "black", "命中黑名单，拦截来电 %s%s%s", num.c_str(),
-              note.length() ? "（" : "", note.length() ? (note + "]").c_str() : "");
+    if (note.length()) {
+      _log.addf(LogLevel::kInfo, "black", "命中黑名单，拦截来电 %s（%s）", num.c_str(),
+                note.c_str());
+    } else {
+      _log.addf(LogLevel::kInfo, "black", "命中黑名单，拦截来电 %s", num.c_str());
+    }
     return;
   }
 

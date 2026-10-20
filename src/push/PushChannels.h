@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include "push/PushTypes.h"
 
+class SmsService;  // 前向声明：SMS 备份通道经指针回调发送，避免头文件循环依赖
+
 // 两次 HTTP 请求之间的最小冷却时间，防止密集请求导致 ESP32 TLS/TCP 栈资源
 // （mbedtls 堆、lwIP socket）尚未充分释放就开始下一次 TLS 握手。
 constexpr unsigned long HTTP_COOLDOWN_MS = 500;
@@ -37,4 +39,10 @@ class PushChannels {
   static bool sendTelegram  (const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp);
   static bool sendWechatWork(const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp);
   static bool sendMailgun   (const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp, const String& modemLabel = "");
+
+  // SMS 短信备份（唯一不经 HTTP 的通道）：把消息经通信模组以短信发到 ch.url
+  // （目标手机号），用于网络不可用时的兜底通知。type 用于区分来电/短信默认格式；
+  // sms 为短信服务（发送入口），为空时视为不可用。
+  static bool sendSmsBackup (const PushChannel& ch, const String& sender, const PushBody& message,
+                             const String& timestamp, MsgType type, SmsService* sms);
 };

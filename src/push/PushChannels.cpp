@@ -1,4 +1,6 @@
 #include "push/PushChannels.h"
+#include "app/Config.h"
+#include "sms/SmsService.h"
 #include "utils/HttpSession.h"
 #include "utils/TlsTurn.h"
 #include "log/LogStore.h"
@@ -464,4 +466,62 @@ bool PushChannels::sendMailgun(const PushChannel& ch, const String& sender, cons
   _log.addf(LogLevel::kInfo, "pushch", "Mailgun: %s 主题=%s", domain.c_str(), subject.c_str());
   int code = ts.session->http()->POST(body);
   return isResponseSuccessful(ts.session.get(), code, "Queued");
+}
+
+// SMS 短信备份：唯一不经 HTTP 的通道——网络不可用时把消息经 SIM 卡以短信
+// 发到 ch.url（目标手机号），是「互联网全断」场景下的最后通知手段。
+// 移植自 esp32-sms-forwarding 的 sendSmsPush，适配本项目的端口式 SmsService。
+bool PushChannels::sendSmsBackup(const PushChannel& ch, const String& sender,
+                                 const PushBody& message, const String& timestamp,
+                                 MsgType type, SmsService* sms) {
+  (void)timestamp;  // 默认格式不带时间（短信正文越短越省流量与费用）
+  if (sms == nullptr) {
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送不可用：短信服务未注入");
+    return false;
+  }
+  if (ch.url.length() == 0) {
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：未配置目标手机号");
+    return false;
+  }
+
+  String content;
+  if (message.type == PUSH_BODY_CUSTOM) {
+    content = message.content;
+  } else if (type == MSG_TYPE_CALL) {
+    content = "[来电] " + sender;
+  } else {
+    content = "[转发]发件人: " + sender + "\n内容: " + message.content;
+  }
+
+  // 从哪个模组发：通道里配了就用配的，没配（单卡用户）就自动挑一个就绪的。
+  // 自动挑选的意义在于「网络不可用时用 SIM 卡兜底」这条路径应当在**任何一张**
+  // 可用的卡上都能生效，而不是写死在第一个。
+  int8_t port = 0;
+  if (ch.modemSlot >= 1 && ch.modemSlot <= cfg::kSmsMaxModems &&
+      sms->modemEnabled((uint8_t)ch.modemSlot) &&
+      sms->modemReady((uint8_t)ch.modemSlot)) {
+    port = ch.modemSlot;
+  } else {
+    for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+      if (sms->modemEnabled(p) && sms->modemReady(p)) {
+        port = p;
+        break;
+      }
+    }
+  }
+  if (port == 0) {
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：没有任何就绪的通信模组");
+    return false;
+  }
+
+  // SmsService::send 内部自动处理长短信拆分，无需手动截断
+  _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送到 %s（通信模组 %d）",
+            ch.url.c_str(), (int)port);
+  String err;
+  uint32_t id = sms->send((uint8_t)port, ch.url, content, err);
+  if (id == 0) {
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：%s", err.c_str());
+    return false;
+  }
+  return true;
 }

@@ -1505,6 +1505,7 @@ function pageEmail() {
     { bit: 2, label: 'SIM 状态变更', desc: '运行时插卡 / 拔卡各一封' },
     { bit: 1, label: '设备启动完成', desc: '开机并就绪后发送设备信息' },
     { bit: 8, label: '定时在线通知', desc: '按排程确认设备仍在线' },
+    { bit: 16, label: '来电提醒', desc: '模组检测到 +CLIP/+CLCC 来电时发送一封' },
   ];
   return {
     cfg: { server: '', port: 465, user: '', pass: '', sendTo: '', notifyTypes: 15,
@@ -1607,6 +1608,7 @@ function pageMqtt() {
     { bit: 2,     label: 'SIM 状态变更', desc: '运行时插卡 / 拔卡各一条' },
     { bit: 4,     label: '收到短信', desc: '每收到一条短信发布一条' },
     { bit: 8,     label: '设备上线（重连）', desc: '每次（重）连接发布一次' },
+    { bit: 16,    label: '来电提醒', desc: '来电事件发布到 .../call 主题' },
     { bit: 65536, label: '运行日志实时推送', desc: '运行日志按 20 条/秒限流推送（默认关闭）' },
   ];
   return {
@@ -1745,6 +1747,9 @@ function pagePush() {
             url: c.url || '', key1: '', key2: c.key2 || '', key3: c.key3 || '',
             key4: c.key4 || '', key5: c.key5 || '', customBody: c.customBody || '',
             retryOnFail: !!c.retryOnFail,
+            // SMS 备份通道的发出模组：-1（自动）在表单里显示为空
+            modemSlot: (c.modemSlot === undefined || c.modemSlot === null ||
+                        Number(c.modemSlot) < 0) ? '' : String(Number(c.modemSlot)),
             valid: !!c.valid,
             hasKey1: !!c.hasKey1, hasKey2: !!c.hasKey2, hasKey3: !!c.hasKey3,
             hasKey4: !!c.hasKey4, hasKey5: !!c.hasKey5,
@@ -1775,6 +1780,7 @@ function pagePush() {
         url: 'URL / 端点', key1: '密钥 / Token', key2: '参数2（域名 / 频道 / 服务器）',
         key3: '参数3（收件人 / ClientID）', key4: '参数4（发件人）',
         key5: '参数5（标题模板）', customBody: '自定义请求体 / HTML',
+        modemSlot: '发出模组（SMS 备份专用）',
       };
       return map[n] || n;
     },
@@ -1783,8 +1789,12 @@ function pagePush() {
         const hk = 'hasKey' + f.name.slice(3);
         return ch[hk] ? '已设置，留空保持不变' : '必填（不回显）';
       }
-      if (f.name === 'url') return 'https://...';
+      if (f.name === 'url') {
+        // SMS 备份通道（type=12）的 url 是目标手机号，不是 URL
+        return Number(ch.type) === 12 ? '目标手机号，如 13800138000' : 'https://...';
+      }
       if (f.name === 'customBody') return '使用 {from}{message}{timestamp} 等占位符';
+      if (f.name === 'modemSlot') return '留空 = 自动挑就绪模组；可填 1 或 2';
       return '';
     },
     isSecretPlaceholder(f, ch) {
@@ -1796,6 +1806,7 @@ function pagePush() {
       // 切换类型后重置字段与掩码标记，避免残留误导
       const ch = this.channels[i];
       ch.key1 = ch.key2 = ch.key3 = ch.key4 = ch.key5 = ch.customBody = '';
+      ch.modemSlot = '';
       ch.hasKey1 = ch.hasKey2 = ch.hasKey3 = ch.hasKey4 = ch.hasKey5 = false;
     },
 
@@ -1804,7 +1815,7 @@ function pagePush() {
       const first = this.types.length ? this.types[0].type : 1;
       this.channels.push({
         enabled: true, type: first, name: '', url: '', key1: '', key2: '', key3: '',
-        key4: '', key5: '', customBody: '', retryOnFail: false,
+        key4: '', key5: '', customBody: '', retryOnFail: false, modemSlot: '',
         valid: false, hasKey1: false, hasKey2: false, hasKey3: false, hasKey4: false, hasKey5: false,
       });
     },
@@ -1829,6 +1840,7 @@ function pagePush() {
             url: (c.url || '').trim(), key1: c.key1 || '', key2: c.key2 || '',
             key3: c.key3 || '', key4: c.key4 || '', key5: c.key5 || '',
             customBody: c.customBody || '', retryOnFail: !!c.retryOnFail,
+            modemSlot: (c.modemSlot || '').toString().trim(),
           })),
         };
         const r = await postOp('/api/push', payload, '推送配置已保存');
