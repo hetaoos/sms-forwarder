@@ -228,7 +228,7 @@ void WebPanel::loadApiToken() {
     raw = prefs.getString(cfg::kNvsKeyToken, "");
     prefs.end();
   }
-  DynamicJsonDocument doc(256);
+  JsonDocument doc;
   if (!deserializeJson(doc, raw) && doc.is<JsonObject>()) {
     _apiTokenEnabled = doc["enabled"] | false;
     _apiToken = doc["token"] | "";
@@ -244,7 +244,7 @@ void WebPanel::loadApiToken() {
 
 // 将当前 _apiTokenEnabled / _apiToken 以 JSON 写回 NVS（apitoken 键）
 void WebPanel::saveApiTokenCfg() {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc;
   doc["ver"] = 1;
   doc["enabled"] = _apiTokenEnabled;
   doc["token"] = _apiToken;
