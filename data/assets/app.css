@@ -216,14 +216,30 @@ input.mono{font-family:var(--mono)}
 .palette .sw span{font-size:12px;color:var(--muted)}
 
 /* Toast */
-.toast-wrap{position:fixed;top:16px;right:16px;z-index:100;display:flex;flex-direction:column;gap:8px}
-.toast{background:#fff;border:1px solid var(--border);border-left:4px solid var(--primary);
-  border-radius:8px;padding:10px 16px;font-size:13px;box-shadow:0 6px 20px rgba(16,24,40,.12);
-  transform:translateX(120%);transition:transform .3s;max-width:320px}
-.toast.show{transform:none}
-.toast.ok{border-left-color:var(--success)}
-.toast.err{border-left-color:var(--danger)}
-.toast.warn{border-left-color:var(--warn)}
+.toast-wrap{position:fixed;top:18px;right:18px;z-index:100;display:flex;flex-direction:column;gap:10px;
+  width:max-content;max-width:min(92vw,380px)}
+.toast{position:relative;overflow:hidden;display:flex;align-items:center;gap:11px;
+  background:#fff;border:1px solid var(--border);border-left:6px solid var(--primary);
+  border-radius:10px;padding:13px 18px 15px;font-size:15px;line-height:1.45;color:var(--text);
+  box-shadow:0 12px 32px rgba(16,24,40,.20);
+  transform:translateX(120%);opacity:0;
+  transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .25s}
+.toast.show{transform:none;opacity:1}
+.toast-ico{flex:none;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:13px;font-weight:700;color:#fff;background:var(--primary);line-height:1}
+.toast-msg{flex:1;min-width:0;word-break:break-word}
+.toast-bar{position:absolute;left:0;bottom:0;height:3px;width:100%;background:var(--primary);
+  transform:scaleX(0);transform-origin:left;opacity:.55}
+.toast-bar.run{transform:scaleX(1);transition:transform linear}
+.toast.ok{border-left-color:var(--success);background:#ecfdf5}
+.toast.ok .toast-ico{background:var(--success)}
+.toast.ok .toast-bar{background:var(--success)}
+.toast.err{border-left-color:var(--danger);background:#fef2f2}
+.toast.err .toast-ico{background:var(--danger)}
+.toast.err .toast-bar{background:var(--danger)}
+.toast.warn{border-left-color:var(--warn);background:#fffbeb}
+.toast.warn .toast-ico{background:var(--warn)}
+.toast.warn .toast-bar{background:var(--warn)}
 
 /* 模态框 */
 .modal-mask{position:fixed;inset:0;background:rgba(15,18,25,.45);z-index:90;
@@ -305,6 +321,9 @@ input.mono{font-family:var(--mono)}
 [data-theme="dark"] .palette .sw{background:var(--card)}
 /* Toast / 模态框底 */
 [data-theme="dark"] .toast{background:var(--card);border-color:var(--border);color:var(--text)}
+[data-theme="dark"] .toast.ok{background:#0e2a22}
+[data-theme="dark"] .toast.err{background:#2a1414}
+[data-theme="dark"] .toast.warn{background:#2a2110}
 [data-theme="dark"] .modal{background:var(--card);color:var(--text)}
 [data-theme="dark"] .modal p{color:var(--muted)}
 /* 登录卡：深色主题下由白底改为卡片色，与暗色渐变背景协调 */

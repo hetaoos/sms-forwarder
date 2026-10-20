@@ -381,14 +381,26 @@ function closeSSE() {
 /* ---------- Toast / 确认框 ---------- */
 // 右上角滑入提示；type: ''|'ok'|'err'|'warn'；duration: 停留 ms（错误默认 5s，其余 3s）
 function toast(msg, type, duration) {
-  const el = document.createElement('div');
-  el.className = 'toast ' + (type || '');
-  el.textContent = msg;
   const wrap = $('#toastWrap');
   if (!wrap) return;
+  type = type || '';
+  // 前缀符号已由彩色图标表达，去掉避免重复（兼容旧调用带 ✕/✓/⚠ 的情况）
+  msg = String(msg).replace(/^[✕✓⚠]\s*/, '');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  const ico = type === 'err' ? '✕' : type === 'warn' ? '⚠'
+            : type === 'ok' ? '✓' : 'ℹ';
+  el.innerHTML = '<span class="toast-ico"></span><span class="toast-msg"></span><span class="toast-bar"></span>';
+  el.querySelector('.toast-ico').textContent = ico;
+  el.querySelector('.toast-msg').textContent = msg;  // 文本走 textContent，防 XSS
   wrap.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('show'));
   const ms = duration || (type === 'err' ? 5000 : 3000);
+  requestAnimationFrame(() => {
+    el.classList.add('show');
+    const bar = el.querySelector('.toast-bar');
+    if (bar) { bar.style.transitionDuration = ms + 'ms';
+      requestAnimationFrame(() => bar.classList.add('run')); }
+  });
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, ms);
 }
 function confirmDialog(title, text, danger) {
@@ -415,26 +427,24 @@ const MENU = [
   ]},
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
-    { id: 'modem', title: '4G 模组', icon: 'modem' },
-    { id: 'serial', title: '串口调试', icon: 'serial' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
-  ]},
-  { group: '监控', items: [
-    { id: 'logs', title: '运行日志', icon: 'logs' },
+    { id: 'modem', title: '4G 模组', icon: 'modem' },
   ]},
   { group: '设备控制', items: [
     { id: 'display', title: '屏幕显示', icon: 'display' },
     { id: 'rgb', title: 'RGB 灯', icon: 'rgb' },
+    { id: 'serial', title: '串口调试', icon: 'serial' },
   ]},
   { group: '网络', items: [
     { id: 'wifi', title: 'WiFi 设置', icon: 'wifi' },
-    { id: 'email', title: '邮件通知', icon: 'email' },
     { id: 'push', title: '推送通道', icon: 'push' },
+    { id: 'email', title: '邮件通知', icon: 'email' },
     { id: 'mqtt', title: 'MQTT', icon: 'mqtt' },
   ]},
   { group: '系统', items: [
     { id: 'settings', title: '系统设置', icon: 'settings' },
     { id: 'tools', title: '系统工具', icon: 'tools' },
+    { id: 'logs', title: '运行日志', icon: 'logs' },
   ]},
 ];
 
@@ -717,7 +727,7 @@ function pageSched() {
           daily: this.daily,
           intervalH: Number(this.intervalH) || 24,
           weekdays: this.weekdays,
-        });
+        }, '定时重启配置已保存');
       } finally {
         this.saving = false;
       }
@@ -892,6 +902,7 @@ function pageWifi() {
       this.saving = false;
       if (!r) { this.wifiErr('保存失败，详见右上角提示'); return; }
       this.wifiBusy('已保存，连接结果见上方状态');
+      toast('WiFi 配置已保存', 'ok');
       this.pass = '';
       await this.loadSaved();
     },
@@ -970,27 +981,28 @@ function pageRgb() {
     },
     async applyPreset(i) {
       const r = await postOp('/api/rgb', { c: i });
-      if (r) this.refresh();
+      if (r) { this.refresh(); toast('已切换预设', 'ok'); }
     },
     async next() {
       const r = await apiOp('/api/led');
-      if (r) this.refresh();
+      if (r) { this.refresh(); toast('已切换颜色', 'ok'); }
     },
     async applyRaw() {
       const clamp = v => Math.max(0, Math.min(255, v | 0));
       const r = await postOp('/api/rgb',
         { r: clamp(this.r), g: clamp(this.g), b: clamp(this.b) });
-      if (r) this.refresh();
+      if (r) { this.refresh(); toast('已应用自定义颜色', 'ok'); }
     },
     async off() {
       const r = await postOp('/api/rgb', { c: 0 });
-      if (r) this.refresh();
+      if (r) { this.refresh(); toast('RGB 已关闭', 'ok'); }
     },
     async applyBright() {
       const r = await postOp('/api/rgb', { bright: this.bright });
       if (r) {
         Alpine.store('live').rgb = await r.json();
         this.bright = this.st.bright;
+        toast('亮度已保存', 'ok');
       }
       this.touched = false;
     },
@@ -1076,13 +1088,17 @@ function pageDisplay() {
     },
     async toggle() {
       const r = await postOp('/api/disp', { on: !this.st.on });
-      if (r) Alpine.store('live').disp = await r.json();
+      if (r) {
+        Alpine.store('live').disp = await r.json();
+        toast(this.st.on ? '屏幕已关闭' : '屏幕已打开', 'ok');
+      }
     },
     async applyBright() {
       const r = await postOp('/api/disp', { bright: this.bright });
       if (r) {
         Alpine.store('live').disp = await r.json();
         this.bright = this.st.bright;
+        toast('亮度已保存', 'ok');
       }
       this.touched = false;
     },
@@ -1094,6 +1110,7 @@ function pageDisplay() {
         this.tIdle = false;
         Alpine.store('live').disp = j;
         this.syncTimers(j);
+        toast('自动返回已保存', 'ok');
       }
       this.tIdle = false;
     },
@@ -1104,6 +1121,7 @@ function pageDisplay() {
         this.tAuto = false;
         Alpine.store('live').disp = j;
         this.syncTimers(j);
+        toast('自动关屏已保存', 'ok');
       }
       this.tAuto = false;
     },

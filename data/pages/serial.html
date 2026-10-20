@@ -77,16 +77,18 @@
 
   <!-- 统计 -->
   <div class="grid cols2">
-    <div class="card" x-for="s in stats" :key="s.port">
-      <h3>串口 <span x-text="s.port"></span>
-        <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></h3>
-      <div class="row"><span class="k">波特率</span><span class="v" x-text="s.baud"></span></div>
-      <div class="row"><span class="k">接收 / 发送</span>
-        <span class="v" x-text="fmtBytes(s.rx) + ' / ' + fmtBytes(s.tx)"></span></div>
-      <div class="row"><span class="k">错误中断 / 超时</span>
-        <span class="v" x-text="(s.err || 0) + ' / ' + (s.timeouts || 0)"></span></div>
-      <div class="row"><span class="k">自愈复位</span><span class="v" x-text="s.recovers || 0"></span></div>
-      <div class="row"><span class="k">距上次数据</span><span class="v" x-text="fmtAgo(s.idle)"></span></div>
-    </div>
+    <template x-for="s in stats" :key="s.port">
+      <div class="card">
+        <h3>串口 <span x-text="s.port"></span>
+          <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></h3>
+        <div class="row"><span class="k">波特率</span><span class="v" x-text="s.baud"></span></div>
+        <div class="row"><span class="k">接收 / 发送</span>
+          <span class="v" x-text="fmtBytes(s.rx) + ' / ' + fmtBytes(s.tx)"></span></div>
+        <div class="row"><span class="k">错误中断 / 超时</span>
+          <span class="v" x-text="(s.err || 0) + ' / ' + (s.timeouts || 0)"></span></div>
+        <div class="row"><span class="k">自愈复位</span><span class="v" x-text="s.recovers || 0"></span></div>
+        <div class="row"><span class="k">距上次数据</span><span class="v" x-text="fmtAgo(s.idle)"></span></div>
+      </div>
+    </template>
   </div>
 </div>
