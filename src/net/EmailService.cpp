@@ -373,6 +373,16 @@ bool EmailService::configuredLocked() const {
          _sendTo.length() > 0;
 }
 
+// ---------------- 配置只读快照（LCD 菜单「邮件通知」页用）----------------
+// 全部持锁读一份副本返回：调用方（菜单渲染）不持锁，也就不存在锁序问题。
+String EmailService::server() const { Guard g(_mutex); return _server; }
+uint16_t EmailService::port() const { Guard g(_mutex); return _port; }
+String EmailService::user() const { Guard g(_mutex); return _user; }
+String EmailService::sendTo() const { Guard g(_mutex); return _sendTo; }
+uint8_t EmailService::queueCount() const { Guard g(_mutex); return _queueCount; }
+uint32_t EmailService::notifyTypes() const { Guard g(_mutex); return _notifyTypes; }
+String EmailService::scheduleText() const { Guard g(_mutex); return schedText(); }
+
 bool EmailService::notifyEnabled(uint32_t mask) const {
   Guard g(_mutex);
   return (_notifyTypes & mask) != 0;

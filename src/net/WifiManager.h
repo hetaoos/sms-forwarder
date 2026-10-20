@@ -66,6 +66,9 @@ class WifiManager {
   int8_t rssi() const { return connected() ? WiFi.RSSI() : 0; }
 
   // ---------------- 配置管理（含 NVS 持久化） ----------------
+  // NVS 中已保存的配置组数（供 LCD「WIFI」页展示）
+  uint8_t savedCount() const { return _entryCount; }
+
   // 已保存配置的 JSON：{"count":n,"list":[{"i":序号,"ssid":"..","hasPass":true},..]}
   // 密码不回传前端，避免泄露
   String listJson() const;

@@ -12,6 +12,14 @@ namespace {
 // 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
+// 把 String 拷进定长 char 缓冲（超长由 snprintf 截断）。
+// 空串写入空串——调用方（快照结构体）的默认值已有「-」之类兜底，这里不做替换，
+// 由调用方决定「值缺失」时保留默认还是覆盖。
+void copyTo(char *dst, size_t n, const String &s) {
+  if (!s.length()) return;
+  snprintf(dst, n, "%s", s.c_str());
+}
+
 }  // namespace
 
 // JSON 字符串转义（运营商/IMEI 等文本字段安全入 JSON）
@@ -233,6 +241,53 @@ String SmsService::modemBrief(uint8_t port) const {
     if (m.csq >= 0) { s += " "; s += String(m.csq); }
   }
   return s;
+}
+
+// 运营商短代码 -> 中文名（与 EmailService::operCn 同一套映射，
+// LCD 菜单直接复用，避免展示层再写一份）
+String SmsService::operCn(const String &code) {
+  if (code == "CMCC") return "中国移动";
+  if (code == "CUCC") return "中国联通";
+  if (code == "CTCC") return "中国电信";
+  if (code == "CBN") return "中国广电";
+  return "";
+}
+
+// 单个模组的完整状态快照（LCD 菜单「模块」页用），不加锁，只读字段
+bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
+  if (port == 0 || port > cfg::kSmsMaxModems) return false;
+  const ModemState &m = _modems[port];
+
+  out.enabled = m.enabled;
+  out.ready = m.initState == ModemInitState::kReady;
+  out.sim = m.simReady;
+  out.csq = m.csq;
+
+  // 状态短词与 modemBrief 同源，保持同一套措辞
+  switch (m.initState) {
+    case ModemInitState::kReady: snprintf(out.state, sizeof(out.state), "就绪"); break;
+    case ModemInitState::kFault: snprintf(out.state, sizeof(out.state), "故障"); break;
+    case ModemInitState::kPowerOn: snprintf(out.state, sizeof(out.state), "上电中"); break;
+    case ModemInitState::kWaitAt: snprintf(out.state, sizeof(out.state), "等AT"); break;
+    case ModemInitState::kWaitCpin: snprintf(out.state, sizeof(out.state), "等SIM"); break;
+    case ModemInitState::kBringRf: snprintf(out.state, sizeof(out.state), "开射频"); break;
+    case ModemInitState::kWaitReg: snprintf(out.state, sizeof(out.state), "等注册"); break;
+    case ModemInitState::kConfig: snprintf(out.state, sizeof(out.state), "配置中"); break;
+    default: snprintf(out.state, sizeof(out.state), "未启用"); break;
+  }
+
+  copyTo(out.alias, sizeof(out.alias), m.alias);
+  copyTo(out.model, sizeof(out.model), m.model);
+  copyTo(out.revision, sizeof(out.revision), m.revision);
+  copyTo(out.num, sizeof(out.num), m.num);
+  copyTo(out.reg, sizeof(out.reg), m.reg);
+  copyTo(out.imei, sizeof(out.imei), m.imei);
+  // 运营商优先用中文短名，其次短代码，最后才是 AT+COPS? 的长格式名
+  String cn = operCn(m.operCode);
+  if (cn.length()) copyTo(out.oper, sizeof(out.oper), cn);
+  else if (m.operCode.length()) copyTo(out.oper, sizeof(out.oper), m.operCode);
+  else copyTo(out.oper, sizeof(out.oper), m.oper);
+  return true;
 }
 
 // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象

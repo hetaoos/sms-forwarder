@@ -168,6 +168,10 @@ constexpr uint16_t kUiAutoOffDefaultSec = 0;      // 默认不自动熄屏（需
 // 避免一次长按产生几十次 NVS 写入
 constexpr uint32_t kDispSaveDebounceMs = 2000;
 constexpr uint32_t kUiIdleSleepMs = 10000;  // 菜单无操作自动退回状态页（ms）
+// 新短信弹窗自动停留时长（ms）：到点自动收起回到原页面，按任意键可立即收起
+constexpr uint32_t kUiSmsPopupMs = 30000;
+// 菜单「短信」页最多预览的条数（受菜单槽位限制，取小值）
+constexpr uint8_t kUiSmsPreviewMax = 6;
 
 // ---------------- LVGL UI（src/ui）----------------
 // LVGL 的心跳间隔：lv_timer_handler() 会返回下一次应调用的毫秒数，返回值异常小

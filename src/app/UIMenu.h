@@ -18,6 +18,40 @@ enum class UiAction : uint8_t {
   kBrightnessDown, // 背光 -10%
   kScreenToggle,   // 屏幕开关
   kScreenView,     // 进入「屏幕显示」可滚动页
+  kRgbNext,        // RGB 灯切换到下一个预设颜色
+  kRgbUp,          // RGB 亮度 +
+  kRgbDown,        // RGB 亮度 -
+  kAutoOffUp,      // 自动熄屏时间 +
+  kAutoOffDown,    // 自动熄屏时间 -
+  kIdleUp,         // 自动返回状态页时间 +
+  kIdleDown,       // 自动返回状态页时间 -
+  kSmsOpen,        // 打开短信详情（可滚动文本页，取当前光标项）
+};
+
+// 动态页标识：静态页为 kNone（内容编译期确定）；
+// 非 kNone 的页面在每次 render 时按最新状态快照重建文本（见 UIMenu::buildDynamic）
+enum class PageId : uint8_t {
+  kNone = 0,
+  kSms,      // 短信列表（条目由短信预览生成）
+  kSoc,      // SOC 信息
+  kModem1,   // 模块 1（串口 U1）
+  kModem2,   // 模块 2（串口 U2）
+  kWifi,     // WiFi 状态
+  kMail,     // 邮件通知状态
+  kMqtt,     // MQTT 状态
+  kPush,     // 推送通道状态
+  kRgb,      // RGB 灯
+  kAbout,    // 关于
+};
+
+// 进度条数据源：菜单页底部可显示一条进度条（亮度 / 超时 / RGB 亮度调节用）。
+// kNone 表示本页不显示进度条。
+enum class BarSrc : uint8_t {
+  kNone = 0,
+  kBright,     // 屏幕背光亮度（0-100）
+  kAutoOff,    // 自动熄屏时间（0 - kUiAutoOffSecMax）
+  kIdle,       // 自动返回状态页时间（0 - kUiIdleReturnSecMax）
+  kRgbBright,  // RGB 灯亮度（0-100）
 };
 
 // 前向声明：菜单项可指向子页面
@@ -31,14 +65,28 @@ struct MenuItem {
   UiAction action;               // 叶子动作
 };
 
-// 一个菜单页：标题 + 选项列表，或一组正文（info 与 items 互斥）
-// 页面间无回指指针：返回上一级由 UIMenu 的导航栈维护，避免编译期循环引用
+// 一个菜单页：标题 + 选项列表，或一组正文（info 与 items 通常互斥）。
+// 页面间无回指指针：返回上一级由 UIMenu 的导航栈维护，避免编译期循环引用。
 struct MenuPage {
   const char *title;             // 标题栏
   const MenuItem *items;         // 选项数组（可为空）
   uint8_t itemCount;             // 选项数
   const char *const *info;       // 正文数组（与 items 互斥，可为空）
   uint8_t infoCount;             // 正文行数
+  PageId id = PageId::kNone;     // 动态页标识（kNone = 静态页）
+  BarSrc bar = BarSrc::kNone;    // 底部进度条数据源（kNone = 不显示）
+};
+
+// LCD 短信预览条目（定长、无堆分配）：菜单「短信」页与新短信弹窗共用。
+// text 截断到 160 字节——小屏幕上 5~6 行足够，过长只会拖慢渲染。
+struct SmsPreview {
+  uint32_t id = 0;        // 存储 ID
+  bool incoming = true;   // true = 收到，false = 发出
+  int8_t modem = -1;      // 模组串口号 1..2，-1 = 未知
+  uint32_t ts = 0;        // 时间戳（纪元秒或开机秒数）
+  char phone[24] = "";    // 对方号码
+  char time[18] = "";     // 可读时间 "10-20 12:00" / "12:00:00"
+  char text[160] = "";    // 正文（UTF-8，超长截断）
 };
 
 // LCD 菜单导航状态机：由 4 键驱动（OK / UP / DOWN / BACK）
@@ -47,6 +95,12 @@ struct MenuPage {
 //  - OK：进入子页 / 执行动作（长按连发，便于亮度调节）
 //  - BACK：返回上一级；根页面再按 -> 回状态页
 //  - 长按 BACK：熄屏 / 唤醒
+//
+// 三种「非菜单」显示态，优先级自上而下：
+//   1. 新短信弹窗（showSms）：任意键或超时收起，收起后回到原页面
+//   2. 可滚动文本页（屏幕显示 / 短信详情）：U/D 滚动，长按 OK 刷新，BACK 返回
+//   3. 实时状态页：由 App 按周期刷新
+//
 // 持有 Display 引用以直接调节背光与开关屏；状态页内容仍由 App 负责渲染。
 //
 // 同时是「屏幕设置」的归属模块（与邮件 / MQTT / 推送 / 黑名单同套路）：
@@ -54,6 +108,11 @@ struct MenuPage {
 // 对外提供读写接口与导入导出，供 Web「屏幕显示」页直接操作。
 class UIMenu {
  public:
+  // 菜单槽位上限：与 UI 层 ui::Ui 的 kMaxMenuRows 保持一致（超出部分靠滚动查看）
+  static constexpr uint8_t kMenuSlots = 8;
+  // 正文行上限：与 UI 层 ui::Ui 的 kMaxInfoRows 保持一致
+  static constexpr uint8_t kInfoSlots = 9;
+
   explicit UIMenu(Display &disp) : _disp(disp) {}
 
   void begin();
@@ -61,27 +120,48 @@ class UIMenu {
   // 处理一次按键事件（来自 Keypad::poll 的结果）
   void handle(KeyId key, KeyEvent ev);
 
-  // 重绘当前菜单页（仅导航变化后调用）
+  // 重绘当前菜单页（仅导航变化 / 动态页刷新周期到达后调用）
   void render();
 
   // 实时状态页：由 App 按刷新周期调用，把快照交给 LVGL 页面更新
   void renderStatus(const StatusInfo &info);
 
-  // 状态快照提供者：由 App 注入，每次重绘「屏幕显示」页时抓取最新状态
+  // 状态快照提供者：由 App 注入，动态页每次渲染前抓最新状态
   void setStatusProvider(std::function<void(StatusInfo &)> f) { _provider = std::move(f); }
+
+  // 短信列表提供者：由 App 注入。填充最多 max 条预览（时间倒序，最新在前），
+  // total 出参为存储总条数；返回实际填充条数。
+  // 只在「短信」菜单页可见时调用——扫文件有成本，不做周期采集。
+  using SmsListFn = std::function<int(SmsPreview *out, int max, int &total)>;
+  void setSmsListProvider(SmsListFn f) { _smsFn = std::move(f); }
+
+  // RGB 灯控制回调（App 注入，避免 UI 层直接依赖 RgbLed）：
+  // cmd = 0 切换下一个预设颜色 / 1 亮度 +10 / 2 亮度 -10
+  using RgbFn = std::function<void(uint8_t cmd)>;
+  void setRgbControl(RgbFn f) { _rgbFn = std::move(f); }
+
+  // ============ 新短信弹窗 ============
+  // 由 App 在主循环（loop 任务）检测到新短信时调用：立刻弹到屏上并点亮屏幕。
+  // 只存一份定长副本，不持有外部引用，无跨任务生命周期问题。
+  void showSms(const SmsPreview &m);
+  bool inPopup() const { return _popup; }
+  // 重绘弹窗（内容固定，只在首次与弹窗内容变化时真正重绘）
+  void renderPopup();
+  // 收起弹窗（按键 / 超时）；不改动当前页面状态，收起后自然回到原页面
+  void dismissPopup();
 
   // 是否处于实时状态页（App 据此决定渲染路径）
   bool inStatusMode() const { return _statusMode; }
   void enterStatusMode() { _statusMode = true; }
 
-  // 是否处于「屏幕显示」可滚动页
-  bool inScreenView() const { return _screenView; }
-  // 重绘「屏幕显示」页（实时跟随：每次调用抓最新快照后整页重绘）
-  void renderScreenView();
-  // 退出「屏幕显示」页，返回根菜单
-  void leaveScreenView();
+  // 是否处于可滚动文本页（屏幕显示 / 短信详情）
+  bool inView() const { return _view; }
+  // 重绘文本页：有实时数据源的（屏幕显示）顺带抓一次最新快照
+  void renderView();
+  // 退出文本页，返回压栈前所在的菜单页
+  void leaveView();
 
-  // 菜单内容是否需要重绘（导航变化后置位，App 重绘后清零）
+  // 菜单内容是否需要重绘（导航变化 / 动态页刷新后置位，App 重绘后清零）
   bool dirty() const { return _dirty; }
 
   // 最近一次有效输入的时间戳（ms），供 App 做空闲自动休眠
@@ -101,7 +181,7 @@ class UIMenu {
   // 外部（Web）设置背光亮度：立即生效并落盘
   void setBrightness(uint8_t pct);
 
-  // 空闲超时处理（App::tick 每轮调用）：自动退回状态页 + 自动熄屏
+  // 空闲超时处理（App::tick 每轮调用）：自动退回状态页 + 自动熄屏 + 弹窗超时
   void tick();
 
   // 配置导出：{"bright":n,"autoOffSec":n,"idleSec":n}
@@ -110,30 +190,94 @@ class UIMenu {
   bool importFrom(const JsonObject &o);
 
  private:
+  // 当前页的有效条目数：动态页取上次重建后的条数，静态页取编译期数组长度
+  uint8_t currentItemCount() const;
   void moveCursor(int8_t dir);
   void activate();
   void back();
   void setBright(int v);
+
+  // ---- 可滚动文本页 ----
+  // 打开一个文本页：title 为标题；fill 为空表示静态文本（不随周期刷新）
+  void openView(const char *title, const String &text);
+  // 「屏幕显示」页的文本构建（实时数据源，每次刷新重新抓取状态快照）
+  void fillStatusView(String &out);
+  // 短信详情文本（短信页选中项）
+  void fillSmsView(String &out) const;
+
+  // ---- 动态页 ----
+  // 按当前状态快照填充 pg 的选项 / 正文（pg 是 *_current 的副本，可安全改写）
+  void buildDynamic(MenuPage &pg);
+  // 追加一行正文（超出槽位忽略）
+  void addInfo(MenuPage &pg, const char *fmt, ...);
+  // 追加一个选项（超出槽位忽略）
+  void addItem(MenuPage &pg, const char *icon, const char *label, const MenuPage *sub,
+               UiAction action);
+  // 逐条填充各动态页
+  void fillSms(MenuPage &pg);
+  void fillSoc(MenuPage &pg);
+  void fillModem(MenuPage &pg, uint8_t idx);
+  void fillWifi(MenuPage &pg);
+  void fillMail(MenuPage &pg);
+  void fillMqtt(MenuPage &pg);
+  void fillPush(MenuPage &pg);
+  void fillRgb(MenuPage &pg);
+  void fillAbout(MenuPage &pg);
+
+  // ---- 进度条 ----
+  // 按页面的 bar 数据源算出进度条百分比与右侧数值文本；无进度条返回 false
+  bool barOf(const MenuPage &pg, int &pct, String &text) const;
+
   // 载入 NVS 配置（无记录时保持编译期默认值）
   void loadConfig();
   // 写入 NVS（三项一次落盘）
   bool saveConfig() const;
   // 时间值规整：0 保持「禁用」；非零钳到 [kUiSecMin, max]
   static uint16_t clampSec(int v, uint16_t max);
+  // 按步长调整一项超时（用于菜单 +/- 连发）：返回新值
+  static uint16_t stepSec(uint16_t cur, int delta, uint16_t max);
 
   Display &_disp;                 // 显示设备（调节背光/开关屏）
   bool _statusMode = true;        // 默认停留在实时状态页
   const MenuPage *_current = nullptr;  // 当前所在页面
   int8_t _cursor = 0;             // 当前高亮项
+  uint8_t _top = 0;               // 菜单视口首行下标（选项多于槽位时滚动）
   static constexpr uint8_t kMaxDepth = 8;  // 导航栈深度上限
   const MenuPage *_stack[kMaxDepth];       // 上级页面栈（返回用）
   uint8_t _depth = 0;             // 当前栈深（0 = 根页面）
-  bool _screenView = false;       // 是否处于「屏幕显示」可滚动页
-  int _scroll = 0;                // 「屏幕显示」页滚动偏移（行）
-  StatusInfo _screenSnap;         // 「屏幕显示」页最近一次抓取的快照
+  uint8_t _dynCount = 0;          // 当前动态页的条目数（静态页无意义）
+
+  // ---- 可滚动文本页 ----
+  bool _view = false;             // 是否处于可滚动文本页
+  String _viewTitle;              // 文本页标题
+  String _viewText;               // 文本页正文（含换行）
+  int _viewScroll = 0;            // 滚动偏移（行）
+  bool _viewLive = false;         // 是否有实时数据源（true = 每次刷新重抓）
+  StatusInfo _snap;               // 最近一次抓取的状态快照（动态页与文本页共用）
+
+  // ---- 新短信弹窗 ----
+  bool _popup = false;            // 弹窗是否正在显示
+  SmsPreview _popMsg;             // 弹窗内容（定长副本）
+  uint32_t _popMs = 0;            // 弹窗起始时刻（ms）
+
+  // ---- 短信列表（「短信」菜单页）----
+  SmsPreview _smsPrev[cfg::kUiSmsPreviewMax];  // 预览条目（最新在前）
+  int _smsCount = 0;                           // 已填充条数
+  int _smsTotal = 0;                           // 存储总条数
+  int8_t _smsSel = 0;                          // 短信页当前选中的预览下标
+
   std::function<void(StatusInfo &)> _provider = [](StatusInfo &) {};  // 状态快照提供者
+  SmsListFn _smsFn;               // 短信列表提供者（未注入时短信页显示「暂无」）
+  RgbFn _rgbFn;                   // RGB 灯控制回调（未注入时 RGB 页只显示，不响应）
   uint32_t _lastInputMs = 0;      // 上次输入时刻
+  uint32_t _lastDynMs = 0;        // 动态页上次刷新时刻（自节流 500ms）
   bool _dirty = true;             // 菜单内容待重绘标记
+
+  // 动态页的文本缓冲（正文行 / 选项文字），避免渲染路径产生堆分配
+  char _infoBuf[kInfoSlots][44];
+  const char *_infoPtr[kInfoSlots];
+  char _itemBuf[kMenuSlots][32];
+  MenuItem _dynItems[kMenuSlots];
 
   // ---- 屏幕设置（NVS）----
   uint16_t _autoOffSec = cfg::kUiAutoOffDefaultSec;    // 0 = 禁用

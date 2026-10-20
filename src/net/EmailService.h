@@ -76,6 +76,16 @@ class EmailService {
   // 某类事件的邮件通知是否开启（mask 取 cfg::kEmailNotify*）
   bool notifyEnabled(uint32_t mask) const;
 
+  // ---------------- 配置只读快照（LCD 菜单「邮件通知」页用）----------------
+  // 一律持锁读取；返回副本，调用方无需关心锁的生命周期。
+  String server() const;             // SMTP 服务器
+  uint16_t port() const;             // SMTP 端口
+  String user() const;               // 发件邮箱
+  String sendTo() const;             // 收件邮箱
+  uint8_t queueCount() const;        // 当前待发邮件数
+  uint32_t notifyTypes() const;      // 通知类型位掩码（cfg::kEmailNotify*）
+  String scheduleText() const;       // 定时在线通知排程描述（如「每 24 小时」）
+
   // 保存配置并落盘 NVS；pass 为空串表示保持已保存的授权码不变；
   // notifyTypes 越界位被过滤；sched 为定时在线通知排程（两种模式）；
   // enabled 为 SMTP 邮件通知总开关。

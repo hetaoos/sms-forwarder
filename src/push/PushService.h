@@ -45,6 +45,19 @@ class PushService {
   // 加锁读取，供 LCD 状态页展示「N 个通道」
   int validChannelCount() const;
 
+  // 单条通道简报（POD，供 LCD 菜单「推送通道」页逐条展示）：
+  // label 为用户名称，无名称时取通道类型中文名
+  struct ChannelBrief {
+    char label[20] = "";
+    bool on = false;     // 是否启用
+    bool valid = false;  // 字段是否齐全（有效才参与发送）
+  };
+  // 填充前 max 条通道简报（含未启用者），返回实际条数；加锁读取
+  int channelBriefs(ChannelBrief *out, int max) const;
+
+  // 当前推送策略（广播 / 故障转移）；加锁读取
+  PushStrategy strategy() const;
+
   // 设置总开关并落盘 NVS
   bool setEnabled(bool on);
 

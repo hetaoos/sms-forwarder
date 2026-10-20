@@ -38,6 +38,16 @@ class App {
   // 字节数 -> "7.80M" / "123.4K" / "512B"；返回静态缓冲（一轮内可同时用 4 个）
   static const char *fmtBytes(uint32_t bytes);
 
+  // ---- LCD 菜单「短信」页数据源 ----
+  // 填充最多 max 条最近短信预览（时间倒序），total 出参为存储总条数，返回实际条数。
+  // 扫文件有成本，这里做 3 秒节流：菜单页按 500ms 刷新，但只每 3 秒真读一次。
+  int smsPreview(SmsPreview *out, int max, int &total);
+  // 单条记录 -> 预览条目（号码 / 时间 / 正文一律截断到定长）
+  static void fillPreview(const SmsMessage &m, SmsPreview &out);
+
+  // 新短信检测（主循环每轮调用）：lastSmsId 变化时把最新一条弹到屏幕上
+  void checkNewSms();
+
   RgbLed _led;              // 板载 RGB 灯（WS2812）
   Display _display;         // ST7789 屏幕
   Keypad _keypad;           // 4 键输入（OK/UP/DOWN/BACK）
@@ -66,6 +76,14 @@ class App {
   bool _svcReady = false;
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流
+
+  // ---- 新短信弹窗 ----
+  uint32_t _lastSmsId = 0;      // 已处理到的最新短信 ID（0 = 尚无记录）
+  bool _smsBaseReady = false;   // 开机基线是否已建立（建立前不弹历史短信）
+  SmsPreview _smsCache[cfg::kUiSmsPreviewMax];  // 预览缓存（避免每 500ms 扫文件）
+  int _smsCacheCount = 0;                       // 缓存条数
+  int _smsCacheTotal = 0;                       // 缓存时的存储总条数
+  uint32_t _smsCacheMs = 0;                     // 缓存时刻（节流用）
 
   // ---- 开机页窗口 ----
   bool _bootDone = false;     // 开机页是否已展示完毕（之后按常规渲染状态页）

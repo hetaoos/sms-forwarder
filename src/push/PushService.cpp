@@ -360,6 +360,29 @@ int PushService::validChannelCount() const {
   return n;
 }
 
+// 通道简报（LCD 菜单用）：用户名称优先，无名称退回通道类型中文名
+int PushService::channelBriefs(ChannelBrief *out, int max) const {
+  Guard g(_mutex);
+  int n = 0;
+  for (int i = 0; i < _count && n < max; i++) {
+    const PushChannel &ch = _channels[i];
+    out[n].on = ch.enabled;
+    out[n].valid = pushChannelValid(ch);
+    if (ch.name.length()) {
+      snprintf(out[n].label, sizeof(out[n].label), "%s", ch.name.c_str());
+    } else {
+      snprintf(out[n].label, sizeof(out[n].label), "%s", pushTypeLabel(ch.type));
+    }
+    n++;
+  }
+  return n;
+}
+
+PushStrategy PushService::strategy() const {
+  Guard g(_mutex);
+  return _strategy;
+}
+
 bool PushService::setEnabled(bool on) {
   {
     Guard g(_mutex);

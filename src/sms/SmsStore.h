@@ -47,6 +47,11 @@ class SmsStore {
   void list(int page, int pageSize, const String &q, int8_t modem, SmsList &out,
             int &total);
 
+  // 取最近 n 条（按 ID 倒序，跳过已删除 / 已淘汰的 ID），返回实际条数。
+  // 仅供小批量展示（LCD 菜单预览）使用：从最大 ID 向下扫，凑够即停，
+  // 不做整目录枚举，代价远低于 list()（后者要读完所有文件头）。
+  int latest(int n, SmsList &out);
+
   // 读取单条；找到返回 true
   bool detail(uint32_t id, SmsMessage &out);
 

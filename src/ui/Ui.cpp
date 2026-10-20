@@ -42,6 +42,8 @@ constexpr lv_coord_t kRowTop = kHeaderH + 4;   // 状态区首行 Y：38
 constexpr lv_coord_t kRowH = 23;
 constexpr lv_coord_t kMenuTop = kHeaderH + 6;  // 菜单首行 Y：40
 constexpr lv_coord_t kMenuRowH = 30;           // 菜单行高
+constexpr lv_coord_t kInfoRowH = 24;           // 正文行距（固定坐标，故正文不折行）
+constexpr lv_coord_t kBarTopMax = 284;         // 底部进度条的 Y 上限（不让位给页脚）
 constexpr lv_coord_t kViewTop = kHeaderH + 4;  // 屏幕显示区 Y：38
 constexpr lv_coord_t kViewH = 254;             // 屏幕显示区高度（38~292）
 constexpr lv_coord_t kFootTop = 294;           // 菜单/屏幕显示页的页脚行
@@ -87,19 +89,6 @@ constexpr RowDef kStatusRowDef[kStatusRowCnt] = {
     {UI_ICON_PUSH, "推送"},
 };
 
-// 字节数紧凑格式：>=1MB 显示 "x.xxM"，>=1KB 显示 "xxx.xK"，否则 "xxxB"
-String fmtBytes(uint32_t bytes) {
-  char buf[16];
-  if (bytes >= 1024u * 1024u) {
-    snprintf(buf, sizeof(buf), "%.2fM", bytes / 1048576.0);
-  } else if (bytes >= 1024u) {
-    snprintf(buf, sizeof(buf), "%.1fK", bytes / 1024.0);
-  } else {
-    snprintf(buf, sizeof(buf), "%uB", (unsigned)bytes);
-  }
-  return String(buf);
-}
-
 // 按 kind 取字体（ui::UiFonts 负责实现细节）
 //   0 图标 / 1 正文 / 2 标题 / 3 ASCII / 4 开机页 Logo
 const lv_font_t *fontFor(uint8_t kind) {
@@ -142,6 +131,11 @@ Ui &instance() {
   static Ui ui;
   return ui;
 }
+
+// 菜单槽位 / 正文槽位：业务侧（UIMenu）按这两个上限裁剪内容，
+// 屏幕尺寸若调整，只改这里的常量与 Ui.h 的 kMaxMenuRows / kMaxInfoRows 即可
+uint8_t Ui::menuSlots() { return kMaxMenuRows; }
+uint8_t Ui::infoSlots() { return kMaxInfoRows; }
 
 // ---------------------------------------------------------------------------
 // 标签管理
@@ -197,7 +191,8 @@ void Ui::begin() {
   if (kScreenW <= 0) kScreenW = cfg::kTftWidth;
   buildStatus();
   buildMenu();
-  buildScreenView();
+  buildView();
+  buildPopup();
   buildBoot();
   // 开机先落在开机页：此时中文字库与各业务模块都还没就绪，状态页还不能取数
   lv_screen_load(_scrBoot);
@@ -330,25 +325,53 @@ void Ui::buildMenu() {
     lv_obj_set_hidden(row, true);
   }
 
-  // 正文槽位：与选项互斥（信息页用它）
+  // 正文槽位：与选项互斥（信息页用它）。
+  // 行距固定 24px，因此正文一律用 DOTS 截断而不是 WRAP——一旦某行折行就会
+  // 压到下一行上（槽位坐标是写死的），宁可截断也不叠字。
   for (uint8_t i = 0; i < kMaxInfoRows; i++) {
     lv_obj_t *lb = newLabel(_scrMenu, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
-    lv_obj_set_pos(lb, kPad, kMenuTop + i * 26);
+    lv_obj_set_pos(lb, kPad, kMenuTop + i * kInfoRowH);
     lv_obj_set_width(lb, kScreenW - kPad * 2);
-    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_WRAP);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_hidden(lb, true);
     _mnInfo[i] = lb;
   }
+
+  // 底部进度条：调节类页面（亮度 / 超时）用它直观显示当前值。
+  // 位置紧跟在选项区下方，右侧留一列显示数值文本；不显示时整组隐藏。
+  constexpr lv_coord_t barW = 150, barH = 8;
+  lv_obj_t *bar = lv_bar_create(_scrMenu);
+  lv_obj_remove_style_all(bar);
+  lv_obj_set_pos(bar, kPad, kBarTopMax);
+  lv_obj_set_size(bar, barW, barH);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_LINE), 0);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(bar, 4, 0);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_ACCENT), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(bar, 4, LV_PART_INDICATOR);
+  lv_bar_set_range(bar, 0, 100);
+  lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+  lv_obj_set_hidden(bar, true);
+  _mnBar = bar;
+
+  _mnBarVal = newLabel(_scrMenu, 1, C_TEXT, "", LV_TEXT_ALIGN_RIGHT);
+  lv_obj_set_pos(_mnBarVal, kPad + barW + kGap, kBarTopMax - 4);
+  lv_obj_set_width(_mnBarVal, kScreenW - kPad * 2 - barW - kGap);
+  lv_label_set_long_mode(_mnBarVal, LV_LABEL_LONG_MODE_DOTS);
+  lv_obj_set_hidden(_mnBarVal, true);
 
   // 页脚文案含中文（“OK进入 / 亮度”），不能挂只有英文字形的 ASCII 兜底字体，
   // 否则汉字会画成占位方块；中文字库未就绪时 fontText() 自动退回 ASCII 字体
   _mnFoot = newLabel(_scrMenu, 1, C_HINT, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_pos(_mnFoot, kPad, kFootTop + 2);
   lv_obj_set_width(_mnFoot, kScreenW - kPad * 2);
+  lv_label_set_long_mode(_mnFoot, LV_LABEL_LONG_MODE_DOTS);
 }
 
-// ---- 屏幕显示页（可滚动的状态快照）----
-void Ui::buildScreenView() {
+// ---- 可滚动文本页（屏幕显示 / 短信详情）----
+// 与旧「屏幕显示」页结构一致，只是标题栏文案改为可写，好让短信详情复用同一屏。
+void Ui::buildView() {
   _scrView = lv_obj_create(NULL);
   lv_obj_remove_style_all(_scrView);
   lv_obj_set_scrollable(_scrView, false);
@@ -357,8 +380,8 @@ void Ui::buildScreenView() {
 
   lv_obj_t *hdr = makeHeader(_scrView);
   newLabel(hdr, 0, C_ACCENT, UI_ICON_DISPLAY, LV_TEXT_ALIGN_LEFT);
-  lv_obj_t *ttl = newLabel(hdr, 2, C_TEXT, "屏幕显示", LV_TEXT_ALIGN_LEFT);
-  lv_obj_set_flex_grow(ttl, 1);
+  _svTitle = newLabel(hdr, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+  lv_obj_set_flex_grow(_svTitle, 1);
 
   // 定高容器 + 一个可整体上下偏移的长文本，实现「按行滚动」
   _svBody = lv_obj_create(_scrView);
@@ -372,9 +395,53 @@ void Ui::buildScreenView() {
   _svText = newLabel(_svBody, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_width(_svText, LV_PCT(100));
 
-  _svFoot = newLabel(_scrView, 3, C_HINT, "", LV_TEXT_ALIGN_LEFT);
+  _svFoot = newLabel(_scrView, 1, C_HINT, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_pos(_svFoot, kPad, kFootTop + 2);
   lv_obj_set_width(_svFoot, kScreenW - kPad * 2);
+  lv_label_set_long_mode(_svFoot, LV_LABEL_LONG_MODE_DOTS);
+}
+
+// ---- 新短信弹窗 ----
+// 收到短信时自动浮到屏上：号码用标题字号突出，下面是时间与来源模组，
+// 正文区定高自动换行，页脚提示「按任意键返回」。
+void Ui::buildPopup() {
+  _scrPopup = lv_obj_create(NULL);
+  lv_obj_remove_style_all(_scrPopup);
+  lv_obj_set_scrollable(_scrPopup, false);
+  lv_obj_set_style_bg_color(_scrPopup, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(_scrPopup, LV_OPA_COVER, 0);
+
+  lv_obj_t *hdr = makeHeader(_scrPopup);
+  newLabel(hdr, 0, C_ACCENT, UI_ICON_SMS, LV_TEXT_ALIGN_LEFT);
+  lv_obj_t *ttl = newLabel(hdr, 2, C_TEXT, "新短信", LV_TEXT_ALIGN_LEFT);
+  lv_obj_set_flex_grow(ttl, 1);
+
+  // 号码（标题字号，整行放不下就截断）
+  _popPhone = newLabel(_scrPopup, 2, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+  lv_obj_set_pos(_popPhone, kPad, 42);
+  lv_obj_set_width(_popPhone, kScreenW - kPad * 2);
+  lv_label_set_long_mode(_popPhone, LV_LABEL_LONG_MODE_DOTS);
+
+  // 元信息：方向 + 时间 + 来源模组
+  _popMeta = newLabel(_scrPopup, 1, C_LABEL, "", LV_TEXT_ALIGN_LEFT);
+  lv_obj_set_pos(_popMeta, kPad, 70);
+  lv_obj_set_width(_popMeta, kScreenW - kPad * 2);
+  lv_label_set_long_mode(_popMeta, LV_LABEL_LONG_MODE_DOTS);
+
+  // 正文：定高容器 + 自动换行，超出部分由容器裁剪
+  lv_obj_t *body = lv_obj_create(_scrPopup);
+  lv_obj_remove_style_all(body);
+  lv_obj_set_scrollable(body, false);
+  lv_obj_set_pos(body, kPad, 94);
+  lv_obj_set_size(body, kScreenW - kPad * 2, 190);
+  lv_obj_set_style_pad_all(body, 0, 0);
+  _popBody = newLabel(body, 1, C_TEXT, "", LV_TEXT_ALIGN_LEFT);
+  lv_obj_set_width(_popBody, LV_PCT(100));
+  lv_label_set_long_mode(_popBody, LV_LABEL_LONG_MODE_WRAP);
+
+  lv_obj_t *foot = newLabel(_scrPopup, 1, C_HINT, "按任意键返回", LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(foot, 0, kFootTop + 2);
+  lv_obj_set_width(foot, kScreenW);
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +524,8 @@ void Ui::statusUpdate(const StatusInfo &s) {
 }
 
 void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t sel,
-                    const char *const *info, uint8_t infoCount, const char *foot) {
+                    const char *const *info, uint8_t infoCount, const char *foot,
+                    int barPct, const char *barText) {
   if (!_scrMenu) return;
   if (_current != 1) {
     lv_screen_load(_scrMenu);
@@ -468,8 +536,10 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
     n = kMaxMenuRows;
   }
   if (infoCount > kMaxInfoRows) infoCount = kMaxInfoRows;
+  if (barPct > 100) barPct = 100;
 
-  // 内容指纹：标题/选中/页脚/选项/正文任一变化才重设整页，避免按键连发时的重排
+  // 内容指纹：标题/选中/页脚/选项/正文/进度条任一变化才重设整页，
+  // 避免按键连发时的重排（连发每秒 5 次，内容多数时候没变）
   String fp = (title ? title : "");
   fp += '|';
   fp += (int)sel;
@@ -486,6 +556,10 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
     fp += info[i] ? info[i] : "";
     fp += ';';
   }
+  fp += '|';
+  fp += barPct;
+  fp += '|';
+  fp += (barText ? barText : "");
   if (fp == _mnCache) return;
   _mnCache = fp;
 
@@ -519,45 +593,45 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
     lv_label_set_text(_mnInfo[i], info[i] ? info[i] : "");
   }
 
+  // 进度条：紧跟在选项区下方（选项少时贴近内容，选项多时退到页脚上方让位）
+  const bool showBar = (barPct >= 0);
+  if (_mnBar) {
+    if (showBar) {
+      lv_coord_t y = kMenuTop + n * kMenuRowH + 6;
+      if (y > kBarTopMax) y = kBarTopMax;
+      lv_obj_set_y(_mnBar, y);
+      lv_bar_set_value(_mnBar, barPct, LV_ANIM_OFF);
+    }
+    lv_obj_set_hidden(_mnBar, !showBar);
+  }
+  if (_mnBarVal) {
+    if (showBar) {
+      lv_obj_set_y(_mnBarVal, (_mnBar ? lv_obj_get_y(_mnBar) : kBarTopMax) - 4);
+      lv_label_set_text(_mnBarVal, barText ? barText : "");
+    }
+    lv_obj_set_hidden(_mnBarVal, !showBar);
+  }
+
   lv_label_set_text(_mnFoot, foot ? foot : "");
 }
 
-int Ui::screenViewUpdate(const StatusInfo &s, int scroll) {
+int Ui::textViewUpdate(const char *title, const char *text, int scroll) {
   if (!_scrView || !_svText) return scroll;
   if (_current != 2) {
     lv_screen_load(_scrView);
     _current = 2;
   }
 
-  // 把状态快照摊平成纯文本行（每刷新一次重来一次，行数本身很少）
-  String text = "WIFI: ";
-  text += s.wifiUp ? "UP" : (s.apMode ? "AP" : "DOWN");
-  text += "\nIP: ";
-  text += s.ip ? s.ip : "-";
-  text += "\nRSSI: ";
-  text += s.wifiUp ? String(s.rssi) + " dBm" : "-";
-  text += "\nUPTIME: ";
-  text += String(s.uptimeSec) + " s";
-  text += "\nHEAP: ";
-  text += fmtBytes(s.freeHeap);
-  text += "\nPSRAM: ";
-  text += s.psramSize ? fmtBytes(s.freePsram) + "/" + fmtBytes(s.psramSize) : "-";
-  text += "\nRGB: ";
-  text += s.ledName ? s.ledName : "-";
-  text += "\n";
-  text += "\nLAST AT";
-  if (s.lastPort) {
-    text += "\nUART";
-    text += String(s.lastPort);
-  }
-  if (s.lastCmd && *s.lastCmd) text += String("\n") + s.lastCmd;
-  if (s.lastResp && *s.lastResp) text += String("\n") + s.lastResp;
+  // 标题 + 正文的指纹：完全相同（只是滚动没变）就跳过重排，
+  // 文本页每 500ms 会被刷一次，短信详情这类静态内容不该反复重排版。
+  String fp = (title ? title : "");
+  fp += '\n';
+  fp += (text ? text : "");
 
   int lines = 1;
-  for (size_t i = 0; i < text.length(); i++) {
-    if (text[i] == '\n') lines++;
+  for (size_t i = 0; i < fp.length(); i++) {
+    if (fp[i] == '\n') lines++;
   }
-
   const int lineH = (int)lv_font_get_line_height(fontText());
   if (lineH <= 0) return scroll;
   int visible = kViewH / lineH;
@@ -568,19 +642,65 @@ int Ui::screenViewUpdate(const StatusInfo &s, int scroll) {
   if (scroll < 0) scroll = 0;
   if (scroll > maxScroll) scroll = maxScroll;
 
-  lv_label_set_text(_svText, text.c_str());
-  lv_obj_set_y(_svText, -scroll * lineH);
-  lv_label_set_text(_svFoot, ("U/D:scroll O:ref B:back  " + String(scroll + 1) + "/" +
-                              String(lines))
-                                 .c_str());
+  if (fp != _svCache) {
+    _svCache = fp;
+    if (_svTitle) lv_label_set_text(_svTitle, title ? title : "");
+    lv_label_set_text(_svText, text ? text : "");
+    lv_obj_set_y(_svText, -scroll * lineH);
+    lv_label_set_text(_svFoot,
+                      ("U/D滚动 BACK返回  " + String(scroll + 1) + "/" + String(lines))
+                          .c_str());
+  } else {
+    // 内容没变但滚动位置可能变了：只挪文本与页脚计数
+    lv_obj_set_y(_svText, -scroll * lineH);
+    lv_label_set_text(_svFoot,
+                      ("U/D滚动 BACK返回  " + String(scroll + 1) + "/" + String(lines))
+                          .c_str());
+  }
   return scroll;
 }
 
-int Ui::screenViewVisibleLines() const {
+int Ui::viewVisibleLines() const {
   const int lineH = (int)lv_font_get_line_height(fontText());
   if (lineH <= 0) return 1;
   int v = kViewH / lineH;
   return v > 0 ? v : 1;
+}
+
+void Ui::smsPopupUpdate(const char *phone, const char *body, int8_t modem,
+                        const char *time, bool incoming) {
+  if (!_scrPopup) return;
+  if (_current != 4) {
+    lv_screen_load(_scrPopup);
+    _current = 4;
+  }
+
+  String fp = (phone ? phone : "");
+  fp += '|';
+  fp += (body ? body : "");
+  fp += '|';
+  fp += (int)modem;
+  fp += '|';
+  fp += (time ? time : "");
+  fp += '|';
+  fp += incoming ? 'i' : 'o';
+  if (fp == _popCache) return;   // 弹窗内容固定，重复调用（每轮 tick）不再重排
+  _popCache = fp;
+
+  if (_popPhone) lv_label_set_text(_popPhone, phone && *phone ? phone : "未知号码");
+  if (_popBody) lv_label_set_text(_popBody, body && *body ? body : "(无正文)");
+  if (_popMeta) {
+    String meta = incoming ? "收到" : "发出";
+    if (time && *time) {
+      meta += "  ";
+      meta += time;
+    }
+    if (modem > 0) {
+      meta += "  模组";
+      meta += String((int)modem);
+    }
+    lv_label_set_text(_popMeta, meta.c_str());
+  }
 }
 
 }  // namespace ui

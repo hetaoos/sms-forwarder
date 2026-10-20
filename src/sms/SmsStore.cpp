@@ -182,6 +182,25 @@ void SmsStore::list(int page, int pageSize, const String &q, int8_t modem,
   }
 }
 
+// 取最近 n 条（ID 倒序）：从 _maxId 向下扫，跳过缺失（已删除/已淘汰）的 ID。
+// 扫的次数带上限，存储被清空后不会退化成整段遍历。
+int SmsStore::latest(int n, SmsList &out) {
+  out.clear();
+  if (!_enabled || n <= 0) return 0;
+  lock();
+  uint32_t id = _maxId;
+  const uint32_t floor = _minId ? _minId : 1;
+  int guard = n * 4 + 16;
+  while ((int)out.size() < n && guard-- > 0 && id >= floor) {
+    SmsMessage m;
+    if (readFull(id, m)) out.push_back(m);
+    if (id == 0) break;
+    id--;
+  }
+  unlock();
+  return (int)out.size();
+}
+
 // 读取单条
 bool SmsStore::detail(uint32_t id, SmsMessage &out) {
   if (!_enabled || !id) return false;

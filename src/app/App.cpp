@@ -31,7 +31,17 @@ bool App::begin() {
   ui::instance().begin();              // LVGL 页面树（状态页 / 菜单 / 屏幕显示）
   _keypad.begin();                     // 4 键输入（OK/UP/DOWN/BACK）
   _ui.begin();                         // 菜单导航状态机（默认停在状态页）
-  _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 屏幕显示页数据源
+  _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 动态页数据源
+  // LCD「短信」页数据源：只在菜单页可见时被调用（内部另有 3 秒节流）
+  _ui.setSmsListProvider([this](SmsPreview *out, int max, int &total) {
+    return smsPreview(out, max, total);
+  });
+  // RGB 灯控制（菜单「RGB 灯」页切换颜色 / 调亮度）
+  _ui.setRgbControl([this](uint8_t cmd) {
+    if (cmd == 0) _led.next();
+    else if (cmd == 1) _led.setBrightness((uint8_t)(_led.brightness() + 10));
+    else if (cmd == 2) _led.setBrightness((uint8_t)(_led.brightness() - 10));
+  });
   _bridge.begin();                     // 启动串口抽数任务
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等模组自发数据前交给短信服务
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
@@ -93,6 +103,10 @@ bool App::begin() {
   _email.setStartupGate([this] { return _sms.modemsSettled(); });
   _email.notifyStartup();              // 排入启动邮件（等 WiFi + 模组就绪后发出）
 
+  // 新短信弹窗的开机基线：此前存的短信不弹（只弹运行期新收到的）
+  _lastSmsId = _sms.lastSmsId();
+  _smsBaseReady = true;
+
   _log.addf(LogLevel::kInfo, "app",
             "启动完成：heap %u B 空闲，PSRAM %u/%u B，进入主循环",
             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
@@ -140,42 +154,118 @@ void App::collectStatus(StatusInfo &out) {
     snprintf(out.mem, sizeof(out.mem), "%s", fmtBytes(out.freeHeap));
   }
 
+  // ---- SOC / 时间 ----
+  // 芯片型号 + 步进（同时作为硬件版本展示）
+  {
+    String chip = ESP.getChipModel();
+    if (chip.length()) chip += " rev " + String((int)ESP.getChipRevision());
+    snprintf(out.chip, sizeof(out.chip), "%s", chip.length() ? chip.c_str() : "-");
+  }
+  snprintf(out.cpuFreq, sizeof(out.cpuFreq), "%uMHz", (unsigned)ESP.getCpuFreqMHz());
+  snprintf(out.cores, sizeof(out.cores), "%u", (unsigned)ESP.getChipCores());
+  snprintf(out.flash, sizeof(out.flash), "%s", fmtBytes(ESP.getFlashChipSize()));
+
   // 负载：CPU 使用率（不可用时用 -）与芯片温度
   const float cpu = CpuMonitor::usage();
   const float t = temperatureRead();
-  snprintf(out.load, sizeof(out.load), "%s %s",
-           cpu >= 0 ? String(cpu, 1).c_str() : "-",
-           isnan(t) ? "-" : (String(t, 1) + "℃").c_str());
+  if (cpu >= 0) snprintf(out.cpu, sizeof(out.cpu), "%.1f%%", cpu);
+  else snprintf(out.cpu, sizeof(out.cpu), "-");
+  if (!isnan(t)) snprintf(out.temp, sizeof(out.temp), "%.1f℃", t);
+  else snprintf(out.temp, sizeof(out.temp), "-");
+  snprintf(out.load, sizeof(out.load), "%s %s", out.cpu, out.temp);
+
+  snprintf(out.heapSize, sizeof(out.heapSize), "%s", fmtBytes(ESP.getHeapSize()));
+  snprintf(out.psramTotal, sizeof(out.psramTotal), "%s",
+           out.psramSize ? fmtBytes(out.psramSize) : "-");
+
+  out.timeSynced = _time.isSynced();
+  snprintf(out.timeSrc, sizeof(out.timeSrc), "%s", _time.srcName());
+  String dt = _time.dateStr();   // "YYYY-MM-DD HH:mm:ss" / "未知"
+  snprintf(out.dateTime, sizeof(out.dateTime), "%s", dt.length() ? dt.c_str() : "-");
+
+  // ---- WiFi 补充（菜单「WIFI」页）----
+  if (out.wifiUp) snprintf(out.wifiMode, sizeof(out.wifiMode), "STA 已连接");
+  else if (out.apMode) snprintf(out.wifiMode, sizeof(out.wifiMode), "AP 配网");
+  else snprintf(out.wifiMode, sizeof(out.wifiMode), "连接中");
+  out.wifiSaved = _wifi.savedCount();
+
+  // ---- RGB 灯（菜单「RGB 灯」页）----
+  snprintf(out.rgbName, sizeof(out.rgbName), "%s",
+           out.ledName ? out.ledName : "-");
+  out.rgbBright = _led.brightness();
+  out.rgbIdx = _led.index();
 
   if (_svcReady) {
     for (uint8_t i = 0; i < 2; i++) {
       String b = _sms.modemBrief((uint8_t)(i + 1));   // 串口号 1/2
       snprintf(out.modem[i], sizeof(out.modem[i]), "%s",
                b.length() ? b.c_str() : "-");
+      // 完整遥测快照（菜单「模块」页）
+      _sms.modemSnapshot((uint8_t)(i + 1), out.modems[i]);
+    }
+
+    // ---- 邮件通知 ----
+    out.mailOn = _email.enabled();
+    out.mailCfg = _email.isConfigured();
+    snprintf(out.mailServer, sizeof(out.mailServer), "%s", _email.server().c_str());
+    out.mailPort = _email.port();
+    snprintf(out.mailUser, sizeof(out.mailUser), "%s", _email.user().c_str());
+    snprintf(out.mailTo, sizeof(out.mailTo), "%s", _email.sendTo().c_str());
+    out.mailQueue = _email.queueCount();
+    snprintf(out.mailSched, sizeof(out.mailSched), "%s", _email.scheduleText().c_str());
+    out.mailTypes = _email.notifyTypes();
+
+    // ---- 推送通道 ----
+    out.pushOn = _push.enabled();
+    out.pushCh = (uint8_t)_push.validChannelCount();
+    snprintf(out.pushStrategy, sizeof(out.pushStrategy), "%s",
+             _push.strategy() == PUSH_STRATEGY_FAILOVER ? "故障转移" : "广播");
+    {
+      PushService::ChannelBrief cb[4];
+      const int cn = _push.channelBriefs(cb, 4);
+      out.pushListCount = (uint8_t)(cn > 0 ? cn : 0);
+      for (int i = 0; i < cn; i++) {
+        snprintf(out.pushList[i].label, sizeof(out.pushList[i].label), "%s", cb[i].label);
+        out.pushList[i].on = cb[i].on;
+        out.pushList[i].valid = cb[i].valid;
+      }
     }
 
 #if defined(ENABLE_MQTT) && ENABLE_MQTT
-    if (!MqttService::isEnabled()) {
-      snprintf(out.mqtt, sizeof(out.mqtt), "已关闭");
-    } else if (!MqttService::isConfigured()) {
-      snprintf(out.mqtt, sizeof(out.mqtt), "未配置");
-    } else {
-      snprintf(out.mqtt, sizeof(out.mqtt), "%s",
-               MqttService::connected() ? "已连接" : "未连接");
+    out.mqttOn = MqttService::isEnabled();
+    out.mqttCfg = MqttService::isConfigured();
+    out.mqttConn = MqttService::connected();
+    out.mqttSub = MqttService::_subscribeEnabled;
+    {
+      const String &srv = MqttService::_server;
+      snprintf(out.mqttServer, sizeof(out.mqttServer), "%s:%u",
+               srv.length() ? srv.c_str() : "-", (unsigned)MqttService::_port);
     }
+    snprintf(out.mqttClient, sizeof(out.mqttClient), "%s",
+             MqttService::deviceId().c_str());
+    snprintf(out.mqttTopic, sizeof(out.mqttTopic), "%s/#",
+             MqttService::_topicPrefix.c_str());
+    {
+      const String &err = MqttService::lastError();
+      snprintf(out.mqttErr, sizeof(out.mqttErr), "%s",
+               err.length() ? err.c_str() : "-");
+    }
+
+    if (!out.mqttOn) snprintf(out.mqtt, sizeof(out.mqtt), "已关闭");
+    else if (!out.mqttCfg) snprintf(out.mqtt, sizeof(out.mqtt), "未配置");
+    else snprintf(out.mqtt, sizeof(out.mqtt), "%s", out.mqttConn ? "已连接" : "未连接");
 #else
     snprintf(out.mqtt, sizeof(out.mqtt), "未编译");
 #endif
 
-    if (!_email.enabled()) snprintf(out.mail, sizeof(out.mail), "已关闭");
-    else snprintf(out.mail, sizeof(out.mail), "%s",
-                  _email.isConfigured() ? "已配置" : "未配置");
+    if (!out.mailOn) snprintf(out.mail, sizeof(out.mail), "已关闭");
+    else snprintf(out.mail, sizeof(out.mail), "%s", out.mailCfg ? "已配置" : "未配置");
 
-    if (!_push.enabled()) {
+    if (!out.pushOn) {
       snprintf(out.push, sizeof(out.push), "已关闭");
     } else {
-      const int n = _push.validChannelCount();
-      snprintf(out.push, sizeof(out.push), n > 0 ? "%d 个通道" : "未配置", n);
+      snprintf(out.push, sizeof(out.push), out.pushCh > 0 ? "%d 个通道" : "未配置",
+               (int)out.pushCh);
     }
   }
   // 未就绪（开机首帧）时上述字段保持结构体默认的 "-"，下一帧就会补上
@@ -197,6 +287,72 @@ void App::fmtUptime(uint32_t sec, char *out, size_t n) {
   if (d) snprintf(out, n, "%u天%02u:%02u:%02u", (unsigned)d, (unsigned)h,
                   (unsigned)m, (unsigned)s);
   else snprintf(out, n, "%02u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+}
+
+// LCD「短信」页数据源：取最近 max 条（时间倒序），total 为存储总条数。
+// 扫文件（每条一次 open/read）有成本，菜单页每 500ms 就会问一次，
+// 因此这里做 3 秒节流：窗口内直接回缓存。
+int App::smsPreview(SmsPreview *out, int max, int &total) {
+  const uint32_t now = millis();
+  if (now - _smsCacheMs >= 3000 || _smsCacheMs == 0) {
+    SmsList list;
+    const int n = max > 0 ? _sms.store().latest(max, list) : 0;
+    for (int i = 0; i < n && i < (int)cfg::kUiSmsPreviewMax; i++) {
+      fillPreview(list[i], _smsCache[i]);
+    }
+    _smsCacheCount = n;
+    _smsCacheTotal = _sms.store().count();
+    _smsCacheMs = now;
+  }
+  total = _smsCacheTotal;
+  if (max > _smsCacheCount) max = _smsCacheCount;
+  for (int i = 0; i < max; i++) out[i] = _smsCache[i];
+  return max > 0 ? max : 0;
+}
+
+// 单条记录 -> 预览条目。时间沿用前端约定：>= 1.6e9 为真实纪元时间，
+// 否则是开机秒数（格式化成时长）。
+void App::fillPreview(const SmsMessage &m, SmsPreview &out) {
+  out.id = m.id;
+  out.incoming = m.incoming;
+  out.modem = m.modem;
+  out.ts = m.ts;
+  snprintf(out.phone, sizeof(out.phone), "%s", m.phone.c_str());
+  snprintf(out.text, sizeof(out.text), "%s", m.content.c_str());
+  if (m.ts >= 1600000000u) {
+    time_t tv = (time_t)m.ts;
+    struct tm ti;
+    localtime_r(&tv, &ti);
+    snprintf(out.time, sizeof(out.time), "%02d-%02d %02d:%02d", ti.tm_mon + 1,
+             ti.tm_mday, ti.tm_hour, ti.tm_min);
+  } else {
+    const uint32_t s = m.ts;
+    snprintf(out.time, sizeof(out.time), "%02u:%02u:%02u", (unsigned)(s / 3600),
+             (unsigned)((s % 3600) / 60), (unsigned)(s % 60));
+  }
+}
+
+// 新短信检测：SmsService 落盘后 lastSmsId 会推进，主循环据此弹窗。
+// 放在 loop 任务里做（而不是短信回调里）：弹窗要点屏、要拷贝正文，
+// 这些都不该发生在串口抽数任务上下文。
+void App::checkNewSms() {
+  const uint32_t id = _sms.lastSmsId();
+  if (id == _lastSmsId) return;
+  const bool hadBase = _smsBaseReady;
+  _lastSmsId = id;
+  if (!hadBase || id == 0) return;   // 开机基线：不弹历史短信
+
+  SmsMessage m;
+  if (!_sms.store().detail(id, m)) return;
+  if (!m.incoming) return;           // 只弹「收到」的短信（发出不算新短信）
+
+  SmsPreview p;
+  fillPreview(m, p);
+  _ui.showSms(p);
+  // 顺带让「短信」页下次进入时立刻能看到这条（缓存 3 秒节流会挡住新数据）
+  _smsCacheMs = 0;
+  _log.addf(LogLevel::kInfo, "ui", "新短信已弹屏：%s（模组 %d）", m.phone.c_str(),
+            (int)m.modem);
 }
 
 // 字节数紧凑格式：>=1MB 显示 "7.80M"，>=1KB 显示 "123.4K"，否则 "512B"
@@ -243,8 +399,11 @@ void App::tick() {
     _ui.handle(ikey, iev);
   }
 
-  // 无操作超时：由 UI 状态机按屏幕设置处理（自动退回状态页 / 自动熄屏，
-  // 两项均可关闭）；兼管菜单连调亮度后的落盘防抖
+  // 新短信检测：有新的收到短信时弹出到屏幕（loop 任务上下文）
+  checkNewSms();
+
+  // 无操作超时：由 UI 状态机按屏幕设置处理（自动退回状态页 / 自动熄屏 / 弹窗超时，
+  // 三项均可关闭）；兼管菜单连调亮度后的落盘防抖
   _ui.tick();
 
   // 开机窗口：只画开机页（Logo + 进度条），不采集任何业务状态。
@@ -267,11 +426,14 @@ void App::tick() {
     return;
   }
 
-  if (_ui.inScreenView()) {
-    // 「屏幕显示」页：实时跟随，按固定周期重绘（滚动/刷新由按键驱动）
+  if (_ui.inPopup()) {
+    // 新短信弹窗：优先级最高，内容固定（Ui 层按指纹跳过重复重排）
+    _ui.renderPopup();
+  } else if (_ui.inView()) {
+    // 可滚动文本页（屏幕显示 / 短信详情）：按固定周期重绘，滚动由按键驱动
     if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
       _lastUiMs = millis();
-      _ui.renderScreenView();
+      _ui.renderView();
     }
   } else if (_ui.inStatusMode()) {
     // 实时状态页：按固定周期刷新（LVGL 自带脏区比对，内容没变不会推屏）

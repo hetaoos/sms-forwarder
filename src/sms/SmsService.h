@@ -9,6 +9,7 @@
 #include "app/Config.h"
 #include "serial/SerialBridge.h"
 #include "sms/BlackList.h"
+#include "sms/ModemSnapshot.h"
 #include "sms/SmsCodec.h"
 #include "sms/SmsRecord.h"
 #include "sms/SmsStore.h"
@@ -94,6 +95,14 @@ class SmsService {
   // port 越界返回空串。与 modemsJson 同样不加锁：只读若干 POD 字段，
   // 抽数任务并发改写最多让读数差一拍，不存在一致性风险。
   String modemBrief(uint8_t port) const;
+
+  // 单个模组的完整状态快照（LCD 菜单「模块」页用）。
+  // 与 modemBrief 同策略不加锁：只读 POD + String 字段，最多让读数差一拍。
+  // port 越界返回 false（out 保持原样）。
+  bool modemSnapshot(uint8_t port, ModemSnapshot &out) const;
+
+  // 运营商短代码 -> 中文名（CMCC/CUCC/CTCC/CBN）；未知返回空串
+  static String operCn(const String &code);
 
   // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象：
   // o["max"]=n, o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]

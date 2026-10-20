@@ -7,10 +7,10 @@
 
 #include "app/StatusInfo.h"
 
-// LVGL 界面层：三个页面（实时状态 / 菜单 / 屏幕显示）都在这里用 LVGL 部件搭建，
-// 业务侧（app/UIMenu）只负责「现在该显示什么数据」，不碰具体绘制。
+// LVGL 界面层：状态页 / 菜单页 / 可滚动文本页 / 新短信弹窗 / 开机页都在这里
+// 用 LVGL 部件搭建，业务侧（app/UIMenu）只负责「现在该显示什么数据」，不碰绘制。
 //
-// 页面切换用 lv_screen_load 换活动屏幕；三个屏幕在 begin() 时一次性建好，
+// 页面切换用 lv_screen_load 换活动屏幕；五个屏幕在 begin() 时一次性建好，
 // 之后只更新文本内容 —— LVGL 自带脏区计算，只把有变化的部分推到面板。
 namespace ui {
 
@@ -27,7 +27,7 @@ class Ui {
  public:
   static Ui &instance();
 
-  // 建立三个页面的部件树。须在 Display::begin()（LVGL 端口就绪）之后调用
+  // 建立各页面的部件树。须在 Display::begin()（LVGL 端口就绪）之后调用
   void begin();
 
   // 部件树是否已建好
@@ -35,6 +35,10 @@ class Ui {
 
   // 每轮调用：推进中文字库加载，就绪后自动刷新一次全部页面
   void tick();
+
+  // 菜单一屏能放几行 / 几行正文（供业务侧裁剪内容与算翻页步长）
+  static uint8_t menuSlots();
+  static uint8_t infoSlots();
 
   // ---- 开机页 ----
   // 切到开机页并按 0~100 推进进度条。开机页不依赖中文字库（纯图标 + ASCII），
@@ -47,16 +51,26 @@ class Ui {
 
   // ---- 菜单页 ----
   // rows/n：选项；sel：高亮下标（-1 表示纯信息页，展示 info）；
-  // info/infoCount：正文；foot：页脚（可为 nullptr）
+  // info/infoCount：正文；foot：页脚（可为 nullptr）；
+  // barPct：底部进度条取值（0-100，负数 = 不显示进度条）；
+  // barText：进度条右侧的数值文本（如 "80%" / "60秒"，可为 nullptr）
   void menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t sel,
-                  const char *const *info, uint8_t infoCount, const char *foot);
+                  const char *const *info, uint8_t infoCount, const char *foot,
+                  int barPct = -1, const char *barText = nullptr);
 
-  // ---- 屏幕显示页（可滚动的状态快照）----
-  // scroll：期望滚动偏移（行），返回夹紧后的实际偏移
-  int screenViewUpdate(const StatusInfo &s, int scroll);
+  // ---- 可滚动文本页（屏幕显示 / 短信详情）----
+  // title：标题栏文案；text：正文（可含换行）；scroll：期望滚动偏移（行）
+  // 返回夹紧后的实际偏移
+  int textViewUpdate(const char *title, const char *text, int scroll);
 
-  // 屏幕显示页一屏能放几行（供“长按翻页”算步长）
-  int screenViewVisibleLines() const;
+  // 文本页一屏能放几行（供「长按翻页」算步长）
+  int viewVisibleLines() const;
+
+  // ---- 新短信弹窗 ----
+  // phone：发件号码；body：正文；modem：接收模组串口号（<0 未知）；
+  // time：可读时间串；incoming：true 收到 / false 发出
+  void smsPopupUpdate(const char *phone, const char *body, int8_t modem,
+                      const char *time, bool incoming);
 
  private:
   Ui() = default;   // 单例：一律通过 ui::instance() 取用
@@ -64,7 +78,8 @@ class Ui {
 
   void buildStatus();
   void buildMenu();
-  void buildScreenView();
+  void buildView();
+  void buildPopup();
   void buildBoot();
 
   // 建立一个受管理的标签（登记后可在字库就绪时统一换字体）
@@ -77,7 +92,8 @@ class Ui {
 
   lv_obj_t *_scrStatus = nullptr;   // 实时状态页
   lv_obj_t *_scrMenu = nullptr;     // 菜单页
-  lv_obj_t *_scrView = nullptr;     // 屏幕显示页
+  lv_obj_t *_scrView = nullptr;     // 可滚动文本页
+  lv_obj_t *_scrPopup = nullptr;    // 新短信弹窗
   lv_obj_t *_scrBoot = nullptr;     // 开机页（Logo + 进度条）
   lv_obj_t *_bootBar = nullptr;
 
@@ -89,31 +105,43 @@ class Ui {
   String _stCache[kStatusRows];            // 上次的值（变化才重设文本）
   bool _stHidden[kStatusRows] = {};        // 上一次的显隐状态（变化才改）
 
-  // 菜单页：标题 + 固定数量的行槽位（用显隐切换，避免反复建/删对象）
+  // 菜单页：标题 + 固定数量的行槽位（用显隐切换，避免反复建/删对象）。
+  // 选项多于槽位时由业务侧做视口滚动，这里只管画传入的这几行。
   static constexpr uint8_t kMaxMenuRows = 8;
-  static constexpr uint8_t kMaxInfoRows = 8;
+  static constexpr uint8_t kMaxInfoRows = 9;
   lv_obj_t *_mnTitle = nullptr;
   lv_obj_t *_mnRow[kMaxMenuRows] = {};
   lv_obj_t *_mnIcon[kMaxMenuRows] = {};
   lv_obj_t *_mnLabel[kMaxMenuRows] = {};
   lv_obj_t *_mnInfo[kMaxInfoRows] = {};
   lv_obj_t *_mnFoot = nullptr;
+  lv_obj_t *_mnBar = nullptr;      // 底部进度条（调节类页面显示）
+  lv_obj_t *_mnBarVal = nullptr;   // 进度条右侧的数值文本
   String _mnCache;               // 上次渲染的内容指纹（相同则跳过整页更新）
 
-  // 屏幕显示页：定高容器 + 单个可偏移的长文本
+  // 可滚动文本页：定高容器 + 单个可偏移的长文本
+  lv_obj_t *_svTitle = nullptr;
   lv_obj_t *_svBody = nullptr;
   lv_obj_t *_svText = nullptr;
   lv_obj_t *_svFoot = nullptr;
+  String _svCache;               // 上次渲染的「标题 + 正文」（相同则跳过重排）
+
+  // 新短信弹窗：号码 / 元信息 / 正文 / 页脚
+  lv_obj_t *_popPhone = nullptr;
+  lv_obj_t *_popMeta = nullptr;
+  lv_obj_t *_popBody = nullptr;
+  String _popCache;              // 上次渲染的弹窗指纹（相同则跳过）
 
   // 标签登记表（固定容量：UI 文本数量有上界，借此不引入动态容器）
-  static constexpr uint8_t kMaxLabels = 96;
+  static constexpr uint8_t kMaxLabels = 128;
   struct LabelRef {
     lv_obj_t *obj;
     uint8_t kind;
   };
   LabelRef _labels[kMaxLabels];
   uint8_t _labelCount = 0;
-  uint8_t _current = 0;   // 当前活动页：0 状态 / 1 菜单 / 2 屏幕显示 / 3 开机
+  // 当前活动页：0 状态 / 1 菜单 / 2 文本 / 3 开机 / 4 弹窗
+  uint8_t _current = 0;
   bool _built = false;    // begin() 是否已装配完成（部件只建一次）
 };
 
