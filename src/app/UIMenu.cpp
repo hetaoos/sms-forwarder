@@ -295,6 +295,7 @@ void UIMenu::render() {
   for (uint8_t i = 0; i < n && i < kMenuSlots; i++) {
     rows[i].icon = pg.items[i].icon;
     rows[i].label = pg.items[i].label;
+    rows[i].scroll = pg.items[i].scroll;
   }
 
   // 页脚：选项页给「第几项/共几项 + 操作提示」，信息页提示可滚动
@@ -551,7 +552,7 @@ void UIMenu::addInfo(MenuPage &pg, const char *fmt, ...) {
 
 // 追加一个选项（超出槽位忽略）
 void UIMenu::addItem(MenuPage &pg, const char *icon, const char *label,
-                     const MenuPage *sub, UiAction action) {
+                     const MenuPage *sub, UiAction action, bool scroll) {
   if (pg.itemCount >= kMenuSlots) return;
   const uint8_t i = pg.itemCount;
   snprintf(_itemBuf[i], sizeof(_itemBuf[0]), "%s", label ? label : "");
@@ -559,6 +560,7 @@ void UIMenu::addItem(MenuPage &pg, const char *icon, const char *label,
   _dynItems[i].label = _itemBuf[i];
   _dynItems[i].sub = sub;
   _dynItems[i].action = action;
+  _dynItems[i].scroll = scroll;
   pg.itemCount++;
 }
 
@@ -579,7 +581,8 @@ void UIMenu::fillSms(MenuPage &pg) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%s %s %s", m.incoming ? "收" : "发",
              m.phone[0] ? m.phone : "-", m.time[0] ? m.time : "-");
-    addItem(pg, UI_ICON_SMS, buf, nullptr, UiAction::kSmsOpen);
+    // 行文案可能过长：启用横向跑马灯滚动（不换行、不截断省略号）
+    addItem(pg, UI_ICON_SMS, buf, nullptr, UiAction::kSmsOpen, true);
   }
   // 选中项由 _cursor 决定：这里把光标映射回预览下标，供 kSmsOpen 取用
   _smsSel = (_cursor >= 0 && _cursor < _smsCount) ? _cursor : 0;

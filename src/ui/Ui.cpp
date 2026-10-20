@@ -643,6 +643,9 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
       lv_obj_set_style_text_color(_mnIcon[i], lv_color_hex(hi ? C_ACCENT : C_LABEL), 0);
     }
     if (_mnLabel[i]) {
+      // 过长行（如短信列表）用横向跑马灯滚动，其余保持省略号截断；均不换行
+      lv_label_set_long_mode(_mnLabel[i], rows[i].scroll ? LV_LABEL_LONG_MODE_SCROLL
+                                                       : LV_LABEL_LONG_MODE_DOTS);
       lv_label_set_text(_mnLabel[i], rows[i].label ? rows[i].label : "");
       lv_obj_set_style_text_color(_mnLabel[i], lv_color_hex(hi ? C_TEXT : C_LABEL), 0);
     }

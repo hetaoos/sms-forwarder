@@ -63,6 +63,7 @@ struct MenuItem {
   const char *label;             // 选项文字
   const MenuPage *sub;           // 子页面（非空表示可下钻）
   UiAction action;               // 叶子动作
+  bool scroll = false;           // 行文案过长时横向滚动（跑马灯）而非省略号截断
 };
 
 // 一个菜单页：标题 + 选项列表，或一组正文（info 与 items 通常互斥）。
@@ -213,7 +214,7 @@ class UIMenu {
   void addInfo(MenuPage &pg, const char *fmt, ...);
   // 追加一个选项（超出槽位忽略）
   void addItem(MenuPage &pg, const char *icon, const char *label, const MenuPage *sub,
-               UiAction action);
+               UiAction action, bool scroll = false);
   // 逐条填充各动态页
   void fillSms(MenuPage &pg);
   void fillSoc(MenuPage &pg);

@@ -18,6 +18,7 @@ namespace ui {
 struct MenuRow {
   const char *icon;   // 图标 UTF-8（见 UiIcons.h 的 UI_ICON_*）
   const char *label;  // 行文案
+  bool scroll = false;  // 行文案过长时横向滚动（跑马灯）而非省略号截断
 };
 
 class Ui;
