@@ -62,7 +62,9 @@ bool WifiManager::persistToNvs() const {
   return written == out.length();
 }
 
-// 候选列表 = 编译期默认账号（置顶）+ NVS 配置；同 SSID 只保留先出现的一条
+// 候选列表 = 编译期默认账号（置顶）+ NVS 配置；同 SSID 只保留先出现的一条。
+// 若记录过"上次成功连上的"网络，则把它前置：瞬时断线（同一路由器恢复）
+// 可 1 次试探内恢复，不必从头遍历所有候选。
 void WifiManager::rebuildCandidates() {
   _candCount = 0;
 
@@ -76,6 +78,19 @@ void WifiManager::rebuildCandidates() {
     _cand[_candCount].pass = pass;
     _candCount++;
   };
+
+  // 优先前置上次成功的网络（仅在列表里确实存在该 SSID 时才生效）
+  if (_lastGoodSsid.length()) {
+    if (cfg::kWifiSsidDefault[0] && _lastGoodSsid == cfg::kWifiSsidDefault) {
+      pushUnique(cfg::kWifiSsidDefault, cfg::kWifiPassDefault);
+    }
+    for (uint8_t i = 0; i < _entryCount; i++) {
+      if (_entries[i].ssid == _lastGoodSsid) {
+        pushUnique(_entries[i].ssid, _entries[i].pass);
+        break;
+      }
+    }
+  }
 
   pushUnique(cfg::kWifiSsidDefault, cfg::kWifiPassDefault);
   for (uint8_t i = 0; i < _entryCount; i++) {
@@ -121,6 +136,7 @@ void WifiManager::enterApMode() {
                     IPAddress(255, 255, 255, 0));
   WiFi.softAP(cfg::kApSsid);  // 开放热点，无密码
   _apUp = true;
+  _apRetryMs = millis();      // 重置后台重试计时
   _log.addf(LogLevel::kInfo, "wifi", "已进入 AP 配网模式 '%s'（IP 192.168.4.1）",
             cfg::kApSsid);
 }
@@ -148,14 +164,26 @@ void WifiManager::begin() {
 // 状态机推进：
 // kConnecting: 等待当前候选，超时切下一个；整轮失败 kWifiAttemptRounds 次 -> AP
 // kSta:        监测掉线，掉线超过 kWifiLostRetryMs 后从头重试
-// kAp:         无后台重试，等待网页保存/试连
+// kAp:         每 kWifiApRetryMs 后台静默重试 STA，连上即关闭热点自愈；否则等待网页干预
 void WifiManager::tick() {
   lock();
   switch (_mode) {
     case WifiMode::kConnecting:
       if (connected()) {
+        if (_apUp) {  // 可能来自 AP 后台重试 / 网页显式试连：连上即关闭配网热点
+          if (WiFi.softAPgetStationNum() == 0) {
+            WiFi.softAPdisconnect(false);  // 关闭 AP，保留 STA
+            _apUp = false;
+            _log.addf(LogLevel::kInfo, "wifi", "已关闭配网热点");
+          } else {
+            // 仍有客户端在 AP 上配置，暂保留热点；待其离开后由 kSta 分支关闭
+            _log.addf(LogLevel::kInfo, "wifi",
+                      "AP 仍被占用（有客户端在配置），暂保留热点");
+          }
+        }
         _mode = WifiMode::kSta;
         _lostMs = millis();
+        _lastGoodSsid = WiFi.SSID();  // 记录上次成功网络，优先重连
         _log.addf(LogLevel::kInfo, "wifi", "WiFi 已连接，IP %s", ip().c_str());
         unlock();
         if (_onConnect) _onConnect();  // 锁外触发：回调可能启动 NTP 等耗时操作
@@ -184,6 +212,13 @@ void WifiManager::tick() {
       break;
 
     case WifiMode::kSta:
+      // 若此前因 AP 被占用而保留了热点（用户配置中途 STA 重连成功），
+      // 待客户端离开后在此关闭热点，回收 AP 资源。
+      if (_apUp && WiFi.softAPgetStationNum() == 0) {
+        WiFi.softAPdisconnect(false);
+        _apUp = false;
+        _log.addf(LogLevel::kInfo, "wifi", "客户端已离开，已关闭配网热点");
+      }
       if (!connected()) {
         if (millis() - _lostMs >= cfg::kWifiLostRetryMs) {
           _log.addf(LogLevel::kWarn, "wifi", "WiFi 链路断开，重新尝试候选网络");
@@ -198,9 +233,39 @@ void WifiManager::tick() {
       }
       break;
 
-    case WifiMode::kAp:
-      // AP 模式下不做后台重试；用户经网页保存配置时显式发起
+    case WifiMode::kAp: {
+      // AP 配网模式：后台静默重试 STA，连上即关闭热点自愈回到 kSta；
+      // 失败则回到 AP 等待下一轮，避免路由器恢复后设备卡在开放热点。
+      // 若本机热点上有客户端在配置，暂停后台重试与自动关热点，避免打断会话。
+      uint8_t staNum = WiFi.softAPgetStationNum();
+      if (connected()) {  // 网页显式试连已成功，或后台重试命中
+        if (staNum > 0) {
+          // 用户还在 AP 上配置：暂不自愈关闭热点，刷新计时等其离开后再处理
+          _apRetryMs = millis();
+          break;
+        }
+        WiFi.softAPdisconnect(false);  // 关闭 AP，保留 STA
+        _apUp = false;
+        _mode = WifiMode::kSta;
+        _lostMs = millis();
+        _lastGoodSsid = WiFi.SSID();
+        _log.addf(LogLevel::kInfo, "wifi",
+                  "AP 后台重连成功，已关闭配网热点，IP %s", ip().c_str());
+        unlock();
+        if (_onConnect) _onConnect();  // 锁外触发：回调可能启动 NTP 等耗时操作
+        return;
+      }
+      if (staNum == 0 && millis() - _apRetryMs >= cfg::kWifiApRetryMs) {
+        _apRetryMs = millis();
+        _explicitTry = false;  // 后台重试按普通失败处理：失败则回到 AP 等待
+        rebuildCandidates();
+        _candPos = 0;
+        _round = 0;
+        _mode = WifiMode::kConnecting;
+        startNextAttempt();  // AP_STA 双栈，重试时 AP 仍对外提供服务
+      }
       break;
+    }
   }
   unlock();
 }
@@ -448,6 +513,7 @@ String WifiManager::statusJson() const {
   doc["rssi"] = rssi();
   doc["ap"] = _apUp;
   doc["apSsid"] = cfg::kApSsid;
+  doc["apSta"] = WiFi.softAPgetStationNum();  // 当前连在热点上的客户端数（用于网页提示）
   doc["count"] = _entryCount;
   String out;
   serializeJson(doc, out);

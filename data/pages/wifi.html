@@ -15,6 +15,7 @@
     <div class="row"><span class="k">连接信息</span><span class="v" x-text="connText()"></span></div>
     <div class="row"><span class="k">已保存配置</span><span class="v" x-text="(wifi.count || saved.length) + ' 组'"></span></div>
     <div class="hint" x-show="wifi.ap">AP 配网模式下设备热点为 <b x-text="wifi.apSsid"></b>（192.168.4.1），保存可用网络后重启将自动切换。</div>
+    <div class="hint warn" x-show="wifi.ap && wifi.apSta > 0">检测到 <b x-text="wifi.apSta"></b> 个客户端正连接本热点，已暂停自动重连（每 60s 重试一次），以免打断配置；客户端离开后将自动恢复。</div>
   </div>
 
   <!-- 扫描结果 -->

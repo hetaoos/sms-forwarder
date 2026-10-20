@@ -22,6 +22,7 @@ constexpr uint8_t kWifiMaxNetworks = 5;        // NVS 最多保存的 WiFi 配�
 constexpr uint8_t kWifiAttemptRounds = 3;      // 全部候选都连失败的轮数，超过则进 AP 模式
 constexpr uint32_t kWifiConnectTimeoutMs = 8000;  // 单个候选的连接等待上限（ms）
 constexpr uint32_t kWifiLostRetryMs = 5000;    // STA 掉线后多久开始重连（ms）
+constexpr uint32_t kWifiApRetryMs = 30000;     // AP 模式下后台静默重试 STA 的间隔（ms）
 
 // ---------------- Web 管理账号（编译期可注入）----------------
 // 在 platformio.ini 的 build_flags 里用 -DWEB_AUTH_USER_DEFAULT=\"xxx\" 覆盖；

@@ -151,11 +151,13 @@ class WifiManager {
   uint8_t _candPos = 0;               // 当前候选下标
   uint8_t _round = 0;                 // 已失败的整轮数
   uint32_t _attemptMs = 0;            // 当前候选尝试的起始时间戳
-  uint32_t _lostMs = 0;               // STA 掉线时刻（用于重连节流）
+  uint32_t _lostMs = 0;
+  uint32_t _apRetryMs = 0;         // AP 模式下后台重试 STA 的时间戳               // STA 掉线时刻（用于重连节流）
 
   WifiMode _mode = WifiMode::kConnecting;  // 当前工作模式
   bool _apUp = false;                      // AP 接口是否已启动
   bool _explicitTry = false;               // 是否为网页显式试连（失败回退而非进 AP）
+  String _lastGoodSsid;                    // 上次成功连上的 SSID，重连时优先
 
   SemaphoreHandle_t _mutex = nullptr;      // 共享状态互斥量
   OnConnectCb _onConnect;                  // STA 连接成功回调（NTP 同步等）
