@@ -652,7 +652,75 @@ function pageDashboard() {
       return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
     },
     go(id) { location.hash = '#/' + id; },
+    // 按串口号取模组对象（modems 来自 SSE smsports 事件）
+    modemOf(p) { return (this.modems || []).find(m => m.port === p) || null; },
+    // 模组卡文案：禁用 / 初始化中 / 信号 dBm + 连接状态
+    modemStatText(p) {
+      const m = this.modemOf(p);
+      if (!m) return '-';
+      if (!m.enabled) return '已禁用';
+      if (!m.ready) return '初始化中';
+      return csqDbm(m.csq) + ' · ' + modemStateText(m);
+    },
     fmt, fmtBytes,
+  };
+}
+
+/* ---------- 定时重启（系统保活） ---------- */
+function pageSched() {
+  return {
+    enabled: false,
+    mode: 1,            // 1=固定间隔，0=每日定点
+    daily: '04:00',
+    intervalH: 24,
+    weekdays: 0,        // 位掩码 bit0=周日…bit6=周六；0=每天
+    saving: false,
+    loaded: false,
+    // 星期选项（展示顺序：周一→周日，对应位见 bit）
+    days: [
+      { bit: 1, name: '周一' }, { bit: 2, name: '周二' }, { bit: 3, name: '周三' },
+      { bit: 4, name: '周四' }, { bit: 5, name: '周五' }, { bit: 6, name: '周六' },
+      { bit: 0, name: '周日' },
+    ],
+
+    init() {
+      if (this._sync()) return;
+      // 状态尚未到达，短轮询直到 st.sched 出现
+      const t = setInterval(() => {
+        if (this._sync()) clearInterval(t);
+      }, 500);
+      setTimeout(() => clearInterval(t), 8000);
+    },
+    _sync() {
+      const s = Alpine.store('live').status.sched;
+      if (!s) return false;
+      this.enabled = !!s.enabled;
+      this.mode = s.mode;
+      this.daily = s.daily || '04:00';
+      this.intervalH = s.intervalH || 24;
+      this.weekdays = s.weekdays || 0;
+      this.loaded = true;
+      return true;
+    },
+    dayOn(bit) { return (this.weekdays & (1 << bit)) !== 0; },
+    toggleDay(bit) { this.weekdays = this.weekdays ^ (1 << bit); },
+
+    async save() {
+      if (!this.loaded || this.saving) return;
+      this.saving = true;
+      try {
+        // 独立接口：仅保存配置，不重启设备（定时重启按新计划即时生效）
+        await postOp('/api/sched', {
+          enabled: !!this.enabled,
+          mode: this.mode,
+          daily: this.daily,
+          intervalH: Number(this.intervalH) || 24,
+          weekdays: this.weekdays,
+        });
+      } finally {
+        this.saving = false;
+      }
+    },
   };
 }
 
@@ -2072,6 +2140,7 @@ function pageTools() {
     // ---------- 配置导入导出 ----------
     importFile: null,    // 待导入的 JSON 文件
     importing: false,    // 导入进行中（避免重复点击）
+    resetWarn: false,     // 已发送出厂复位指令
 
     // 导出配置：直接触发浏览器下载（GET /api/config/export 返回附件）
     exportConfig() {
@@ -2109,6 +2178,21 @@ function pageTools() {
         toast('✕ 导入失败：' + (e && e.message ? e.message : e), 'err', 6000);
         this.importing = false;
       }
+    },
+
+    // ---------- 系统维护：重启 / 出厂复位 ----------
+    async restart() {
+      if (!(await confirmDialog('重启设备', '确定要重启设备吗？重启过程中短信转发会短暂中断。')))
+        return;
+      await postOp('/api/system/restart', {}, '设备即将重启');
+    },
+    async reset() {
+      if (!(await confirmDialog('出厂复位',
+            '将清除全部配置（WiFi / 账号 / 短信等）与用户数据（短信记录 / 日志 / AT 历史），设备回到首次启动状态（AP 配网模式）。此操作不可恢复！',
+            true)))
+        return;
+      const r = await postOp('/api/system/reset', {}, '已恢复出厂设置');
+      if (r) this.resetWarn = true;
     },
   };
 }

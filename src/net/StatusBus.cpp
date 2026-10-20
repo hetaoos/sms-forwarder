@@ -44,7 +44,7 @@ void StatusBus::tick() {
   // ---- 六类状态：与上次快照字符串比对，变化才推 ----
   String js;
 
-  js = stateStatusJson(_wifi, _led, _display, _time);
+  js = stateStatusJson(_wifi, _led, _display, _time, _sms.store());
   if (!_baseline || js != _lastStatus) {
     publish("status", js);
     _lastStatus = js;
@@ -164,7 +164,7 @@ void StatusBus::publishTo(AsyncEventSourceClient *client, const char *event,
 
 // 全量快照：六类状态 + 短信统计 + 最近的 AT 历史
 void StatusBus::publishSnapshot(AsyncEventSourceClient *client) {
-  publishTo(client, "status", stateStatusJson(_wifi, _led, _display, _time));
+  publishTo(client, "status", stateStatusJson(_wifi, _led, _display, _time, _sms.store()));
   publishTo(client, "stats", _bridge.statsJson());
   publishTo(client, "wifi", _wifi.statusJson());
   publishTo(client, "saved", _wifi.listJson());

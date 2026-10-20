@@ -264,4 +264,13 @@ constexpr int8_t   kModemEnPin1 = -1;
 constexpr int8_t   kModemEnPin2 = -1;
 constexpr bool     kModemEnActiveLow = true;   // true: EN 拉低=关机；false: 拉高=关机
 
+// ---------------- 定时重启（系统保活）----------------
+// 配置以 JSON 存于 NVS（appcfg / sched）；模式复用 kSchedModeDaily(0=每日定点)
+// 与 kSchedModeInterval(1=固定间隔)；默认禁用。
+constexpr const char *kNvsKeySched = "sched";        // 定时重启配置键（JSON）
+constexpr uint16_t kSchedIntervalHMin = 1;           // 间隔模式周期下限（小时）
+constexpr uint16_t kSchedIntervalHMax = 720;         // 上限（30 天）
+constexpr uint16_t kSchedIntervalHDefault = 24;      // 默认 24h
+constexpr uint16_t kSchedDailyWindowSec = 600;       // 每日模式触发窗口（秒，容忍迟到 tick）
+
 }  // namespace cfg

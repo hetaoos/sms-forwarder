@@ -21,4 +21,7 @@ size_t usedBytes();
 // 是否已挂载
 bool mounted();
 
+// 格式化用户数据分区（先卸载再格式化再挂载），用于出厂复位；失败返回 false
+bool format();
+
 }  // namespace userfs

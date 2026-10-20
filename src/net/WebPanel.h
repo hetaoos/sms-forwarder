@@ -158,6 +158,12 @@ class WebPanel {
   // 系统汇总状态
   void handleStatus(AsyncWebServerRequest *req);
 
+  // 系统维护：立即重启 / 出厂复位（清全部配置 + 用户数据）
+  void handleSystemRestart(AsyncWebServerRequest *req);
+  void handleSystemReset(AsyncWebServerRequest *req);
+  // 定时重启配置（仅保存，不重启）
+  void handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // WiFi：状态 / 扫描 / 列表 / 保存 / 删除 / 排序 / 试连
   void handleWifiStatus(AsyncWebServerRequest *req);
   void handleWifiScan(AsyncWebServerRequest *req);

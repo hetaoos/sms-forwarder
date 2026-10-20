@@ -53,4 +53,17 @@ size_t usedBytes() { return g_mounted ? g_fs.usedBytes() : 0; }
 // 是否已挂载
 bool mounted() { return g_mounted; }
 
+// 格式化用户数据分区：卸载 -> 格式化 -> 重新挂载
+bool format() {
+  if (g_mounted) {
+    g_fs.end();
+    g_mounted = false;
+  }
+  bool ok = g_fs.format();
+  if (ok) g_mounted = g_fs.begin(true, "/data", 10, "userdata");
+  _log.addf(LogLevel::kInfo, "fs", ok ? "userdata 已格式化并重新挂载"
+                                      : "userdata 格式化失败");
+  return g_mounted;
+}
+
 }  // namespace userfs

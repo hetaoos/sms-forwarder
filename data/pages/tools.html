@@ -77,4 +77,18 @@
     </div>
     <div class="hint" x-show="importing" x-cloak style="margin-top:8px">正在导入，设备即将重启…</div>
   </div>
+
+  <!-- 系统维护 -->
+  <div class="card">
+    <h3>系统维护</h3>
+    <p class="hint">重启设备会中断当前服务约数秒；出厂复位将清除全部配置与用户数据（短信记录 / 日志 / AT 历史），设备回到首次启动状态（AP 配网模式）。</p>
+
+    <div class="bar" style="margin-top:12px">
+      <button class="btn" @click="restart()">重启设备</button>
+      <button class="btn danger" @click="reset()">复位设备（清空配置）</button>
+    </div>
+    <div class="form-err" x-show="resetWarn" x-cloak style="margin-top:10px">
+      <span class="ico">!</span><span>已发送出厂复位指令，设备将在 2 秒后重启并进入 AP 配网模式。</span>
+    </div>
+  </div>
 </div>

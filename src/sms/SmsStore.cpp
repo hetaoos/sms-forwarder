@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include <Arduino.h>
+#include <time.h>    // time / localtime_r / mktime（今日统计用）
 
 namespace {
 
@@ -80,6 +81,7 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
   _maxId = id;
   if (_minId == 0 || id < _minId) _minId = id;
   _count++;
+  _todayValid = false;   // 记录集变化，今日统计缓存失效（下次查询重算）
 
   // 超限：id 单调递增，最旧者 id 最小，从 _minId 顺序推进删除（O(1)，无全目录扫描）。
   // 稳态下每条新增最多淘汰一条，故单次 add 循环必在删一条后退出。
@@ -242,6 +244,7 @@ void SmsStore::clear() {
   _count = 0;
   _maxId = 0;
   _minId = 0;
+  _todayValid = false;
   unlock();
   _log.addf(LogLevel::kInfo, "sms", "短信存储已清空");
 }
@@ -253,6 +256,42 @@ String SmsStore::statsJson() {
   size_t used = userfs::usedBytes();
   return String("{\"ok\":true,\"total\":") + _count + ",\"max\":" + _max +
          ",\"used\":" + used + ",\"fsTotal\":" + total + "}";
+}
+
+// 今日短信统计（收/发）：本地午夜为界。结果缓存，跨午夜失效后重算一次
+// （扫描所有记录首行，最多 1000 条，仅在每天首次查询时触发，开销可控）。
+void SmsStore::todayCount(int &recv, int &sent) {
+  recv = 0;
+  sent = 0;
+  if (!_enabled) return;
+
+  time_t now = time(nullptr);
+  if (now < 1600000000) return;            // 时钟未同步，无法判定「今日」
+  struct tm t;
+  localtime_r(&now, &t);
+  t.tm_hour = 0; t.tm_min = 0; t.tm_sec = 0;
+  time_t midnight = mktime(&t);            // 本地午夜 epoch
+  if (midnight < 0) return;
+
+  if (_todayValid && _todayMidnight == (uint32_t)midnight) {
+    recv = _todayRecv; sent = _todaySent;
+    return;
+  }
+
+  int r = 0, s = 0;
+  lock();
+  for (uint32_t id = _minId; id != 0 && id <= _maxId; id++) {
+    SmsMessage m;
+    if (!readHeader(id, m)) continue;      // 已删除 / 已淘汰的 ID 跳过
+    if (m.ts >= (uint32_t)midnight) {
+      if (m.incoming) r++; else s++;
+    }
+  }
+  unlock();
+
+  _todayRecv = r; _todaySent = s;
+  _todayMidnight = (uint32_t)midnight; _todayValid = true;
+  recv = r; sent = s;
 }
 
 // 文件路径

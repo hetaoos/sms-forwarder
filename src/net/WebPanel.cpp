@@ -9,6 +9,8 @@
 #include <Arduino.h>
 
 #include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
+#include "app/SystemService.h"  // 定时重启（单例）
+#include "app/UserFs.h"      // userfs::format()：出厂复位清空用户数据
 #include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
 #include "net/StateJson.h"
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
@@ -430,6 +432,20 @@ void WebPanel::setupRoutes() {
   // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
   // 浏览器端同时经 /api/sse 实时推送，序列化共用 StateJson.h）
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *req) { handleStatus(req); });
+
+  // ================= 系统维护 =================
+  // 立即重启（延迟 2s，给响应留出发送时间）
+  _server.on("/api/system/restart", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleSystemRestart(req); });
+  // 出厂复位：清除 NVS 全部配置 + 格式化用户数据分区，随后重启
+  _server.on("/api/system/reset", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleSystemReset(req); });
+
+  // 定时重启配置（独立接口：仅保存，即时生效，不重启设备）
+  _server.on("/api/sched", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               handleSchedPost(req, json);
+             });
 
   // ================= WiFi 配网 =================
   // 状态查询：模式 / 连接 / AP 信息 / 已保存数量
@@ -1033,7 +1049,54 @@ void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {
 
 // ---- 系统状态 ----
 void WebPanel::handleStatus(AsyncWebServerRequest *req) {
-  sendJson(req, stateStatusJson(_wifi, _led, _display, _time));
+  sendJson(req, stateStatusJson(_wifi, _led, _display, _time, _sms.store()));
+}
+
+// ---- 系统维护：立即重启 / 出厂复位 ----
+// 延迟 2s 重启（与 OTA / 配置导入一致，给响应留出发送时间）
+void WebPanel::handleSystemRestart(AsyncWebServerRequest *req) {
+  sendOk(req, ",\"message\":\"设备即将重启\"");
+  xTaskCreate(
+      [](void *) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+        vTaskDelete(nullptr);
+      },
+      "man_rst", 2048, nullptr, 5, nullptr);
+}
+
+// 出厂复位：清空 NVS 全部配置（WiFi/账号/短信/邮件/MQTT/推送/黑名单/屏幕/令牌）
+// 并格式化用户数据分区（短信记录 / 日志 / AT 历史），随后重启回到首次启动状态。
+void WebPanel::handleSystemReset(AsyncWebServerRequest *req) {
+  Preferences prefs;
+  if (prefs.begin(cfg::kNvsNamespace, false)) {
+    prefs.clear();   // 移除 appcfg 命名空间下所有键
+    prefs.end();
+  }
+  userfs::format();  // 清空 /data 用户数据
+  sendOk(req, ",\"message\":\"已恢复出厂设置，设备即将重启\"");
+  xTaskCreate(
+      [](void *) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+        vTaskDelete(nullptr);
+      },
+      "fac_rst", 2048, nullptr, 5, nullptr);
+}
+
+// 定时重启：仅保存配置（即时生效），不重启设备。
+// 请求体可整体为 sched 对象，或 { "sched": {...} }（与通用导入一致）。
+void WebPanel::handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+  if (!json.is<JsonObject>()) { sendErr(req, 400, "invalid json"); return; }
+  JsonObject o = json["sched"].is<JsonObject>() ? json["sched"].as<JsonObject>()
+                                                : json.as<JsonObject>();
+  if (!SystemService::instance().importFrom(o)) {
+    sendErr(req, 400, "定时重启配置无效");
+    return;
+  }
+  // importFrom 内已落盘；不重启，下次 tick 起按新计划执行
+  sendOk(req, ",\"message\":\"已保存，定时重启即时生效\"");
 }
 
 // ---- WiFi 配网 ----
@@ -1646,6 +1709,8 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   _push.exportTo(oPush);
   _blacklist.exportTo(oBlack);
   _ui.exportTo(oDisp);
+  JsonObject oSched = doc["sched"].to<JsonObject>();
+  SystemService::instance().exportTo(oSched);
 
   String body;
   serializeJsonPretty(doc, body);
@@ -1757,6 +1822,13 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (doc["disp"].is<JsonObject>()) {
     if (!_ui.importFrom(doc["disp"].as<JsonObject>())) {
       sendErr(req, 500, "屏幕设置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["sched"].is<JsonObject>()) {
+    if (!SystemService::instance().importFrom(doc["sched"].as<JsonObject>())) {
+      sendErr(req, 500, "定时重启配置写入失败");
       return;
     }
     anyApplied = true;

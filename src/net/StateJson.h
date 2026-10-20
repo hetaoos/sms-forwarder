@@ -13,6 +13,8 @@
 #include "net/WifiManager.h"
 #include "ota/Ota.h"  // otaPartitionAvailable()：运行时探测是否支持 OTA 双槽
 #include "serial/SerialBridge.h"
+#include "sms/SmsStore.h"        // 今日短信统计
+#include "app/SystemService.h"  // 定时重启配置回显（单例）
 #include "time/TimeSync.h"
 
 // MQTT 推送连接状态（仅编译期开启 MQTT 时引用其类定义）
@@ -26,7 +28,7 @@
 
 // 汇总状态：与 GET /api/status 响应一致
 inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
-                              TimeSync &time) {
+                              TimeSync &time, SmsStore &store) {
   const RgbLed::Color &c = led.color();
   JsonDocument doc;
   doc["ssid"] = wifi.ssid();
@@ -91,6 +93,27 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["swVer"] = Ota::version();
   // 本机 MAC 地址（STA 接口，大写冒号分隔）
   doc["mac"] = WiFi.macAddress();
+
+  // 今日短信统计（收/发），按本地日期（午夜为界）
+  int recv = 0, sent = 0;
+  store.todayCount(recv, sent);
+  JsonObject tsms = doc["todaySms"].to<JsonObject>();
+  tsms["recv"] = recv;
+  tsms["sent"] = sent;
+
+  // 定时重启配置回显（默认禁用）
+  {
+    const SystemService &sys = SystemService::instance();
+    JsonObject sc = doc["sched"].to<JsonObject>();
+    sc["enabled"] = sys.enabled();
+    sc["mode"] = sys.mode();
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(sys.dailyMin() / 60),
+             (unsigned)(sys.dailyMin() % 60));
+    sc["daily"] = buf;
+    sc["intervalH"] = sys.intervalH();
+    sc["weekdays"] = sys.weekdays();
+  }
 
   String out;
   serializeJson(doc, out);

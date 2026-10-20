@@ -64,6 +64,10 @@ class SmsStore {
   // 当前最大记录 ID（SSE diff 基线用）
   uint32_t maxId() const { return _maxId; }
 
+  // 今日短信统计（收/发），按本地日期（午夜为界）统计；
+  // 内部缓存，跨午夜自动失效重算（每天最多整目录扫描一次）
+  void todayCount(int &recv, int &sent);
+
   // 存储统计 JSON：{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}
   String statsJson();
 
@@ -91,4 +95,10 @@ class SmsStore {
   uint32_t _maxId = 0;            // 当前最大 ID
   uint32_t _minId = 0;            // 当前最小 ID（FIFO 淘汰用，id 单调递增）
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护 FS 操作与计数
+
+  // 今日统计缓存（按本地午夜失效）
+  int _todayRecv = 0;
+  int _todaySent = 0;
+  uint32_t _todayMidnight = 0;     // 缓存对应的本地午夜 epoch
+  bool _todayValid = false;
 };
