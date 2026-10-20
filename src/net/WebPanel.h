@@ -3,6 +3,7 @@
 #include <ESPAsyncWebServer.h>
 
 #include "app/Config.h"
+#include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "log/LogStore.h"
@@ -42,15 +43,16 @@ class WebPanel {
  public:
   // 注入各模块引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
+  // ui：菜单状态机（屏幕设置的持有者，/api/disp 读写它）；
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
   // time：时间同步（状态 JSON 输出当前时间/来源）；
   // email：SMTP 邮件通知（配置读写 + 测试发送）；
   // blacklist：号码黑名单（拦截匹配 + 配置读写）；
   // log：设备日志环形存储（PSRAM，分页查询 / 清空）
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
-           AdminStore &auth, StatusBus &events, SmsService &sms, TimeSync &time,
-           EmailService &email, LogStore &log, MqttService &mqtt, PushService &push,
-           BlackList &blacklist);
+           UIMenu &ui, AdminStore &auth, StatusBus &events, SmsService &sms,
+           TimeSync &time, EmailService &email, LogStore &log, MqttService &mqtt,
+           PushService &push, BlackList &blacklist);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -142,7 +144,7 @@ class WebPanel {
   void handleLogList(AsyncWebServerRequest *req);
   void handleLogClear(AsyncWebServerRequest *req);
 
-  // 屏幕：查询 / 设置开关与亮度
+  // 屏幕：查询 / 设置开关、亮度与自动行为（自动熄屏 / 自动返回状态页）
   void handleDispGet(AsyncWebServerRequest *req);
   void handleDispPost(AsyncWebServerRequest *req, JsonVariant &json);
 
@@ -226,6 +228,7 @@ class WebPanel {
   RgbLed &_led;            // RGB 灯引用
   WifiManager &_wifi;      // WiFi 管理器引用
   Display &_display;       // 屏幕引用
+  UIMenu &_ui;             // 菜单状态机引用（屏幕设置的持有者）
   AdminStore &_auth;       // 管理账号存储引用（NVS）
   StatusBus &_events;      // SSE 状态推送总线引用
   SmsService &_sms;        // 短信服务引用

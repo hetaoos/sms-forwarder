@@ -120,9 +120,10 @@ def _swap_to_gz(data_dir, src_dir):
             rel = os.path.relpath(src_path, src_dir)
             with open(src_path, "rb") as f:
                 content = f.read()
-            # 字体等二进制资源（.bin）保持原样上传，不 gzip：避免运行时解压依赖，
-            # 也能被 LittleFS 直接按名读取（如 /cnfont.bin）。
-            if fname.endswith(".bin"):
+            # 字体等二进制资源（.bin / .ttf）保持原样上传，不 gzip：避免运行时解压依赖，
+            # 也能被 LittleFS 直接按名读取（如 /cnfont.bin、/ui_cn.ttf）。
+            # ui_cn.ttf 是 LVGL TinyTTF 运行时的中文字库，必须原样落盘。
+            if fname.endswith(".bin") or fname.endswith(".ttf"):
                 dst_path = os.path.join(data_dir, rel)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 with open(dst_path, "wb") as df:

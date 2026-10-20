@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/Config.h"
+#include "app/UIMenu.h"   // 屏幕设置（自动熄屏 / 自动返回状态页）
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
 #include "net/WifiManager.h"
@@ -28,9 +29,10 @@
 //      不另做鉴权；事件 id 递增，为 Last-Event-ID 续传预留。
 class StatusBus {
  public:
-  // wifi/bridge/led/display/sms/time：各模块引用（不持有所有权）
+  // wifi/bridge/led/display/ui/sms/time：各模块引用（不持有所有权）
+  // ui：取屏幕设置（自动熄屏 / 自动返回状态页）随屏幕状态一并推送
   StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led, Display &display,
-            SmsService &sms, TimeSync &time);
+            UIMenu &ui, SmsService &sms, TimeSync &time);
 
   // 把 SSE handler 注册到服务器（由 WebPanel::begin 调用，需在 server.begin 前）
   void begin(AsyncWebServer &server);
@@ -58,6 +60,7 @@ class StatusBus {
   SerialBridge &_bridge;   // AT 串口桥引用
   RgbLed &_led;            // RGB 灯引用
   Display &_display;       // 屏幕引用
+  UIMenu &_ui;             // 菜单状态机（屏幕设置的持有者）
   SmsService &_sms;        // 短信服务引用
   TimeSync &_time;         // 时间同步引用
 

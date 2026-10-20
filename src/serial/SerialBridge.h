@@ -148,9 +148,10 @@ class SerialBridge {
   void unlockPort(uint8_t i) { xSemaphoreGive(_ports[i].mutex); }
   // 尝试取端口锁（不阻塞）：成功返回 true
   bool tryLockPort(uint8_t i) { return xSemaphoreTake(_ports[i].mutex, 0) == pdTRUE; }
-  // 取/放 AT 历史锁
-  void lockHist() { xSemaphoreTake(_histMutex, portMAX_DELAY); }
-  void unlockHist() { xSemaphoreGive(_histMutex); }
+  // 取/放 AT 历史锁。句柄 NULL（begin() 之前被调用）时直接放过而不是把
+  // xQueueSemaphoreTake 喂 NULL 句柄——那会触发 FreeRTOS 断言直接重启
+  void lockHist() { if (_histMutex) xSemaphoreTake(_histMutex, portMAX_DELAY); }
+  void unlockHist() { if (_histMutex) xSemaphoreGive(_histMutex); }
 
   // 把字符追加为可打印形式（控制字符转为 \xNN）
   static void appendPrintable(String &out, char c);

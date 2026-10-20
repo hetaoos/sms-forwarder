@@ -1,8 +1,12 @@
 #include "app/UIMenu.h"
 
+#include <Preferences.h>
+
 #include <Arduino.h>
 
 #include "app/Config.h"
+#include "ui/Ui.h"
+#include "ui/UiIcons.h"
 
 // 构建期由 script/inject_app_version.py 注入 APP_VERSION（字符串字面量）；
 // 未注入时退回占位，保证本地编译通过
@@ -16,12 +20,12 @@ namespace {
 // 定义顺序刻意安排：子页面先于引用它的父页面定义，避免循环引用。
 // 页面间不互相回指（无 parent 指针），返回上一级由 UIMenu 的导航栈维护。
 const MenuItem kBrightItems[] = {
-    {"亮度 +", nullptr, UiAction::kBrightnessUp},
-    {"亮度 -", nullptr, UiAction::kBrightnessDown},
+    {UI_ICON_SUN, "亮度 +", nullptr, UiAction::kBrightnessUp},
+    {UI_ICON_SUN, "亮度 -", nullptr, UiAction::kBrightnessDown},
 };
 
 const char *const kAboutInfo[] = {
-    "SMS Forwarder",
+    "短信转发器",
     "Fw: " APP_VERSION,
     "ESP32-S3 / 8MB PSRAM",
     "Web :80  U1 17/18  U2 41/40",
@@ -37,11 +41,11 @@ const MenuPage kPageAbout = {
 };
 
 const MenuItem kRootItems[] = {
-    {"状态页", nullptr, UiAction::kBackToStatus},
-    {"亮度调节", &kPageBright, UiAction::kNone},
-    {"屏幕开关", nullptr, UiAction::kScreenToggle},
-    {"屏幕显示", nullptr, UiAction::kScreenView},
-    {"关于", &kPageAbout, UiAction::kNone},
+    {UI_ICON_HOME, "状态页", nullptr, UiAction::kBackToStatus},
+    {UI_ICON_SUN, "亮度调节", &kPageBright, UiAction::kNone},
+    {UI_ICON_POWER, "屏幕开关", nullptr, UiAction::kScreenToggle},
+    {UI_ICON_DISPLAY, "屏幕显示", nullptr, UiAction::kScreenView},
+    {UI_ICON_INFO, "关于", &kPageAbout, UiAction::kNone},
 };
 
 const MenuPage kPageRoot = {
@@ -59,20 +63,18 @@ void UIMenu::begin() {
   _screenView = false;
   _scroll = 0;
   _dirty = true;
+  loadConfig();   // 恢复背光亮度 / 自动熄屏 / 自动返回状态页（无记录时保持默认）
 }
 
 void UIMenu::handle(KeyId key, KeyEvent ev) {
   if (ev == KeyEvent::kNone) return;
   _lastInputMs = millis();
 
-  // 熄屏时任意键先唤醒，这一下不额外导航
+  // 熄屏时任意键先唤醒，这一下不额外导航：
+  // 唤醒后仍停在当前页面（状态页 / 菜单 / 屏幕显示页），
+  // 自动熄屏与长按 BACK 熄屏共用这条路径，唤醒即可接着看
   if (!_disp.screenOn()) {
     _disp.setScreenOn(true);
-    if (_statusMode) {
-      _statusMode = false;
-      _current = &kPageRoot;
-      _cursor = 0;
-    }
     _dirty = true;
     return;
   }
@@ -95,8 +97,8 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
       else if (key == KeyId::kDown) _scroll += 1;
       else if (key == KeyId::kBack) leaveScreenView();
       // OK 单击：本页无子项，忽略
-    } else if (ev == KeyEvent::kRepeat) {
-      int page = _disp.screenVisibleLines() - 1;  // 长按 UP/DOWN：翻一页
+    } else     if (ev == KeyEvent::kRepeat) {
+      int page = ui::instance().screenViewVisibleLines() - 1;  // 长按 UP/DOWN：翻一页
       if (page < 1) page = 1;
       if (key == KeyId::kUp) _scroll -= page;
       else if (key == KeyId::kDown) _scroll += page;
@@ -134,15 +136,22 @@ void UIMenu::render() {
     _dirty = false;
     return;
   }
-  const char *its[16];
+  // 菜单页只给出「该显示什么」，具体排版/绘制交给 LVGL 页面层
+  ui::MenuRow rows[16];
   uint8_t n = _current->itemCount;
-  for (uint8_t i = 0; i < n && i < 16; i++) its[i] = _current->items[i].label;
+  if (n > 16) n = 16;
+  for (uint8_t i = 0; i < n; i++) {
+    rows[i].icon = _current->items[i].icon;
+    rows[i].label = _current->items[i].label;
+  }
 
   String foot = "OK进入 BACK返回  亮度" + String(_disp.brightness()) + "%";
-  _disp.renderMenu(_current->title, its, n, _cursor, _current->info,
-                   _current->infoCount, foot.c_str());
+  ui::instance().menuUpdate(_current->title, rows, n, _cursor, _current->info,
+                            _current->infoCount, foot.c_str());
   _dirty = false;
 }
+
+void UIMenu::renderStatus(const StatusInfo &info) { ui::instance().statusUpdate(info); }
 
 void UIMenu::moveCursor(int8_t dir) {
   int8_t n = _current ? _current->itemCount : 0;
@@ -200,13 +209,17 @@ void UIMenu::setBright(int v) {
   if (v < 0) v = 0;
   if (v > 100) v = 100;
   _disp.setBrightness((uint8_t)v);
+  // 长按连调（kBtnRepeatMs 连发）时不逐次写 NVS，只标记待落盘，
+  // 由 tick() 在停手 kDispSaveDebounceMs 后统一写一次
+  _brightDirty = true;
+  _brightDirtyMs = millis();
 }
 
 void UIMenu::renderScreenView() {
   if (!_screenView) return;
   if (!_disp.screenOn()) return;
   _provider(_screenSnap);  // 实时跟随：每次重绘抓最新快照
-  _scroll = _disp.renderScreenView(_screenSnap, _scroll);
+  _scroll = ui::instance().screenViewUpdate(_screenSnap, _scroll);
   _dirty = false;
 }
 
@@ -217,4 +230,107 @@ void UIMenu::leaveScreenView() {
   _current = &kPageRoot;
   _cursor = 0;
   _dirty = true;
+}
+// ================= 屏幕设置（NVS 持久化）=================
+
+// 时间值规整：0 保持「禁用」；非零钳到 [kUiSecMin, max]
+uint16_t UIMenu::clampSec(int v, uint16_t max) {
+  if (v <= 0) return 0;
+  if (v > (int)max) return max;
+  if (v < (int)cfg::kUiSecMin) return cfg::kUiSecMin;
+  return (uint16_t)v;
+}
+
+void UIMenu::setAutoOffSec(uint16_t v) {
+  _autoOffSec = clampSec((int)v, cfg::kUiAutoOffSecMax);
+  saveConfig();
+}
+
+void UIMenu::setIdleSec(uint16_t v) {
+  _idleSec = clampSec((int)v, cfg::kUiIdleReturnSecMax);
+  saveConfig();
+}
+
+void UIMenu::setBrightness(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  _disp.setBrightness(pct);
+  _brightDirty = false;   // 外部设置是单次动作，直接落盘，不走防抖
+  saveConfig();
+}
+
+// 空闲超时：先到点的先执行—— 1) 菜单/其它页退回实时状态页；2) 自动熄屏。
+// 熄屏后内容保留在帧缓冲，任意键唤醒且仍停在当前页面（见 handle() 的唤醒分支）
+void UIMenu::tick() {
+  const uint32_t idle = millis() - _lastInputMs;
+  if (_idleSec > 0 && idle >= (uint32_t)_idleSec * 1000UL) {
+    if (_screenView) leaveScreenView();
+    else if (!_statusMode) enterStatusMode();
+  }
+  if (_autoOffSec > 0 && idle >= (uint32_t)_autoOffSec * 1000UL &&
+      _disp.screenOn()) {
+    _disp.setScreenOn(false);
+  }
+  // 菜单连调亮度停手后补写一次 NVS
+  if (_brightDirty && millis() - _brightDirtyMs >= cfg::kDispSaveDebounceMs) {
+    _brightDirty = false;
+    saveConfig();
+  }
+}
+
+void UIMenu::exportTo(JsonObject &o) const {
+  o["bright"] = _disp.brightness();
+  o["autoOffSec"] = _autoOffSec;
+  o["idleSec"] = _idleSec;
+}
+
+bool UIMenu::importFrom(const JsonObject &o) {
+  // 缺失字段保持当前值（部分导入 / 向后兼容）
+  _autoOffSec = clampSec(o["autoOffSec"] | (int)_autoOffSec, cfg::kUiAutoOffSecMax);
+  _idleSec = clampSec(o["idleSec"] | (int)_idleSec, cfg::kUiIdleReturnSecMax);
+  if (o["bright"].is<int>()) {
+    int b = o["bright"].as<int>();
+    if (b < 0) b = 0;
+    if (b > 100) b = 100;
+    _disp.setBrightness((uint8_t)b);
+  }
+  return saveConfig();
+}
+
+bool UIMenu::saveConfig() const {
+  JsonDocument doc;
+  JsonObject o = doc.to<JsonObject>();
+  o["ver"] = 1;
+  exportTo(o);
+
+  String out;
+  serializeJson(doc, out);
+
+  Preferences prefs;
+  if (!prefs.begin(cfg::kNvsNamespace, false)) return false;
+  size_t written = prefs.putString(cfg::kNvsKeyDisp, out);
+  prefs.end();
+  return written == out.length();
+}
+
+void UIMenu::loadConfig() {
+  String json;
+  Preferences prefs;
+  if (prefs.begin(cfg::kNvsNamespace, true)) {
+    json = prefs.getString(cfg::kNvsKeyDisp, "");
+    prefs.end();
+  }
+  // 无记录：沿用编译期默认值与面板默认亮度，不写盘（等用户首次设置）
+  if (!json.length()) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) return;
+  // 缺失 / 越界字段保持当前值（向后兼容旧格式）
+  _autoOffSec = clampSec(doc["autoOffSec"] | (int)_autoOffSec, cfg::kUiAutoOffSecMax);
+  _idleSec = clampSec(doc["idleSec"] | (int)_idleSec, cfg::kUiIdleReturnSecMax);
+  if (doc["bright"].is<int>()) {
+    int b = doc["bright"].as<int>();
+    if (b < 0) b = 0;
+    if (b > 100) b = 100;
+    _disp.setBrightness((uint8_t)b);
+  }
 }

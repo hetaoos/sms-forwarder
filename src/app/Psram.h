@@ -24,6 +24,27 @@
 
 #include <ArduinoJson/Memory/Allocator.hpp>
 
+// ---- PSRAM 容量查询（开机自检 / 日志用）----
+// 单位均为字节；未焊接或未启用 PSRAM 时 total 为 0
+inline size_t psramTotalBytes() { return heap_caps_get_total_size(MALLOC_CAP_SPIRAM); }
+inline size_t psramFreeBytes() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
+inline size_t psramUsedBytes() {
+  const size_t t = psramTotalBytes(), f = psramFreeBytes();
+  return t > f ? t - f : 0;
+}
+inline size_t psramLargestFreeBlock() {
+  return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+}
+
+// PSRAM 优先分配：拿到 ret=true 说明确实落在 PSRAM；否则内部 DRAM。
+// 与 PsBuffer::psAlloc 同策略，供 LVGL 自定义堆等外部消费者复用。
+inline void *psramAlloc(size_t n, bool &inPsram) {
+  void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (p) { inPsram = true; return p; }
+  inPsram = false;
+  return heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 // PSRAM 可增长的字节缓冲区（禁止拷贝；内容始终 NUL 结尾）。
 class PsBuffer {
  public:

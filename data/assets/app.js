@@ -868,6 +868,12 @@ function pageRgb() {
       if (typeof live.rgb.bright === 'number') this.bright = live.rgb.bright;
       // 仓库为空（SSE 尚未送达）时兜底拉一次
       if (!Object.keys(live.rgb).length) this.refresh();
+      // SSE 的 rgb 事件到达时回写亮度滑块：另一个浏览器页（或第三方客户端调用
+      // /api/rgb）改了亮度后，本页无需刷新即可跟上；本页正在拖动时不回抢。
+      this.$watch('$store.live.rgb', j => {
+        if (!j || !Object.keys(j).length) return;
+        if (!this.touched && typeof j.bright === 'number') this.bright = j.bright;
+      });
     },
     async refresh() {
       try {
@@ -931,6 +937,8 @@ function pageRgb() {
 function pageDisplay() {
   return {
     bright: 80, touched: false,
+    autoOffSec: 0, tAuto: false,   // 无操作自动熄屏（秒，0 = 关闭）+ 拖动中标记
+    idleSec: 10, tIdle: false,     // 无操作自动退回状态页（秒，0 = 关闭）+ 拖动中标记
     live: true,            // LCD 实时画面是否轮询刷新
     screenUrl: '',         // 预览 <img> 的 src（带缓存破除数）
     timer: null,
@@ -939,9 +947,34 @@ function pageDisplay() {
     init() {
       const live = Alpine.store('live');
       if (typeof live.disp.bright === 'number') this.bright = live.disp.bright;
+      this.syncTimers(live.disp);
       // 仓库为空（SSE 尚未送达）时兜底拉一次
       if (!Object.keys(live.disp).length) this.refresh();
+      // SSE 的 disp 事件到达时回写本地控件：设备端菜单调亮度/熄屏、或另一个
+      // 浏览器页操作后，本页无需刷新即可跟上。正在拖动的那个滑块不回抢。
+      this.$watch('$store.live.disp', j => {
+        if (!j || !Object.keys(j).length) return;
+        if (!this.touched && typeof j.bright === 'number') this.bright = j.bright;
+        this.syncTimers(j);
+      });
       this.startLive();    // 进入页面即开始 LCD 实时预览轮询
+    },
+    // 从状态对象回显两项自动行为（拖动中不回抢，与亮度滑块同一套路）
+    syncTimers(j) {
+      if (!j) return;
+      if (!this.tAuto && typeof j.autoOffSec === 'number') this.autoOffSec = j.autoOffSec;
+      if (!this.tIdle && typeof j.idleSec === 'number') this.idleSec = j.idleSec;
+    },
+    // 秒值人性化显示：0 -> 关闭；<60 -> N 秒；<3600 -> N 分 [N 秒]；其余 -> N 小时
+    secText(v) {
+      v = Number(v) || 0;
+      if (!v) return '关闭';
+      if (v < 60) return v + ' 秒';
+      if (v < 3600) {
+        const m = Math.floor(v / 60), s = v % 60;
+        return s ? (m + ' 分 ' + s + ' 秒') : (m + ' 分钟');
+      }
+      return (v / 3600) + ' 小时';
     },
     // LCD 实时画面：每 ~700ms 重新抓取一帧（约 1.4fps），缓存破除数避免命中旧图
     startLive() {
@@ -968,6 +1001,7 @@ function pageDisplay() {
           const j = await r.json();
           Alpine.store('live').disp = j;
           if (!this.touched) this.bright = j.bright;  // 用户拖动中不被回抢
+          this.syncTimers(j);
         }
       } catch (e) {}
     },
@@ -982,6 +1016,27 @@ function pageDisplay() {
         this.bright = this.st.bright;
       }
       this.touched = false;
+    },
+    // 自动行为：松开滑块才提交，服务端钳制后回显实际值（落 NVS，重启后保持）
+    async applyIdle() {
+      const r = await postOp('/api/disp', { idleSec: this.idleSec });
+      if (r) {
+        const j = await r.json();
+        this.tIdle = false;
+        Alpine.store('live').disp = j;
+        this.syncTimers(j);
+      }
+      this.tIdle = false;
+    },
+    async applyAutoOff() {
+      const r = await postOp('/api/disp', { autoOffSec: this.autoOffSec });
+      if (r) {
+        const j = await r.json();
+        this.tAuto = false;
+        Alpine.store('live').disp = j;
+        this.syncTimers(j);
+      }
+      this.tAuto = false;
     },
     // 远程按键：等同于设备物理 4 键，驱动屏幕菜单（与本地按键同一处理路径）
     async pressKey(k) {

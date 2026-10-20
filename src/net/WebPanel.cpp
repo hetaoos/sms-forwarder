@@ -148,15 +148,15 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/auth/events/sms/time/email/blacklist/log/mqtt/push：各模块引用，保存供路由处理器使用
+// bridge/led/wifi/display/ui/auth/events/sms/time/email/blacklist/log/mqtt/push：各模块引用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
-                   Display &display, AdminStore &auth, StatusBus &events,
-                   SmsService &sms, TimeSync &time, EmailService &email,
-                   LogStore &log, MqttService &mqtt, PushService &push,
-                   BlackList &blacklist)
-    : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _auth(auth),
-      _events(events), _sms(sms), _time(time), _email(email), _mqtt(mqtt),
-      _push(push), _blacklist(blacklist), _log(log) {}
+                   Display &display, UIMenu &ui, AdminStore &auth,
+                   StatusBus &events, SmsService &sms, TimeSync &time,
+                   EmailService &email, LogStore &log, MqttService &mqtt,
+                   PushService &push, BlackList &blacklist)
+    : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _ui(ui),
+      _auth(auth), _events(events), _sms(sms), _time(time), _email(email),
+      _mqtt(mqtt), _push(push), _blacklist(blacklist), _log(log) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -950,7 +950,7 @@ void WebPanel::handleLogClear(AsyncWebServerRequest *req) {
 
 // ---- 屏幕 ----
 void WebPanel::handleDispGet(AsyncWebServerRequest *req) {
-  sendJson(req, stateDispJson(_display));
+  sendJson(req, stateDispJson(_display, _ui));
 }
 
 // 屏幕实时预览（方案 B）：抓取当前帧缓冲编码为 JPEG 直接返回
@@ -989,13 +989,19 @@ void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (jsonBool(json["on"], on)) {
     _display.setScreenOn(on);
   }
+  // 背光亮度：经 UIMenu 落 NVS（重启后沿用），越界钳制
   int b;
   if (jsonInt(json["bright"], b)) {
     if (b < 0) b = 0;
     if (b > 100) b = 100;
-    _display.setBrightness((uint8_t)b);
+    _ui.setBrightness((uint8_t)b);
   }
-  sendJson(req, stateDispJson(_display));
+  // 自动行为（秒）：无操作自动熄屏 / 自动退回实时状态页，0 = 关闭该功能。
+  // 越界由 UIMenu 钳制；改完立即生效并落盘，无需重启
+  int v;
+  if (jsonInt(json["autoOffSec"], v)) _ui.setAutoOffSec((uint16_t)v);
+  if (jsonInt(json["idleSec"], v)) _ui.setIdleSec((uint16_t)v);
+  sendJson(req, stateDispJson(_display, _ui));
 }
 
 // 远程按键注入：把 Web 端的 UP/DOWN/OK/BACK 当作物理按键驱动设备 UI
@@ -1631,6 +1637,7 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonObject oMqtt  = doc["mqtt"].to<JsonObject>();
   JsonObject oPush  = doc["push"].to<JsonObject>();
   JsonObject oBlack = doc["blacklist"].to<JsonObject>();
+  JsonObject oDisp  = doc["disp"].to<JsonObject>();
   _wifi.exportAllTo(oWifi);
   _auth.exportTo(oAuth);
   _email.exportTo(oEmail);
@@ -1638,6 +1645,7 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   _mqtt.exportTo(oMqtt);
   _push.exportTo(oPush);
   _blacklist.exportTo(oBlack);
+  _ui.exportTo(oDisp);
 
   String body;
   serializeJsonPretty(doc, body);
@@ -1742,6 +1750,13 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (doc["blacklist"].is<JsonObject>()) {
     if (!_blacklist.importFrom(doc["blacklist"].as<JsonObject>())) {
       sendErr(req, 500, "黑名单配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
+  if (doc["disp"].is<JsonObject>()) {
+    if (!_ui.importFrom(doc["disp"].as<JsonObject>())) {
+      sendErr(req, 500, "屏幕设置写入失败");
       return;
     }
     anyApplied = true;

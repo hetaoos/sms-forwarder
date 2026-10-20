@@ -5,6 +5,7 @@
 #include "app/Config.h"
 #include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
 #include "app/UserFs.h"
+#include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
 
 // 初始化调试串口与所有子模块；返回 true 表示装配完成
 bool App::begin() {
@@ -24,7 +25,8 @@ bool App::begin() {
   _time.begin(_bridge, _sms);
 
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
-  _display.begin();                    // 屏幕 + 静态框架
+  _display.begin();                    // 面板 + LVGL 显示端口
+  ui::instance().begin();              // LVGL 页面树（状态页 / 菜单 / 屏幕显示）
   _keypad.begin();                     // 4 键输入（OK/UP/DOWN/BACK）
   _ui.begin();                         // 菜单导航状态机（默认停在状态页）
   _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 屏幕显示页数据源
@@ -33,10 +35,15 @@ bool App::begin() {
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
     return _sms.onUnsolicited(port, text);
   });
+  {
+    // 先出一帧状态页，避免开机黑屏（此时中文字库还没加载，用 ASCII 兜底字体）
+    // 必须在 _bridge.begin() 之后：collectStatus() 会读串口桥的 AT 历史，
+    // 其互斥量由 _bridge.begin() 创建，提前调用会拿到 NULL 句柄直接断言重启
+    StatusInfo bootSnap;
+    collectStatus(bootSnap);
+    _ui.renderStatus(bootSnap);
+  }
 
-  StatusInfo boot;
-  collectStatus(boot);
-  _display.render(boot);                // 先出一帧，避免开机黑屏
   // WiFi 连上（含重连）即启动 NTP 同步；须在 _wifi.begin() 前注册
   _wifi.setOnConnectCb([this] {
     _log.addf(LogLevel::kInfo, "wifi", "已连接 %s，IP %s", _wifi.ssid().c_str(),
@@ -147,11 +154,9 @@ void App::tick() {
   KeyId ikey; KeyEvent iev;
   while (KeyInject::instance().pop(ikey, iev)) _ui.handle(ikey, iev);
 
-  // 无操作超时：屏幕显示页退回菜单；菜单/其它退回实时状态页
-  if (millis() - _ui.lastInputMs() > cfg::kUiIdleSleepMs) {
-    if (_ui.inScreenView()) _ui.leaveScreenView();
-    else if (!_ui.inStatusMode()) _ui.enterStatusMode();
-  }
+  // 无操作超时：由 UI 状态机按屏幕设置处理（自动退回状态页 / 自动熄屏，
+  // 两项均可关闭）；兼管菜单连调亮度后的落盘防抖
+  _ui.tick();
 
   if (_ui.inScreenView()) {
     // 「屏幕显示」页：实时跟随，按固定周期重绘（滚动/刷新由按键驱动）
@@ -160,17 +165,21 @@ void App::tick() {
       _ui.renderScreenView();
     }
   } else if (_ui.inStatusMode()) {
-    // 实时状态页：按固定周期刷新（内容变化才实际推屏）
+    // 实时状态页：按固定周期刷新（LVGL 自带脏区比对，内容没变不会推屏）
     if (millis() - _lastUiMs >= cfg::kUiRefreshMs) {
       _lastUiMs = millis();
       StatusInfo s;
       collectStatus(s);
-      _display.render(s);
+      _ui.renderStatus(s);
     }
   } else if (_display.screenOn() && _ui.dirty()) {
-    // 菜单页：由按键事件驱动，导航变化立即整页重绘（不受 500ms 节流限制）
+    // 菜单页：由按键事件驱动，导航变化立即更新（不受 500ms 节流限制）
     _ui.render();
   }
+
+  // LVGL 心跳：推进动画/定时器并把脏区 flush 到面板（内部自带节流）
+  ui::instance().tick();
+  _display.lvglTick();
 
   // 屏幕实时预览：主循环预编码 JPEG 缓存（自节流约 1.4fps）；HTTP 处理器只复制返回
   _display.refreshScreenJpg();

@@ -6,6 +6,7 @@
 
 #include <WiFi.h>
 
+#include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
 #include "hal/CpuMonitor.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
@@ -97,9 +98,12 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
 }
 
 // 屏幕状态：与 GET /api/disp 响应一致
-inline String stateDispJson(Display &display) {
+// ui 提供持久化的自动熄屏 / 自动返回状态页时间（秒）
+inline String stateDispJson(Display &display, UIMenu &ui) {
   return String("{\"ok\":true,\"on\":") + (display.screenOn() ? "true" : "false") +
-         ",\"bright\":" + String(display.brightness()) + "}";
+         ",\"bright\":" + String(display.brightness()) +
+         ",\"autoOffSec\":" + String(ui.autoOffSec()) +
+         ",\"idleSec\":" + String(ui.idleSec()) + "}";
 }
 
 // RGB 状态：与 GET /api/rgb 响应一致

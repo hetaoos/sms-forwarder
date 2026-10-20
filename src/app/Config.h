@@ -59,6 +59,7 @@ constexpr const char *kNvsKeyEmail = "email";    // 邮件配置键（{"ver":1,"
 constexpr const char *kNvsKeyMqtt = "mqtt";      // MQTT 配置键（{"ver":1,"server":"..","port":1883,"useTls":bool,"user":"..","pass":"..","clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n,"enabled":bool}）
 constexpr const char *kNvsKeyPush = "push";      // 推送通道配置键（{"ver":1,"enabled":bool,"strategy":n,"channels":[...]}）
 constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{"ver":1,"enabled":bool,"action":n,"list":[...]}）
+constexpr const char *kNvsKeyDisp = "disp";        // 屏幕设置键（{"ver":1,"bright":n,"autoOffSec":n,"idleSec":n}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
 
 // ---------------- SMTP 邮件通知（参考 esp32-sms-forwarding）----------------
@@ -153,7 +154,32 @@ constexpr int8_t  kBtnDown = 38;   // Down（下移 / 减少）
 constexpr int8_t  kBtnBack = 2;    // Back（返回 / 取消；长按熄屏/唤醒）
 constexpr uint16_t kBtnLongMs    = 600;     // 长按阈值（ms）
 constexpr uint16_t kBtnRepeatMs  = 180;     // 长按连发间隔（ms，UP/DOWN/OK 调值用）
+
+// ---------------- 屏幕设置（NVS 持久化，见 app/UIMenu）----------------
+// 两项超时均基于「最后一次有效输入」计时，0 表示对应功能关闭。
+// 语义：先到点的先执行——菜单无操作到 IdleReturn 秒退回实时状态页；
+// 无操作到 AutoOff 秒自动熄屏（内容保留，任意键唤醒）。
+constexpr uint16_t kUiSecMin = 5;               // 非零取值下限（秒，防误设成 1-4s 抖动）
+constexpr uint16_t kUiIdleReturnSecMax = 600;   // 自动返回状态页上限（秒，10 分钟）
+constexpr uint16_t kUiAutoOffSecMax = 3600;     // 自动熄屏上限（秒，1 小时）
+constexpr uint16_t kUiIdleReturnDefaultSec = 10;  // 默认 10s 无操作退回状态页
+constexpr uint16_t kUiAutoOffDefaultSec = 0;      // 默认不自动熄屏（需用户显式开启）
+// 菜单里长按 +/- 连调亮度后的落盘防抖：连发期间只改内存，停手后才写 NVS，
+// 避免一次长按产生几十次 NVS 写入
+constexpr uint32_t kDispSaveDebounceMs = 2000;
 constexpr uint32_t kUiIdleSleepMs = 10000;  // 菜单无操作自动退回状态页（ms）
+
+// ---------------- LVGL UI（src/ui）----------------
+// LVGL 的心跳间隔：lv_timer_handler() 会返回下一次应调用的毫秒数，返回值异常小
+// （忙时可能为 0）时用它兜底，避免在主循环里空转烧 CPU
+constexpr uint32_t kLvglMinTimerGapMs = 1;
+// 中文字库：运行时由 LVGL 的 TinyTTF 从该文件渲染（文件放 data/ -> LittleFS 资源分区）
+// GB2312 全集，约 1.2MB；已加进 script/uploadfs_gz.py 的不压缩名单，不能 gzip
+constexpr const char *kUiFontPath = "/ui_cn.ttf";
+constexpr int32_t kUiFontTextPx = 16;    // 正文/菜单/状态值字号
+constexpr int32_t kUiFontTitlePx = 20;   // 标题栏字号
+// TinyTTF 每个字号的字形缓存条数（命中才能不重新光栅化字形）
+constexpr uint32_t kUiFontGlyphCacheCnt = 256;
 
 // ---------------- 其它 ----------------
 constexpr uint16_t kHttpPort = 80;      // HTTP 控制台端口

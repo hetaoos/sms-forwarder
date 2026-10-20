@@ -48,8 +48,36 @@
                x-model.number="bright" @input="touched = true" @change="applyBright()">
         <span class="v" style="min-width:46px;text-align:right" x-text="bright + '%'"></span>
       </div>
-      <div class="hint">拖动滑块松开后生效；0% 等效熄屏（背光关闭，面板仍在后台刷新）。
-        亮度为运行时设置，重启后恢复默认 80%。</div>
+      <div class="hint">拖动滑块松开后生效并写入 NVS（重启后沿用）；0% 等效熄屏（背光关闭，
+        面板仍在后台刷新）。菜单里按亮度 +/- 调节同样会保存。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>自动行为</h3>
+
+    <div class="row"><span class="k">自动返回状态页</span>
+      <span class="v"><span class="badge" :class="idleSec ? 'info' : ''"
+            x-text="secText(idleSec)"></span></span></div>
+    <div class="bar" style="margin-top:8px">
+      <input type="range" min="0" max="600" step="5" style="flex:1"
+             x-model.number="idleSec" @input="tIdle = true" @change="applyIdle()">
+      <span class="v" style="min-width:76px;text-align:right" x-text="secText(idleSec)"></span>
+    </div>
+
+    <div class="row" style="margin-top:14px"><span class="k">自动关屏</span>
+      <span class="v"><span class="badge" :class="autoOffSec ? 'info' : ''"
+            x-text="secText(autoOffSec)"></span></span></div>
+    <div class="bar" style="margin-top:8px">
+      <input type="range" min="0" max="3600" step="10" style="flex:1"
+             x-model.number="autoOffSec" @input="tAuto = true" @change="applyAutoOff()">
+      <span class="v" style="min-width:76px;text-align:right" x-text="secText(autoOffSec)"></span>
+    </div>
+
+    <div class="hint">
+      两项都按「最后一次按键 / 远程按键」计时，先到点的先执行：无操作到达<b>返回状态页</b>时间，
+      菜单与「屏幕显示」页自动退回实时状态页；到达<b>关屏</b>时间自动熄屏（内容保留，按任意键唤醒，
+      唤醒后仍停在当前页面）。拖到最左的「关闭」则不生效。设置写入 NVS，重启后保持。
     </div>
   </div>
 </div>

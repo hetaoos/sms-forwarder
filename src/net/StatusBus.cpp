@@ -12,11 +12,12 @@ LogStore &_log = devLog();
 
 }  // namespace
 
-// wifi/bridge/led/display/sms/time：各模块引用，保存供 tick 采集使用
+// wifi/bridge/led/display/ui/sms/time：各模块引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
-                     Display &display, SmsService &sms, TimeSync &time)
-    : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _sms(sms),
-      _time(time) {}
+                     Display &display, UIMenu &ui, SmsService &sms,
+                     TimeSync &time)
+    : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _ui(ui),
+      _sms(sms), _time(time) {}
 
 // 注册 SSE handler；onConnect/onDisconnect 用于维护客户端列表与上限
 void StatusBus::begin(AsyncWebServer &server) {
@@ -73,7 +74,7 @@ void StatusBus::tick() {
     _lastRgb = js;
   }
 
-  js = stateDispJson(_display);
+  js = stateDispJson(_display, _ui);
   if (!_baseline || js != _lastDisp) {
     publish("disp", js);
     _lastDisp = js;
@@ -168,7 +169,7 @@ void StatusBus::publishSnapshot(AsyncEventSourceClient *client) {
   publishTo(client, "wifi", _wifi.statusJson());
   publishTo(client, "saved", _wifi.listJson());
   publishTo(client, "rgb", stateRgbJson(_led));
-  publishTo(client, "disp", stateDispJson(_display));
+  publishTo(client, "disp", stateDispJson(_display, _ui));
   publishTo(client, "smsstats", _sms.store().statsJson());
   // 历史从较大的一端给：要么断点续传点，要么当前最新
   uint32_t from = _lastHistId;
