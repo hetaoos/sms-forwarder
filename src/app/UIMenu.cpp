@@ -61,12 +61,14 @@ const MenuPage kPageIdle = {
     PageId::kNone, BarSrc::kIdle,
 };
 
+const MenuPage kPageScreenInfo = {"屏幕信息", nullptr, 0, nullptr, 0, PageId::kScreenInfo};
+
 const MenuItem kScreenItems[] = {
     {UI_ICON_SUN, "亮度调节", &kPageBright, UiAction::kNone},
     {UI_ICON_POWER, "自动熄屏", &kPageAutoOff, UiAction::kNone},
     {UI_ICON_HOME, "自动返回", &kPageIdle, UiAction::kNone},
     {UI_ICON_POWER, "屏幕开关", nullptr, UiAction::kScreenToggle},
-    {UI_ICON_DISPLAY, "屏幕显示", nullptr, UiAction::kScreenView},
+    {UI_ICON_INFO, "屏幕信息", &kPageScreenInfo, UiAction::kNone},
 };
 const MenuPage kPageScreen = {
     "屏幕", kScreenItems,
@@ -99,7 +101,7 @@ const MenuPage kPageAbout = {"关于", nullptr, 0, nullptr, 0, PageId::kAbout};
 // ---- 根菜单 ----
 // 条目多于菜单槽位（8 行）时自动滚动，页脚显示「当前/总数」
 const MenuItem kRootItems[] = {
-    {UI_ICON_HOME, "状态页", nullptr, UiAction::kBackToStatus},
+    {UI_ICON_HOME, "仪表盘", nullptr, UiAction::kBackToStatus},
     {UI_ICON_SMS, "短信", &kPageSms, UiAction::kNone},
     {UI_ICON_MICROCHIP, "SOC", &kPageSoc, UiAction::kNone},
     {UI_ICON_TOWER, "模块", &kPageModem, UiAction::kNone},
@@ -235,8 +237,6 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
       if (key == KeyId::kUp) _viewScroll -= page;
       else if (key == KeyId::kDown) _viewScroll += page;
       // OK/BACK 连发忽略
-    } else if (ev == KeyEvent::kLongPress && key == KeyId::kOk) {
-      if (_viewLive) fillStatusView(_viewText);  // 实时页：立即重抓一次
     }
     if (key == KeyId::kUp || key == KeyId::kDown || key == KeyId::kOk) _dirty = true;
     return;
@@ -366,13 +366,6 @@ void UIMenu::activate() {
     case UiAction::kScreenToggle:
       _disp.setScreenOn(!_disp.screenOn());
       break;
-    case UiAction::kScreenView: {
-      String t;
-      fillStatusView(t);
-      openView("屏幕显示", t);
-      _viewLive = true;
-      break;
-    }
     case UiAction::kRgbNext:
       if (_rgbFn) _rgbFn(0);
       break;
@@ -452,63 +445,9 @@ void UIMenu::leaveView() {
 void UIMenu::renderView() {
   if (!_view) return;
   if (!_disp.screenOn()) return;
-  if (_viewLive) fillStatusView(_viewText);  // 实时跟随：每次重绘抓最新快照
   _viewScroll = ui::instance().textViewUpdate(_viewTitle.c_str(), _viewText.c_str(),
                                               _viewScroll);
   _dirty = false;
-}
-
-// 把状态快照摊平成可滚动的纯文本（「屏幕显示」页）
-void UIMenu::fillStatusView(String &out) {
-  _provider(_snap);
-  out = "";
-  out += "WIFI: ";
-  out += _snap.wifiUp ? "已连接" : (_snap.apMode ? "AP 配网" : "未连接");
-  out += "\n网络: ";
-  out += _snap.ssid;
-  out += "\nIP: ";
-  out += _snap.ip;
-  out += "\n信号: ";
-  if (_snap.wifiUp) {
-    out += String(_snap.rssi);
-    out += " dBm";
-  } else {
-    out += "-";
-  }
-  out += "\nMAC: ";
-  out += _snap.mac;
-  out += "\n运行: ";
-  out += _snap.uptime;
-  out += "\n内存: ";
-  out += _snap.mem;
-  out += "\n负载: ";
-  out += _snap.load;
-  out += "\n模组1: ";
-  out += _snap.modem[0];
-  out += "\n模组2: ";
-  out += _snap.modem[1];
-  out += "\nMQTT: ";
-  out += _snap.mqtt;
-  out += "\n邮件: ";
-  out += _snap.mail;
-  out += "\n推送: ";
-  out += _snap.push;
-  out += "\nRGB: ";
-  out += _snap.ledName;
-  out += "\n";
-  out += "\n最近 AT";
-  if (_snap.lastPort) {
-    out += "\n串口";
-    out += String(_snap.lastPort);
-  }
-  if (_snap.lastCmd && *_snap.lastCmd) {
-    out += "\n";
-    out += _snap.lastCmd;
-  }
-  if (_snap.lastResp && *_snap.lastResp) {
-    out += "\n";
-    out += _snap.lastResp;
-  }
 }
 
 // 短信详情文本（「短信」页选中项）
@@ -525,6 +464,11 @@ void UIMenu::fillSmsViewOf(const SmsPreview &m, String &out) {
   if (m.modem > 0) {
     out += "模组";
     out += String((int)m.modem);
+    if (m.alias[0]) {
+      out += " (";
+      out += m.alias;
+      out += ")";
+    }
   } else {
     out += "未知";
   }
@@ -589,6 +533,7 @@ void UIMenu::buildDynamic(MenuPage &pg) {
     case PageId::kPush: fillPush(pg); break;
     case PageId::kRgb: fillRgb(pg); break;
     case PageId::kAbout: fillAbout(pg); break;
+    case PageId::kScreenInfo: fillScreenInfo(pg); break;
     default: break;
   }
 }
@@ -670,6 +615,11 @@ void UIMenu::fillModem(MenuPage &pg, uint8_t idx) {
   addInfo(pg, "运营商: %s", m.oper);
   addInfo(pg, "注册: %s", m.reg);
   addInfo(pg, "号码: %s", m.num);
+  addInfo(pg, "IMEI: %s", m.imei);
+  // 引脚：idx 0 -> 串口 U1，idx 1 -> 串口 U2
+  const int8_t tx = (idx == 0) ? cfg::kUart1Tx : cfg::kUart2Tx;
+  const int8_t rx = (idx == 0) ? cfg::kUart1Rx : cfg::kUart2Rx;
+  addInfo(pg, "引脚: TX%d RX%d", (int)tx, (int)rx);
 }
 
 // ---- WIFI：工作模式 / 连接 / 已保存配置 ----
@@ -745,6 +695,26 @@ void UIMenu::fillAbout(MenuPage &pg) {
   addInfo(pg, "串口: U1 %d/%d  U2 %d/%d", (int)cfg::kUart1Tx, (int)cfg::kUart1Rx,
           (int)cfg::kUart2Tx, (int)cfg::kUart2Rx);
   addInfo(pg, "说明: 双串口 4G 短信转发");
+  addInfo(pg, "内存: %s / %s", fmtBytes(_snap.freeHeap).c_str(), _snap.heapSize);
+  addInfo(pg, "PSRAM: %s / %s", fmtBytes(_snap.freePsram).c_str(), _snap.psramTotal);
+  addInfo(pg, "运行: %s", _snap.uptime);
+  addInfo(pg, "时间: %s", _snap.dateTime);
+  addInfo(pg, "时间源: %s", timeSrcCn(_snap.timeSrc));
+  addInfo(pg, "WiFi: %s", _snap.wifiMode);
+  addInfo(pg, "短信上限: %u 条", (unsigned)cfg::kSmsStoreMax);
+}
+
+// ---- 屏幕信息：型号 / 分辨率 / 接线（取自 cfg 编译期常量）----
+void UIMenu::fillScreenInfo(MenuPage &pg) {
+  addInfo(pg, "型号: ST7789");
+  addInfo(pg, "分辨率: %dx%d", (int)cfg::kTftWidth, (int)cfg::kTftHeight);
+  addInfo(pg, "旋转: %d", (int)cfg::kTftRotation);
+  addInfo(pg, "SPI: %dMHz", (int)(cfg::kTftSpiFreq / 1000000));
+  addInfo(pg, "背光: %d%%", (int)cfg::kTftBacklight);
+  addInfo(pg, "CS:%d RST:%d DC:%d", (int)cfg::kTftCs, (int)cfg::kTftRst,
+          (int)cfg::kTftDc);
+  addInfo(pg, "SDA:%d SCL:%d", (int)cfg::kTftMosi, (int)cfg::kTftSclk);
+  addInfo(pg, "BLK:%d", (int)cfg::kTftBlk);
 }
 
 // ================= 进度条 =================

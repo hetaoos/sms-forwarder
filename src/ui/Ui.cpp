@@ -493,7 +493,9 @@ void Ui::buildPopup() {
   lv_obj_set_width(_popBody, LV_PCT(100));
   lv_label_set_long_mode(_popBody, LV_LABEL_LONG_MODE_WRAP);
 
-  lv_obj_t *foot = newLabel(_scrPopup, 1, C_HINT, "按任意键返回", LV_TEXT_ALIGN_CENTER);
+  // 正文超出容器时会被裁掉，提示 OK 可以在可滚动文本页里看全文
+  lv_obj_t *foot = newLabel(_scrPopup, 1, C_HINT, "OK看全文  任意键返回",
+                            LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(foot, 0, kFootTop + 2);
   lv_obj_set_width(foot, kScreenW);
 }
@@ -685,7 +687,16 @@ void Ui::menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t se
 
 void Ui::menuScrollBy(int dy) {
   if (!_mnBody) return;
-  lv_obj_scroll_by(_mnBody, 0, dy, LV_ANIM_OFF);
+  // dy 当作「滚动位置增量」：正 = 向下（看后文），负 = 向上（看前文）。
+  // 用 scroll_to_y 而非 scroll_by：前者走 scroll_by_bounded，自动夹紧到
+  // [0, 内容可滚动量]，避免滚出内容范围（越界留白）。
+  lv_obj_update_layout(_mnBody);
+  int32_t max = lv_obj_get_scroll_top(_mnBody) + lv_obj_get_scroll_bottom(_mnBody);
+  if (max < 0) max = 0;
+  int32_t y = lv_obj_get_scroll_y(_mnBody) + dy;
+  if (y < 0) y = 0;
+  if (y > max) y = max;
+  lv_obj_scroll_to_y(_mnBody, y, LV_ANIM_OFF);
 }
 
 int Ui::menuScrollStep() const {

@@ -20,6 +20,6 @@ struct ModemSnapshot {
   char revision[22] = "-";  // 固件版本 / 完整料号（AT+CGMR）
   char num[20] = "-";       // 本机号码（AT+CNUM）
   char oper[18] = "-";      // 运营商（优先中文短名）
-  char reg[12] = "-";       // 网络注册状态
+  char reg[24] = "-";       // 网络注册状态（"已注册(家网)"/"已注册(漫游)" 等约 14 字节，留足余量）
   char imei[20] = "-";      // IMEI（AT+CGSN）
 };

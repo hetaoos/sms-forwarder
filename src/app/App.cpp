@@ -5,6 +5,7 @@
 
 #include "app/Config.h"
 #include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
+#include "app/SystemService.h"  // 定时重启（系统保活）
 #include "app/UserFs.h"
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
@@ -67,6 +68,7 @@ bool App::begin() {
   _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
   _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   _sms.setBlackList(&_blacklist);     // 注入黑名单拦截器（handleCmt 内先于落盘/转发判定）
+  SystemService::instance().begin();  // 定时重启：载入 NVS 配置（默认禁用）
   // 至此邮件 / MQTT / 推送 / 短信都已持有各自的互斥量，状态快照可以放心读它们了
   _svcReady = true;
   // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
@@ -170,7 +172,7 @@ void App::collectStatus(StatusInfo &out) {
   const float t = temperatureRead();
   if (cpu >= 0) snprintf(out.cpu, sizeof(out.cpu), "%.1f%%", cpu);
   else snprintf(out.cpu, sizeof(out.cpu), "-");
-  if (!isnan(t)) snprintf(out.temp, sizeof(out.temp), "%.1f℃", t);
+  if (!isnan(t)) snprintf(out.temp, sizeof(out.temp), "%.1f°C", t);
   else snprintf(out.temp, sizeof(out.temp), "-");
   snprintf(out.load, sizeof(out.load), "%s %s", out.cpu, out.temp);
 
@@ -319,6 +321,14 @@ void App::fillPreview(const SmsMessage &m, SmsPreview &out) {
   out.ts = m.ts;
   snprintf(out.phone, sizeof(out.phone), "%s", m.phone.c_str());
   snprintf(out.text, sizeof(out.text), "%s", m.content.c_str());
+  // 模组别名（备注）：按串口号查快照，仅展示用，无别名则留空
+  out.alias[0] = 0;
+  if (m.modem >= 1 && m.modem <= (int)cfg::kSmsMaxModems) {
+    ModemSnapshot ms;
+    if (_sms.modemSnapshot((uint8_t)m.modem, ms) && ms.alias[0]) {
+      snprintf(out.alias, sizeof(out.alias), "%s", ms.alias);
+    }
+  }
   if (m.ts >= 1600000000u) {
     time_t tv = (time_t)m.ts;
     struct tm ti;
@@ -378,6 +388,7 @@ const char *App::fmtBytes(uint32_t bytes) {
 void App::tick() {
   _wifi.tick();
   _time.tick();                        // NTP 超时判定 / SIM NITZ 重试 / 时间落盘
+  SystemService::instance().tick(_time);  // 定时重启检测（到点延迟 2s 重启）
   _events.tick();
   _sms.tick();
   _email.tick();                       // 邮件通知发送队列（无待发时零开销）

@@ -43,7 +43,7 @@ class App {
   // 扫文件有成本，这里做 3 秒节流：菜单页按 500ms 刷新，但只每 3 秒真读一次。
   int smsPreview(SmsPreview *out, int max, int &total);
   // 单条记录 -> 预览条目（号码 / 时间 / 正文一律截断到定长）
-  static void fillPreview(const SmsMessage &m, SmsPreview &out);
+  void fillPreview(const SmsMessage &m, SmsPreview &out);
 
   // 新短信检测（主循环每轮调用）：lastSmsId 变化时把最新一条弹到屏幕上
   void checkNewSms();

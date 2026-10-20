@@ -128,7 +128,7 @@ class Ui {
   //   - 正文过长自动换行并整体滚动，不再靠写死坐标截断。
   // 槽位仍是固定数量（避免反复建/删部件），隐藏的部件不参与 flex 布局。
   static constexpr uint8_t kMaxMenuRows = 12;
-  static constexpr uint8_t kMaxInfoRows = 16;
+  static constexpr uint8_t kMaxInfoRows = 20;
   lv_obj_t *_mnTitle = nullptr;
   lv_obj_t *_mnBody = nullptr;
   lv_obj_t *_mnRow[kMaxMenuRows] = {};

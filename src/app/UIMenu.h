@@ -17,7 +17,6 @@ enum class UiAction : uint8_t {
   kBrightnessUp,   // 背光 +10%
   kBrightnessDown, // 背光 -10%
   kScreenToggle,   // 屏幕开关
-  kScreenView,     // 进入「屏幕显示」可滚动页
   kRgbNext,        // RGB 灯切换到下一个预设颜色
   kRgbUp,          // RGB 亮度 +
   kRgbDown,        // RGB 亮度 -
@@ -42,6 +41,7 @@ enum class PageId : uint8_t {
   kPush,     // 推送通道状态
   kRgb,      // RGB 灯
   kAbout,    // 关于
+  kScreenInfo,  // 屏幕信息（型号 / 接线）
 };
 
 // 进度条数据源：菜单页底部可显示一条进度条（亮度 / 超时 / RGB 亮度调节用）。
@@ -87,6 +87,7 @@ struct SmsPreview {
   char phone[24] = "";    // 对方号码
   char time[18] = "";     // 可读时间 "10-20 12:00" / "12:00:00"
   char text[160] = "";    // 正文（UTF-8，超长截断）
+  char alias[18] = "";    // 来源模组别名（备注，空则无）
 };
 
 // LCD 菜单导航状态机：由 4 键驱动（OK / UP / DOWN / BACK）
@@ -111,7 +112,7 @@ class UIMenu {
   // 菜单槽位上限：与 UI 层 ui::Ui 的 kMaxMenuRows 保持一致（超出部分由 UI 滚动查看）
   static constexpr uint8_t kMenuSlots = 12;
   // 正文行上限：与 UI 层 ui::Ui 的 kMaxInfoRows 保持一致
-  static constexpr uint8_t kInfoSlots = 16;
+  static constexpr uint8_t kInfoSlots = 20;
 
   explicit UIMenu(Display &disp) : _disp(disp) {}
 
@@ -201,8 +202,6 @@ class UIMenu {
   // ---- 可滚动文本页 ----
   // 打开一个文本页：title 为标题；fill 为空表示静态文本（不随周期刷新）
   void openView(const char *title, const String &text);
-  // 「屏幕显示」页的文本构建（实时数据源，每次刷新重新抓取状态快照）
-  void fillStatusView(String &out);
   // 短信详情文本：短信页取选中项，弹窗取弹窗里那份
   void fillSmsView(String &out) const;
   static void fillSmsViewOf(const SmsPreview &m, String &out);
@@ -225,6 +224,7 @@ class UIMenu {
   void fillPush(MenuPage &pg);
   void fillRgb(MenuPage &pg);
   void fillAbout(MenuPage &pg);
+  void fillScreenInfo(MenuPage &pg);
 
   // ---- 进度条 ----
   // 按页面的 bar 数据源算出进度条百分比与右侧数值文本；无进度条返回 false
