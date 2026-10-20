@@ -111,6 +111,7 @@ function operCn(code) {
   return code ? (map[code] || code) : '';
 }
 function modemStateText(m) {
+  if (!m) return '';
   if (!m.enabled) return '已禁用';
   switch (m.state) {
     case 'ready': return '已就绪';
@@ -654,13 +655,13 @@ function pageDashboard() {
     go(id) { location.hash = '#/' + id; },
     // 按串口号取模组对象（modems 来自 SSE smsports 事件）
     modemOf(p) { return (this.modems || []).find(m => m.port === p) || null; },
-    // 模组卡文案：禁用 / 初始化中 / 信号 dBm + 连接状态
-    modemStatText(p) {
+    // 模组信号值（主值行）：禁用 / 初始化中 / dBm
+    modemDbm(p) {
       const m = this.modemOf(p);
       if (!m) return '-';
       if (!m.enabled) return '已禁用';
       if (!m.ready) return '初始化中';
-      return csqDbm(m.csq) + ' · ' + modemStateText(m);
+      return csqDbm(m.csq);
     },
     fmt, fmtBytes,
   };
