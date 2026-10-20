@@ -2131,7 +2131,7 @@ function pageTools() {
       return '已是最新版本' + (this.curVer ? '（' + this.curVer + '）' : '');
     },
 
-    init() { this.loadStatus(); },
+    init() { this.loadStatus(); this.loadCoredumpInfo(); },
     async loadStatus() {
       try {
         const r = await fetch('/api/ota/status', { cache: 'no-store' });
@@ -2247,6 +2247,61 @@ function pageTools() {
         toast('✕ 导入失败：' + (e && e.message ? e.message : e), 'err', 6000);
         this.importing = false;
       }
+    },
+
+    // ---------- 崩溃记录（coredump） ----------
+    // panic 时 ESP-IDF 把内存快照写入 coredump 分区，这里只做查询 / 导出 / 清除
+    cdHas: false,       // 分区中是否有未导出的崩溃快照
+    cdLoaded: false,    // 信息是否查询过（区分「暂无」与「未查询」）
+    cdBusy: false,      // 导出 / 清除进行中
+    cdSize: 0,          // 快照字节数
+    cdTime: 0,          // 崩溃时间（纪元秒，0 = 未知）
+    cdVersion: '',      // 崩溃时固件版本（Release tag）
+    cdElfUrl: '',       // 对应调试符号下载地址（版本已知时非空）
+
+    cdTimeText() {
+      if (!this.cdTime) return '时间未知';
+      const d = new Date(this.cdTime * 1000);
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+             ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    },
+    cdSizeText() {
+      const b = this.cdSize;
+      if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
+      if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+      return b + ' B';
+    },
+
+    // 查询崩溃记录信息（页面初始化与清除后各调一次）
+    async loadCoredumpInfo() {
+      try {
+        const r = await fetch('/api/tools/coredump/info', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        this.cdHas = !!d.hasCoredump;
+        this.cdSize = d.size || 0;
+        this.cdTime = d.crashTime || 0;
+        this.cdVersion = d.crashVersion || '';
+        this.cdElfUrl = d.elfUrl || '';
+        this.cdLoaded = true;
+      } catch (e) {}
+    },
+
+    // 导出 coredump.bin：GET 附件下载（与导出配置同路线，页面不跳走）
+    exportCoredump() {
+      window.location.href = '/api/tools/coredump/export';
+    },
+
+    // 清除分区快照（不可恢复），成功后刷新信息
+    async clearCoredump() {
+      if (!(await confirmDialog('清除崩溃记录',
+            '将擦除 coredump 分区中的崩溃快照，且无法恢复。确定继续？', true)))
+        return;
+      this.cdBusy = true;
+      const r = await postOp('/api/tools/coredump/clear', {}, 'coredump 已清除');
+      this.cdBusy = false;
+      if (r) await this.loadCoredumpInfo();
     },
 
     // ---------- 系统维护：重启 / 出厂复位 ----------

@@ -63,6 +63,16 @@ constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{
 constexpr const char *kNvsKeyDisp = "disp";        // 屏幕设置键（{"ver":1,"bright":n,"autoOffSec":n,"idleSec":n}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
 
+// ---------------- 崩溃转储（coredump）信息 ----------------
+// 崩溃元信息独立命名空间，不随出厂复位清除（appcfg 会被 handleSystemReset
+// 整表清空）——崩溃证据需要在复位配置后仍可追溯；coredump 分区里的快照
+// 同样只在用户主动清除时擦除。分区由 ESP-IDF panic 处理器自动写入（ELF
+// 格式），这里只记录时间与版本，供 Web「工具箱」查询 / 导出 / 清除，
+// 详见 app/Coredump。
+constexpr const char *kNvsNamespaceCoredump = "coredump";  // 独立命名空间
+constexpr const char *kNvsKeyCdCrashTs  = "cdCrashTs";   // 上次崩溃时间戳（纪元秒）
+constexpr const char *kNvsKeyCdCrashVer = "cdCrashVer";  // 上次崩溃时固件版本（Release tag）
+
 // ---------------- SMTP 邮件通知（参考 esp32-sms-forwarding）----------------
 // 通知类型位掩码：每个位代表一类「会单独发一封 HTML 邮件」的事件。
 // 关闭后该事件不再发邮件，短信存储 / SSE / Web 等其余功能不受影响。

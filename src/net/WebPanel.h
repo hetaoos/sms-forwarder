@@ -234,6 +234,13 @@ class WebPanel {
   void handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data,
                               size_t len, size_t index, size_t total);
 
+  // 崩溃转储（coredump）：信息查询 / 导出快照 / 清除分区。
+  // panic 时 ESP-IDF 把 ELF 快照写入 coredump 分区，这里只做查询与搬运，
+  // 元信息（崩溃时间 / 版本）由 app/Coredump 维护
+  void handleCoredumpInfo(AsyncWebServerRequest *req);
+  void handleCoredumpExport(AsyncWebServerRequest *req);
+  void handleCoredumpClear(AsyncWebServerRequest *req);
+
   // 兜底 404
   void handleNotFound(AsyncWebServerRequest *req);
   SerialBridge &_bridge;   // AT 串口桥引用

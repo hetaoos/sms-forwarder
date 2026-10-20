@@ -9,6 +9,7 @@
 #include <Arduino.h>
 
 #include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
+#include "app/Coredump.h"    // 崩溃转储（coredump）分区查询
 #include "app/SystemService.h"  // 定时重启（单例）
 #include "app/UserFs.h"      // userfs::format()：出厂复位清空用户数据
 #include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
@@ -692,6 +693,26 @@ void WebPanel::setupRoutes() {
                     size_t index, size_t total) {
                handleConfigImportChunk(req, data, len, index, total);
              });
+
+  // ================= 崩溃转储（coredump） =================
+  // 顺序：/api/tools/coredump/<子路径> 之间路径互不为前缀，无父子冲突，
+  // 按功能分组排列即可。
+
+  // 信息查询：{"hasCoredump":bool,"size":n,"crashTime":epoch,"crashVersion":"..",
+  //   "elfUrl":".."}。无分区或无数据时 hasCoredump=false，其余字段省略
+  _server.on("/api/tools/coredump/info", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleCoredumpInfo(req); });
+
+  // 导出：GET 触发浏览器下载 coredump.bin（panic 时 ESP-IDF 写入分区的 ELF
+  // 快照，可能含内存内容，分享前请自行评估）。文件名带崩溃时间便于归档
+  _server.on("/api/tools/coredump/export", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleCoredumpExport(req); });
+
+  // 清除：POST 整分区擦除（分区 0xFE0000 起、128KB，按 4KB 扇区对齐）。
+  // 只清分区快照；NVS 里的崩溃时间 / 版本记录保留（供追溯），
+  // 下次 panic 会被覆盖
+  _server.on("/api/tools/coredump/clear", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleCoredumpClear(req); });
 
   // 未匹配路径统一返回 404（JSON，与全站一致）
   _server.onNotFound([this](AsyncWebServerRequest *req) { handleNotFound(req); });
@@ -1890,6 +1911,97 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     esp_restart();
     vTaskDelete(nullptr);
   }, "cfg_rst", 2048, nullptr, 5, nullptr);
+}
+
+// ---- 崩溃转储（coredump） ----
+// 信息：分区是否有快照 + 崩溃时间 / 版本 + 调试符号链接。
+// 分区不存在（分区表被换掉）时按「无数据」处理，前端隐藏整块卡片
+void WebPanel::handleCoredumpInfo(AsyncWebServerRequest *req) {
+  const esp_partition_t *part = Coredump::partition();
+  size_t used = part ? Coredump::usedSize(part) : 0;
+
+  AsyncJsonResponse *resp = new AsyncJsonResponse();
+  auto o = resp->getRoot();
+  o["hasCoredump"] = (used > 0);
+  if (used > 0) {
+    o["size"]         = static_cast<uint32_t>(used);
+    o["crashTime"]    = static_cast<long long>(Coredump::crashTime());
+    o["crashVersion"] = Coredump::crashVersion();
+    String elfUrl = Coredump::elfUrl();
+    if (elfUrl.length() > 0) o["elfUrl"] = elfUrl;
+  }
+  resp->setLength();
+  req->send(resp);
+}
+
+// 导出：分块流式读分区（不把整个快照搬进堆），经 Content-Disposition
+// 触发浏览器下载。文件名带崩溃时间（UTC），未知时用 unknown
+void WebPanel::handleCoredumpExport(AsyncWebServerRequest *req) {
+  const esp_partition_t *part = Coredump::partition();
+  if (part == nullptr) {
+    sendErr(req, 404, "未找到 coredump 分区");
+    return;
+  }
+  size_t used = Coredump::usedSize(part);
+  if (used == 0) {
+    sendErr(req, 404, "未发现可导出的 coredump（分区为空）");
+    return;
+  }
+
+  _log.addf(LogLevel::kInfo, "http", "导出 coredump: used=%u bytes, part=%s",
+            static_cast<unsigned>(used), part->label);
+
+  AsyncWebServerResponse *resp = req->beginChunkedResponse(
+      "application/octet-stream",
+      [part, used](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+        if (index >= used) return 0;
+        size_t left  = used - index;
+        size_t toRead = left < maxLen ? left : maxLen;
+        if (esp_partition_read(part, index, buffer, toRead) != ESP_OK) {
+          return 0;  // 读失败即中止传输（前端按不完整的下载处理）
+        }
+        return toRead;
+      });
+
+  char filename[48];
+  time_t ct = Coredump::crashTime();
+  if (ct > 0) {
+    char ts[20];
+    struct tm ti;
+    gmtime_r(&ct, &ti);
+    strftime(ts, sizeof(ts), "%Y%m%dT%H%M%S", &ti);
+    snprintf(filename, sizeof(filename), "sms-forwarder-coredump-%s.bin", ts);
+  } else {
+    snprintf(filename, sizeof(filename), "sms-forwarder-coredump-unknown.bin");
+  }
+  resp->addHeader("Content-Disposition",
+                  String("attachment; filename=") + filename);
+  resp->addHeader("Cache-Control", "no-store");
+  resp->addHeader("X-CoreDump-Size", String(used));
+  req->send(resp);
+}
+
+// 清除：整分区擦除。分区起点 0xFE0000、大小 128KB，均按 4KB 扇区对齐，
+// 满足 esp_partition_erase_range 的对齐要求，可直接整片擦。
+// 只清快照；NVS 里的崩溃时间 / 版本保留（供追溯），下次 panic 覆盖
+void WebPanel::handleCoredumpClear(AsyncWebServerRequest *req) {
+  const esp_partition_t *part = Coredump::partition();
+  if (part == nullptr) {
+    sendErr(req, 404, "未找到 coredump 分区");
+    return;
+  }
+  esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+  if (err != ESP_OK) {
+    char msg[48];
+    snprintf(msg, sizeof(msg), "擦除失败: %s", esp_err_to_name(err));
+    _log.addf(LogLevel::kError, "http", "清除 coredump 失败: %s",
+              esp_err_to_name(err));
+    sendErr(req, 500, msg);
+    return;
+  }
+  _log.addf(LogLevel::kInfo, "http", "已清除 coredump 分区: %s (size=%u)",
+            part->label, static_cast<unsigned>(part->size));
+  sendOk(req, ",\"message\":\"coredump 已清除\"");
 }
 
 // ---- 兜底 404 ----

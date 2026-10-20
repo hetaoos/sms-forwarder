@@ -4,6 +4,7 @@
 #include <WiFi.h>
 
 #include "app/Config.h"
+#include "app/Coredump.h"  // 崩溃转储信息：panic 记录 + coredump 分区查询（工具箱导出用）
 #include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
 #include "app/SystemService.h"  // 定时重启（系统保活）
 #include "app/UserFs.h"
@@ -26,6 +27,11 @@ bool App::begin() {
   // 时间同步：先恢复 NVS 里的上次已知时间（近似值），随后由 WiFi 连接（NTP）
   // 与通信模组就绪（SIM NITZ）事件驱动校准
   _time.begin(_bridge, _sms);
+
+  // 崩溃转储信息：panic 重启时把 RTC 保留的最近时间戳与当前固件版本写入 NVS，
+  // 供 Web「工具箱」展示与导出。须在 _time.begin() 之后（NVS lastts 的兜底
+  // 读取以其恢复的时间为准），分区快照由 ESP-IDF panic 处理器自动写入
+  Coredump::init();
 
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 面板 + LVGL 显示端口
