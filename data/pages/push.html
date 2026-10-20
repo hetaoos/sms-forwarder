@@ -99,8 +99,25 @@
   </div>
 
   <!-- 占位符说明 -->
-  <div class="card">
+  <div class="card" style="margin-top:24px">
     <h3>占位符说明</h3>
-    <p class="hint">自定义消息 / 标题模板支持占位符：<code>{from}</code> 发件人、<code>{message}</code> 内容、<code>{timestamp}</code> 时间戳、<code>{date}</code> 本地时间、<code>{deviceName}</code> 设备名、<code>{simSlot}</code> 卡槽、<code>{modemIndex}</code> 通信模组序号、<code>{uptime}</code> 运行时长、<code>{channelName}</code>/<code>{channelType}</code> 通道信息。</p>
+    <p class="hint" style="margin:0 0 12px">自定义消息 / 标题模板支持以下占位符，运行时会被替换为实际值：</p>
+    <table class="table">
+      <thead>
+        <tr><th>占位符</th><th>说明</th><th>示例值</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>{from}</code></td><td>发件人号码</td><td>+8613800138000</td></tr>
+        <tr><td><code>{message}</code></td><td>短信内容</td><td>您的验证码是 123456</td></tr>
+        <tr><td><code>{timestamp}</code></td><td>时间戳（UTC ISO 8601）</td><td>2026-10-20T08:30:00Z</td></tr>
+        <tr><td><code>{date}</code></td><td>本地时间</td><td>2026-10-20 16:30:00</td></tr>
+        <tr><td><code>{deviceName}</code></td><td>设备名称</td><td>SMS-Forwarder</td></tr>
+        <tr><td><code>{simSlot}</code></td><td>卡槽编号（0/1）</td><td>0</td></tr>
+        <tr><td><code>{modemIndex}</code></td><td>通信模组序号</td><td>0</td></tr>
+        <tr><td><code>{uptime}</code></td><td>系统运行时长</td><td>3d 2h 15m</td></tr>
+        <tr><td><code>{channelName}</code></td><td>通道名称</td><td>我的 Bark</td></tr>
+        <tr><td><code>{channelType}</code></td><td>通道类型</td><td>bark</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
