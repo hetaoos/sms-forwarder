@@ -121,6 +121,10 @@ class SerialBridge {
     uint32_t rxBytes = 0, txBytes = 0;      // 收发字节计数
     uint32_t errCount = 0, timeouts = 0, recovers = 0;  // 错误/超时/复位计数
     uint32_t lastRxMs = 0;  // 上次收到数据的时间戳
+    // 接收错误（onReceiveError）上报节流：回调只做计数，日志由抽数任务合并打印
+    uint8_t errCode = 0;        // 最近一次错误码（hardwareSerial_error_t）
+    uint32_t errRepCount = 0;   // 已上报的错误数（errCount - errRepCount = 待上报）
+    uint32_t errRepMs = 0;      // 上次上报时刻（millis）
     String pend;            // 自发上报的未成段数据（等间隔超时后归档）
     uint32_t pendMs = 0;    // pend 最后一次变化的时间戳
     uint8_t index = 0;      // 逻辑序号 0/1（日志用，显示为 index+1）
@@ -166,11 +170,16 @@ class SerialBridge {
   // 串口错误中断的静态跳板（当前 onReceiveError 用 lambda 直接捕获 Port，此跳板作为无捕获场景的备用）
   static void onErrorThunk(hardwareSerial_error_t err);
 
+  // 把端口累计的接收错误按节流打成一条日志（抽数任务上下文调用，栈充裕）。
+  // onReceiveError 回调运行在串口事件任务（仅 2~4KB 栈）里只负责计数，
+  // 打印合并到这里，避免高频错误时回调内 printf 链路把事件任务栈打爆
+  void reportErrors(uint8_t i);
+
   // 两个串口的状态（索引 0 -> 串口1，索引 1 -> 串口2）
   Port _ports[2] = {
-      {&Serial1, cfg::kUart1Rx, cfg::kUart1Tx, 0, false, 0, 0, 0, 0, 0, 0,
+      {&Serial1, cfg::kUart1Rx, cfg::kUart1Tx, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0,
        String(), 0, 0, nullptr},
-      {&Serial2, cfg::kUart2Rx, cfg::kUart2Tx, 0, false, 0, 0, 0, 0, 0, 0,
+      {&Serial2, cfg::kUart2Rx, cfg::kUart2Tx, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0,
        String(), 0, 1, nullptr},
   };
   static SerialBridge *sInstance;       // 单例指针，供静态中断回调使用

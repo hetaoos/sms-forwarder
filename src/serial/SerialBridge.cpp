@@ -15,6 +15,9 @@ constexpr uint32_t kTxBufferSize = 1024;   // 串口发送缓冲
 constexpr uint8_t kRxFifoThrhd = 32;       // 触发中断的 FIFO 阈值，越小越不容易溢出
 constexpr uint32_t kUnsolicitedGapMs = 120;  // 自发上报分段的静默间隔
 constexpr TickType_t kPumpPeriod = pdMS_TO_TICKS(5);  // 抽数任务周期 5ms
+// 串口接收错误的最小上报间隔：onReceiveError 回调（串口事件任务上下文）只计数，
+// 抽数任务最多每 2s 合并打印一次，错误风暴时既不失可观测性也不刷屏
+constexpr uint32_t kErrReportMinGapMs = 2000;
 }  // namespace
 
 // 把字符按可打印形式追加到 out：控制字符转成 \xNN 文本
@@ -54,11 +57,15 @@ void SerialBridge::ensureOpen(Port &p, uint32_t baud) {
   p.dev->setTxBufferSize(kTxBufferSize);
   p.dev->begin(baud, SERIAL_8N1, p.rx, p.tx, false, 20000UL, kRxFifoThrhd);
   p.dev->onReceiveError([&p](hardwareSerial_error_t err) {
+    // ⚠️ 该回调运行在串口事件任务（uart_event_task）上下文，默认栈仅 2048B
+    // （已通过 CONFIG_ARDUINO_SERIAL_EVENT_TASK_STACK_SIZE 扩到 4096B 兜底）。
+    // 绝不可在这里调用 LogStore::addf / Serial.printf：vsnprintf + 串口镜像
+    // + MQTT sink 链路深且吃栈，高频错误（线序接反/波特率不匹配）时叠加
+    // UART 中断嵌套会打爆栈，曾引发 exccause=0x42(DoubleException) panic。
+    // 正确做法：只做 O(1) 计数与错误码记录，日志由抽数任务 reportErrors()
+    // 按节流合并打印。
     p.errCount++;
-    _log.addf(LogLevel::kWarn, "uart",
-              "串口 %u 接收错误 err=%d（已收 %u B，已发 %u B）",
-              (unsigned)(p.index + 1), (int)err, (unsigned)p.rxBytes,
-              (unsigned)p.txBytes);
+    p.errCode = (uint8_t)err;
   });
   p.baud = baud;
   p.opened = true;
@@ -160,7 +167,28 @@ void SerialBridge::pumpOnce() {
     // 端口锁已释放：交由轮询回调（通信模组初始化/心跳状态机）用 trySend 驱动，
     // 非阻塞——端口忙则 trySend 直接跳过，绝不拖住抽数任务，也不影响另一通信模组。
     if (_poll) _poll(i + 1);
+
+    // 接收错误合并上报：onReceiveError 回调（串口事件任务小栈上下文）只计数，
+    // 打印在这里做——抽数任务栈充裕（8KB），且按节流合并，错误风暴时不刷屏
+    reportErrors(i);
   }
+}
+
+// 把端口累计的接收错误按节流打成一条日志（抽数任务上下文调用，栈充裕）
+// i：端口索引 0/1。未发生新错误或距上次上报不足 kErrReportMinGapMs 时静默跳过；
+// 每次上报把自上次以来的新增错误数一次说清，避免高频错误时逐条刷屏
+void SerialBridge::reportErrors(uint8_t i) {
+  Port &p = _ports[i];
+  uint32_t pending = p.errCount - p.errRepCount;
+  if (pending == 0) return;
+  uint32_t now = millis();
+  if (now - p.errRepMs < kErrReportMinGapMs) return;
+  p.errRepCount = p.errCount;
+  p.errRepMs = now;
+  _log.addf(LogLevel::kWarn, "uart",
+            "串口 %u 接收错误 x%u，最近错误码 %d（累计 %u 次，已收 %u B，已发 %u B）",
+            (unsigned)(p.index + 1), (unsigned)pending, (int)p.errCode,
+            (unsigned)p.errCount, (unsigned)p.rxBytes, (unsigned)p.txBytes);
 }
 
 // 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
