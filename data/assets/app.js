@@ -575,8 +575,6 @@ document.addEventListener('DOMContentLoaded', bootstrap);
 /* ---------- 仪表盘 ---------- */
 function pageDashboard() {
   return {
-    token: '',                // 持久化 API 令牌（GET /api/token 拉取，默认掩码展示）
-    tokenShown: false,        // 是否显示完整令牌
     // 全部数据来自 SSE 实时仓（外壳级共享），本页不做任何轮询
     get st() { return Alpine.store('live').status; },
     get stats() { return Alpine.store('live').stats; },
@@ -629,25 +627,7 @@ function pageDashboard() {
         default: return '等待 WiFi 连接或通信模组就绪';
       }
     },
-    // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
-    get tokenMasked() {
-      const t = this.token || '';
-      if (!t.length) return '';
-      if (this.tokenShown) return t;
-      return t.slice(0, 6) + '••••••••••' + t.slice(-4);
-    },
-    async loadToken() {
-      try {
-        const r = await apiFetch('/api/token');
-        if (r.ok) this.token = (await r.json()).token || '';
-      } catch (e) {}
-    },
-    async resetToken() {
-      const r = await postOp('/api/token', {}, 'API 令牌已重置');
-      if (r) { this.token = (await r.json()).token || ''; this.tokenShown = true; }
-    },
     init() {
-      this.loadToken();
       // 仓库还是空（SSE 尚未送达）时兜底拉一次
       const live = Alpine.store('live');
       if (!Object.keys(live.status).length) restSnapshot();
@@ -1217,6 +1197,68 @@ function pageAuth() {
       this.isErr = false;
       this.hint = '';
       this.errField = '';
+    },
+  };
+}
+
+/* ---------- 系统设置 · API 访问令牌 ---------- */
+function pageApiToken() {
+  return {
+    enabled: false, token: '', tokenShown: false,
+    loaded: false, saving: false,
+    // 拉取当前令牌配置（开关 + 令牌），启用后据此刷新显示
+    async refresh() {
+      try {
+        const r = await apiFetch('/api/token');
+        if (r.ok) {
+          const j = await r.json();
+          this.enabled = !!j.enabled;
+          this.token = j.token || '';
+        }
+      } catch (e) {}
+    },
+    async init() {
+      await this.refresh();
+      this.loaded = true;
+    },
+    // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
+    get tokenMasked() {
+      const t = this.token || '';
+      if (!t.length) return '';
+      if (this.tokenShown) return t;
+      return t.slice(0, 6) + '••••••••••' + t.slice(-4);
+    },
+    async save() {
+      if (this.saving || !this.loaded) return;
+      this.saving = true;
+      try {
+        const r = await apiFetch('/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: this.enabled })
+        });
+        if (!r.ok) toast('✕ 保存失败（' + r.status + '）', 'err');
+        else { await this.refresh(); toast('已保存', 'ok'); }
+      } catch (e) {
+        toast('✕ 请求失败', 'err');
+      }
+      this.saving = false;
+    },
+    async resetToken() {
+      if (!this.enabled) return;
+      try {
+        const r = await apiFetch('/api/token/reset', { method: 'POST' });
+        if (r.ok) {
+          const j = await r.json();
+          this.token = j.token || '';
+          this.tokenShown = true;
+          toast('API 令牌已重置', 'ok');
+        } else {
+          toast('✕ 重置失败（' + r.status + '）', 'err');
+        }
+      } catch (e) {
+        toast('✕ 请求失败', 'err');
+      }
     },
   };
 }

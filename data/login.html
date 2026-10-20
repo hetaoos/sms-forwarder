@@ -40,7 +40,7 @@
     <div class="login-err" id="err"></div>
     <button class="btn block" type="submit" id="btn">登 录</button>
   </form>
-  <p class="login-tip">登录后服务器将下发会话 Cookie；<br>接口同时支持 Bearer 访问令牌（见仪表盘页面）</p>
+  <p class="login-tip">登录后服务器将下发会话 Cookie；<br>接口同时支持 Bearer 访问令牌（在「系统设置 - API 访问令牌」中启用）</p>
 </div>
 
 <script>
@@ -93,8 +93,6 @@ form.addEventListener('submit', async ev => {
           localStorage.removeItem(SAVED_KEY);
         }
       } catch (e) {}
-      // 保存访问令牌供「仪表盘」页面展示（脚本/第三方客户端用）
-      try { const j = await r.json(); if (j.token) sessionStorage.setItem('apiToken', j.token); } catch (e) {}
       goHome(); return;
     }
     err.textContent = r.status === 401 ? '用户名或密码错误' : ('登录失败（' + r.status + '）');

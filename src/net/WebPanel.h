@@ -37,7 +37,8 @@
 // 身份支持两种方式（任一通过即可）：
 //   1. 会话 Cookie（sid）：登录后下发，存内存，重启失效；
 //   2. 访问令牌（Bearer）：长期有效的 API 令牌，持久化于 NVS，重启不失效，
-//      供脚本 / 第三方客户端使用；设备首次启动自动生成，可在 UI 重置。
+//      供脚本 / 第三方客户端使用；需在系统设置「API 访问令牌」中启用，
+//      启用时自动生成，可在该页重置；关闭时 Bearer 调用一律拒绝。
 // 账号密码存于 NVS（AdminStore），修改后登录会话作废（API 令牌独立保留）。
 class WebPanel {
  public:
@@ -95,10 +96,14 @@ class WebPanel {
   String _tokens[cfg::kMaxSessions];       // 有效 Bearer 访问令牌（重启失效）
   uint8_t _sessionCount = 0;               // 会话表当前数量
   uint8_t _tokenCount = 0;                 // 令牌表当前数量
+  bool _apiTokenEnabled = false;           // API 访问令牌功能开关（NVS，默认关闭）
   String _apiToken;                        // 持久化 API 访问令牌（NVS，重启不失效）
 
-  // 载入/生成持久化 API 令牌：NVS 已有则复用，否则生成并写回
-  void ensureApiToken();
+  // 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于
+  // kNvsKeyToken（沿用 apitoken 键）；缺失/解析失败视为关闭，启用但令牌缺失则生成并写回
+  void loadApiToken();
+  // 将当前 _apiTokenEnabled / _apiToken 以 JSON 写回 NVS
+  void saveApiTokenCfg();
   // 重新生成 API 令牌（写 NVS），返回新令牌
   String resetApiToken();
 
@@ -119,9 +124,10 @@ class WebPanel {
   void handleLogout(AsyncWebServerRequest *req);
   void handleSession(AsyncWebServerRequest *req);
 
-  // API 令牌与账号：查询/重置令牌、查询/修改账号
+  // API 令牌与账号：查询、开关、重置、查询/修改账号
   void handleTokenGet(AsyncWebServerRequest *req);
-  void handleTokenPost(AsyncWebServerRequest *req);
+  void handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleTokenReset(AsyncWebServerRequest *req);
   void handleAuthGet(AsyncWebServerRequest *req);
   void handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json);
 

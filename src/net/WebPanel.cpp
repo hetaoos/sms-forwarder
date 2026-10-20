@@ -162,7 +162,7 @@ WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
-  ensureApiToken();   // 载入/生成持久化 API 令牌（NVS）
+  loadApiToken();     // 载入 API 令牌配置（NVS，默认关闭）
   // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404
   if (!LittleFS.begin(true)) {
     _log.addf(LogLevel::kError, "http", "LittleFS 挂载失败，网页不可用");
@@ -202,7 +202,8 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
     String a = req->getHeader("Authorization")->value();
     if (a.startsWith("Bearer ")) {
       String t = a.substring(7);
-      if (t.length() && (storeHas(_tokens, _tokenCount, t) || t == _apiToken)) return true;
+      if (t.length() && _apiTokenEnabled &&
+          (storeHas(_tokens, _tokenCount, t) || t == _apiToken)) return true;
     }
   }
   return false;
@@ -215,35 +216,51 @@ void WebPanel::invalidateAllSessions() {
   _log.addf(LogLevel::kInfo, "http", "已注销全部会话与访问令牌");
 }
 
-// 载入/生成持久化 API 令牌：NVS 已有且长度合法则复用，否则生成并写回
-void WebPanel::ensureApiToken() {
+// 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于
+// kNvsKeyToken（沿用 apitoken 键）；缺失/解析失败视为关闭，启用但令牌缺失则生成并写回。
+// 旧版明文令牌（非 JSON）不兼容，按未启用处理（默认关闭，符合需求）。
+void WebPanel::loadApiToken() {
+  _apiTokenEnabled = false;
+  _apiToken = "";
+  String raw;
   Preferences prefs;
-  String t;
   if (prefs.begin(cfg::kNvsNamespace, true)) {
-    t = prefs.getString(cfg::kNvsKeyToken, "");
+    raw = prefs.getString(cfg::kNvsKeyToken, "");
     prefs.end();
   }
-  if (t.length() != 32) {  // genSecret 生成 32 位十六进制；非法则重新生成
-    t = genSecret();
-    if (prefs.begin(cfg::kNvsNamespace, false)) {
-      prefs.putString(cfg::kNvsKeyToken, t);
-      prefs.end();
-    }
-    _log.addf(LogLevel::kInfo, "http", "API 令牌缺失，已自动生成并写入 NVS");
-  } else {
-    _log.addf(LogLevel::kInfo, "http", "已从 NVS 载入 API 令牌");
+  DynamicJsonDocument doc(256);
+  if (!deserializeJson(doc, raw) && doc.is<JsonObject>()) {
+    _apiTokenEnabled = doc["enabled"] | false;
+    _apiToken = doc["token"] | "";
   }
-  _apiToken = t;
+  if (_apiTokenEnabled && _apiToken.length() != 32) {
+    _apiToken = genSecret();
+    saveApiTokenCfg();
+    _log.addf(LogLevel::kInfo, "http", "API 令牌启用且缺失，已生成并写入 NVS");
+  }
+  _log.addf(LogLevel::kInfo, "http", "API 令牌功能%s",
+            _apiTokenEnabled ? "已启用" : "未启用（默认）");
+}
+
+// 将当前 _apiTokenEnabled / _apiToken 以 JSON 写回 NVS（apitoken 键）
+void WebPanel::saveApiTokenCfg() {
+  DynamicJsonDocument doc(256);
+  doc["ver"] = 1;
+  doc["enabled"] = _apiTokenEnabled;
+  doc["token"] = _apiToken;
+  String s;
+  serializeJson(doc, s);
+  Preferences prefs;
+  if (prefs.begin(cfg::kNvsNamespace, false)) {
+    prefs.putString(cfg::kNvsKeyToken, s);
+    prefs.end();
+  }
 }
 
 // 重新生成 API 令牌（写 NVS），返回新令牌
 String WebPanel::resetApiToken() {
   _apiToken = genSecret();
-  Preferences prefs;
-  if (prefs.begin(cfg::kNvsNamespace, false)) {
-    prefs.putString(cfg::kNvsKeyToken, _apiToken);
-    prefs.end();
-  }
+  saveApiTokenCfg();
   _log.addf(LogLevel::kInfo, "http", "API 令牌已重置");
   return _apiToken;
 }
@@ -335,11 +352,16 @@ void WebPanel::setupRoutes() {
   // 会话探测：前端据此判断是否已登录（未认证返回 401）
   _server.on("/api/session", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSession(req); });
 
-  // ---- API 访问令牌（持久化，重启不失效）----
-  // 查询当前令牌（需登录）；UI 默认掩码展示，点按后才显示完整
+  // ---- API 访问令牌（持久化，重启不失效；默认关闭，需在系统设置启用）----
+  // 重置令牌（子路径，先注册）：生成新令牌并写 NVS，旧令牌立即失效（需启用）。
+  // 普通 POST（无需 JSON body），避免缺少 Content-Type 时 404。
+  _server.on("/api/token/reset", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleTokenReset(req); });
+  // 查询当前令牌与开关（需登录）；UI 默认掩码展示，点按后才显示完整
   _server.on("/api/token", HTTP_GET, [this](AsyncWebServerRequest *req) { handleTokenGet(req); });
-  // 重置令牌：生成新令牌并写 NVS，旧令牌立即失效
-  _server.on("/api/token", HTTP_POST, [this](AsyncWebServerRequest *req) { handleTokenPost(req); });
+  // 开关 API 令牌功能：JSON {"enabled":bool}；启用且无令牌时自动生成
+  _server.on("/api/token", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleTokenPost(req, json); });
 
   // ---- 管理账号 ----
   // 查询当前用户名（密码不回传）
@@ -758,11 +780,27 @@ void WebPanel::handleSession(AsyncWebServerRequest *req) {
 // ---- API 令牌 / 账号 ----
 void WebPanel::handleTokenGet(AsyncWebServerRequest *req) {
   if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
-  sendJson(req, "{\"ok\":true,\"token\":\"" + _apiToken + "\"}");
+  String json = "{\"ok\":true,\"enabled\":" +
+                String(_apiTokenEnabled ? "true" : "false") +
+                ",\"token\":\"" + (_apiTokenEnabled ? _apiToken : "") + "\"}";
+  sendJson(req, json);
 }
 
-void WebPanel::handleTokenPost(AsyncWebServerRequest *req) {
+void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+  if (!json.is<JsonObject>() || !json["enabled"].is<bool>()) {
+    sendErr(req, 400, "invalid json"); return;
+  }
+  _apiTokenEnabled = json["enabled"].as<bool>();
+  if (_apiTokenEnabled && _apiToken.length() != 32) _apiToken = genSecret();
+  saveApiTokenCfg();
+  sendJson(req, "{\"ok\":true,\"enabled\":" +
+                String(_apiTokenEnabled ? "true" : "false") + "}");
+}
+
+void WebPanel::handleTokenReset(AsyncWebServerRequest *req) {
+  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+  if (!_apiTokenEnabled) { sendErr(req, 403, "api token disabled"); return; }
   String t = resetApiToken();
   sendJson(req, "{\"ok\":true,\"token\":\"" + t + "\"}");
 }
