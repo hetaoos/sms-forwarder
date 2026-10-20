@@ -9,7 +9,7 @@
 
 namespace {
 
-// 本模块日志出口
+// 本通信模组日志出口
 LogStore &_log = devLog();
 
 // 取数字位掩码：mode 只在 0..2 合法；越界回落精确

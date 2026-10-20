@@ -51,7 +51,7 @@ struct MailSchedule {
 class EmailService {
  public:
   // 注入依赖（引用，生命周期由 App 保证）并从 NVS 载入配置；
-  // wifi：WiFi 管理器（连接状态/IP）；sms：短信服务（模组与 SIM 状态）；
+  // wifi：WiFi 管理器（连接状态/IP）；sms：短信服务（通信模组与 SIM 状态）；
   // time：时间同步（系统时间展示）
   void begin(WifiManager &wifi, SmsService &sms, TimeSync &time);
 
@@ -118,7 +118,7 @@ class EmailService {
   //
   // 收到短信：入队一封短信邮件（未配置或该类已关闭时静默跳过）
   // sender：发件人号码；message：正文；ts：纪元秒（未同步时为开机秒数）；
-  // modem：接收模组串口号（1..kSmsMaxModems，<0 未知）
+  // modem：接收通信模组串口号（1..kSmsMaxModems，<0 未知）
   void notifySms(const String &sender, const String &message, uint32_t ts,
                  int8_t modem);
 
@@ -128,15 +128,15 @@ class EmailService {
   // 排入启动邮件（App::begin 调用一次）。发送时机：
   //   1. 先等 kMailBootDelayMs（WiFi 通常此时还没连上）；
   //   2. WiFi 未连：每 15s 探一次，超过 kMailBootWaitMaxMs 放弃（无网发不出）；
-  //   3. WiFi 已连：给模组初始化 kMailBootModemWaitMs 的宽限，期间模组一有
-  //      结果（就绪 / 故障）就立即发；到期仍未出结果也照发（正文的模组状态会
-  //      显示为未就绪），不会因模组异常而永远不发。
+  //   3. WiFi 已连：给通信模组初始化 kMailBootModemWaitMs 的宽限，期间通信模组一有
+  //      结果（就绪 / 故障）就立即发；到期仍未出结果也照发（正文的通信模组状态会
+  //      显示为未就绪），不会因通信模组异常而永远不发。
   void notifyStartup();
 
-  // 启动邮件的额外放行条件（除 WiFi 外的等待项，如「模组初始化已完成」）。
+  // 启动邮件的额外放行条件（除 WiFi 外的等待项，如「通信模组初始化已完成」）。
   // 返回 true 表示可以发；未注入时只等 WiFi。
-  // 由 App 注入（SmsService::modemsSettled），原因：启动邮件正文含模组状态，
-  // 模组还在初始化时发出会显示「初始化中」，故需等其出结果（就绪或故障）。
+  // 由 App 注入（SmsService::modemsSettled），原因：启动邮件正文含通信模组状态，
+  // 通信模组还在初始化时发出会显示「初始化中」，故需等其出结果（就绪或故障）。
   using StartupGateFn = std::function<bool()>;
   void setStartupGate(StartupGateFn fn) { _startupGate = fn; }
 
@@ -153,7 +153,7 @@ class EmailService {
   // ---------------- 统一 HTML 邮件模板工具 ----------------
   // 模板约定（与 esp32-sms-forwarding 一致）：所有通知邮件共用 buildHtml()
   // 生成的卡片式正文；各邮件只提供标题与卡片主体片段。
-  // 公共信息块（系统时间 + 各模组本机号码，无号码回退设备 IP）由
+  // 公共信息块（系统时间 + 各通信模组本机号码，无号码回退设备 IP）由
   // buildHtml() 自动追加，新增邮件类型也自动带上。
   //
   // 内存约定：正文一律拼进 PsBuffer（优先 PSRAM），不产生中间 String。
@@ -218,8 +218,8 @@ class EmailService {
     String sender;           // 短信：发件人号码
     String message;          // 短信：正文
     uint32_t ts = 0;         // 短信：时间戳（纪元秒；未同步时为开机秒数）
-    int8_t modem = -1;       // 短信：接收模组串口号（<0 未知）
-    uint8_t port = 0;        // SIM 事件：模组串口号
+    int8_t modem = -1;       // 短信：接收通信模组串口号（<0 未知）
+    uint8_t port = 0;        // SIM 事件：通信模组串口号
     bool ready = false;      // SIM 事件：true=已插入 false=已拔出
     uint8_t attempts = 0;    // 已失败次数（退避重试计数）
   };
@@ -229,7 +229,7 @@ class EmailService {
   struct Guard {
     SemaphoreHandle_t m;
     explicit Guard(SemaphoreHandle_t m_) : m(m_) {
-      // 允许 NULL 句柄：本模块 begin() 之前（如开机首帧状态采集）也可能被读取，
+      // 允许 NULL 句柄：本通信模组 begin() 之前（如开机首帧状态采集）也可能被读取，
       // xSemaphoreTakeRecursive(NULL) 会触发断言并导致无限重启
       if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
     }
@@ -291,22 +291,22 @@ class EmailService {
   String schedText() const;
 
   // ---------------- 模板辅助（均追加进 PSRAM 缓冲）----------------
-  // 公共信息块：系统时间 + 各启用模组本机号码（无号码回退设备 IP）
+  // 公共信息块：系统时间 + 各启用通信模组本机号码（无号码回退设备 IP）
   void appendInfoBlock(PsBuffer &out) const;
   // 设备信息行（IP / MAC / 设备名 / WiFi 信号 / 运行时长 / 芯片温度）
   void appendDeviceRows(PsBuffer &out) const;
   // 芯片型号与片内温度（传感器未使能时展示「不支持」）
   void appendChipRows(PsBuffer &out) const;
-  // 按模组分组的「模组信息 + SIM/信号」两节
+  // 按通信模组分组的「通信模组信息 + SIM/信号」两节
   void appendModemGroupSection(PsBuffer &out) const;
-  // 所有启用模组的 SIM/信号行汇总
+  // 所有启用通信模组的 SIM/信号行汇总
   void appendSimRows(PsBuffer &out) const;
-  // SIM 整体是否就绪（未启用任何模组时视为健康，不因无卡报警）
+  // SIM 整体是否就绪（未启用任何通信模组时视为健康，不因无卡报警）
   bool simOverallReady() const;
   // 徽章副标题用的状态文本
   String simOverallStateText() const;
   String simStateText(uint8_t port) const;
-  // 模组展示名：有别名用别名，否则「模组N」；modem<0 返回空串
+  // 通信模组展示名：有别名用别名，否则「通信模组N」；modem<0 返回空串
   String modemLabelOf(int8_t modem) const;
   // 信号强度文本（csq 0..31，99/未知为 -1）
   static String signalText(int csq);
@@ -326,7 +326,7 @@ class EmailService {
                            String &verifyCode);
 
   WifiManager *_wifi = nullptr;  // WiFi 管理器（连接状态 / IP）
-  SmsService *_sms = nullptr;    // 短信服务（模组与 SIM 状态）
+  SmsService *_sms = nullptr;    // 短信服务（通信模组与 SIM 状态）
   TimeSync *_time = nullptr;     // 时间同步（系统时间）
 
   // ---- SMTP 配置（NVS: appcfg/email；持 _mutex 访问）----

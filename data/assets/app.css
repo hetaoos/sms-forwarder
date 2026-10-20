@@ -113,9 +113,10 @@ a{color:var(--primary);text-decoration:none}
    避免 .field 的纵向布局把控件压低、与同排控件错位）；换行时标签与控件不分离 */
 .fld{display:flex;align-items:center;gap:6px}
 .fld label{font-size:12px;color:var(--muted);white-space:nowrap}
-input,select{font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
+input,select,textarea{font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
   background:#fff;color:var(--text);outline:none;min-width:0}
-input:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+textarea{resize:vertical;line-height:1.6;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 input[type=range]{padding:0;border:none;background:none;height:26px;cursor:pointer;accent-color:var(--primary)}
 input[type=range]:focus{box-shadow:none}
 /* 复选框：用主题主色，暗黑模式下也清晰可见（总开关 / 通知类型等） */
@@ -177,7 +178,7 @@ input.mono{font-family:var(--mono)}
 .msg-item.is-in .msg-ava{background:var(--success)}
 .msg-item.is-out .msg-ava{background:var(--primary)}
 .msg-body{flex:1;min-width:0}
-/* 第一行：收发标签 + 号码（左） · 模组 + 日期（右，margin-left:auto 推右） */
+/* 第一行：收发标签 + 号码（左） · 通信模组 + 日期（右，margin-left:auto 推右） */
 .msg-top{display:flex;align-items:center;gap:8px;min-width:0}
 .msg-top .badge{flex:none}
 .msg-phone{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
@@ -309,7 +310,9 @@ input.mono{font-family:var(--mono)}
 [data-theme="dark"] .topbar{background:rgba(20,22,30,.85);border-bottom-color:var(--border)}
 /* 输入/下拉等硬编码白底 -> 卡片色 */
 [data-theme="dark"] input,
-[data-theme="dark"] select{background:var(--card);color:var(--text)}
+[data-theme="dark"] select,
+[data-theme="dark"] textarea{background:var(--card);color:var(--text)}
+[data-theme="dark"] textarea::placeholder{color:var(--faint)}
 [data-theme="dark"] .btn.ghost{background:var(--card);color:var(--text)}
 [data-theme="dark"] .btn.ghost:hover{background:rgba(255,255,255,.06)}
 [data-theme="dark"] .chip{background:var(--card);color:var(--muted)}

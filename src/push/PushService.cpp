@@ -12,7 +12,7 @@ static LogStore &_log = devLog();
 struct Guard {
   SemaphoreHandle_t m;
   explicit Guard(SemaphoreHandle_t m_) : m(m_) {
-    // 允许 NULL 句柄：模块 begin() 前（如开机首帧状态采集）也会读到配置，
+    // 允许 NULL 句柄：通信模组 begin() 前（如开机首帧状态采集）也会读到配置，
     // 直接 xSemaphoreTakeRecursive(NULL) 会触发断言并无限重启
     if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
   }

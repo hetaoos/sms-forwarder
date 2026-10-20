@@ -7,7 +7,7 @@ SerialBridge *SerialBridge::sInstance = nullptr;
 
 namespace {
 
-// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 constexpr uint32_t kRxBufferSize = 4096;   // 串口接收缓冲（加大防溢出）
@@ -125,10 +125,10 @@ void SerialBridge::taskEntry(void *arg) {
 // 由独立任务调用：把收到的自发上报拼成一条历史记录
 // 逻辑：尽量抽干 RX，数据静默超过 kUnsolicitedGapMs 即视为一段结束。
 // 关键：每端口独立 try-lock，故障/忙端口取不到锁就跳过本轮（绝不等待），
-// 因此某个模组未连接或正在长交互时，抽数任务仍能照常服务另一模组，不阻塞。
+// 因此某个通信模组未连接或正在长交互时，抽数任务仍能照常服务另一通信模组，不阻塞。
 void SerialBridge::pumpOnce() {
   for (uint8_t i = 0; i < 2; i++) {
-    if (!tryLockPort(i)) continue;  // 端口忙（如另一模组正在 AT 交互）-> 跳过本轮
+    if (!tryLockPort(i)) continue;  // 端口忙（如另一通信模组正在 AT 交互）-> 跳过本轮
     Port &p = _ports[i];
     if (!p.opened) {
       unlockPort(i);
@@ -157,8 +157,8 @@ void SerialBridge::pumpOnce() {
         unlockPort(i);
       }
     }
-    // 端口锁已释放：交由轮询回调（模组初始化/心跳状态机）用 trySend 驱动，
-    // 非阻塞——端口忙则 trySend 直接跳过，绝不拖住抽数任务，也不影响另一模组。
+    // 端口锁已释放：交由轮询回调（通信模组初始化/心跳状态机）用 trySend 驱动，
+    // 非阻塞——端口忙则 trySend 直接跳过，绝不拖住抽数任务，也不影响另一通信模组。
     if (_poll) _poll(i + 1);
   }
 }
@@ -268,7 +268,7 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
 
 // 非阻塞发送：端口正忙（锁取不到）立即返回 false（out 无效）；否则取到端口锁、
 // 完成 AT 交互后返回 true（out 有效，resp 为空表示超时无响应）。由抽数任务的
-// 轮询回调调用，确保模组初始化/心跳的周期性 AT 永不阻塞抽数任务或主循环。
+// 轮询回调调用，确保通信模组初始化/心跳的周期性 AT 永不阻塞抽数任务或主循环。
 bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
                            uint32_t timeoutMs, bool quiet, Result &out) {
   out = Result{false, (uint32_t)-1, String()};
@@ -316,9 +316,9 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
 }
 
 // 短信发送专用：AT+CMGS=<len> 两段式握手（流程参照 esp32-sms-forwarding）。
-// 与通用 send() 的区别：不用 80ms 静默判停（模组回包慢/分片时会误判超时），
-// 改为逐字节持续收集，并以「+CMGS 已确认」作为成功条件之一——模组经常先回
-// +CMGS:<ref> 再回 OK，个别模组甚至只回 +CMGS，按 OK 判定会把已发出的短信
+// 与通用 send() 的区别：不用 80ms 静默判停（通信模组回包慢/分片时会误判超时），
+// 改为逐字节持续收集，并以「+CMGS 已确认」作为成功条件之一——通信模组经常先回
+// +CMGS:<ref> 再回 OK，个别通信模组甚至只回 +CMGS，按 OK 判定会把已发出的短信
 // 误报为失败。
 SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
                                               int tpduLen, const String &pduHex,
@@ -364,14 +364,14 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
       p.lastRxMs = millis();
       appendPrintable(pre, (char)c);
       if (c == '>') { gotPrompt = true; break; }
-      if (pre.indexOf("ERROR") >= 0) break;  // 模组直接拒绝，不必等满超时
+      if (pre.indexOf("ERROR") >= 0) break;  // 通信模组直接拒绝，不必等满超时
     } else {
       delay(2);  // 让出 CPU：本方法运行于 HTTP(async_tcp) 任务上下文，不能自旋
     }
   }
   if (!gotPrompt) {
-    err = pre.length() ? ("模组未返回 > 提示（响应: " + pre + "）")
-                       : "模组未返回 > 提示（无响应）";
+    err = pre.length() ? ("通信模组未返回 > 提示（响应: " + pre + "）")
+                       : "通信模组未返回 > 提示（无响应）";
     unlockPort(port - 1);
     return Result{true, 0, pre};
   }
@@ -401,7 +401,7 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
         break;
       }
     } else {
-      // +CMGS 已确认但 2s 内没等到 OK：模组已入队，按成功处理
+      // +CMGS 已确认但 2s 内没等到 OK：通信模组已入队，按成功处理
       if (cmgs && millis() - cmgsAt >= 2000) break;
       delay(2);  // 让出 CPU（同上）
     }
@@ -411,9 +411,9 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
   if (resp.indexOf("OK") >= 0 || (cmgs && !error)) {
     return Result{true, 0, resp};
   }
-  err = error ? "模组返回 ERROR（检查号码/信号/SIM）"
+  err = error ? "通信模组返回 ERROR（检查号码/信号/SIM）"
               : (resp.length() ? ("发送超时（响应: " + resp + "）")
-                               : "发送超时（模组无响应）");
+                               : "发送超时（通信模组无响应）");
   return Result{true, 0, resp};
 }
 

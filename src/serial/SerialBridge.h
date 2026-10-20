@@ -48,13 +48,13 @@ class SerialBridge {
 
   // 阻塞式：写命令后在 timeoutMs 内收集响应
   // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时；
-  // quiet：true 时不记入 AT 历史（模组初始化、短信 PDU 交互等不需要用户看见的流量）
+  // quiet：true 时不记入 AT 历史（通信模组初始化、短信 PDU 交互等不需要用户看见的流量）
   Result send(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
               uint32_t timeoutMs, bool quiet = false);
 
   // 非阻塞式（try-lock）：若端口正忙（如正在发送短信）立即返回 false（out 无效），
   // 不阻塞抽数任务。成功取到端口锁返回 true（out 有效，resp 为空表示超时无响应）。
-  // 由抽数任务在每端口处理完后调用，用于模组初始化/心跳等周期性 AT 交互。
+  // 由抽数任务在每端口处理完后调用，用于通信模组初始化/心跳等周期性 AT 交互。
   bool trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
                uint32_t timeoutMs, bool quiet, Result &out);
 
@@ -65,12 +65,12 @@ class SerialBridge {
   //   2) 发 AT+CMGS=<len>，逐字节等 '>' 提示符（上限 kSmsCmgsPromptMs）
   //   3) 发 PDU 十六进制（末尾已内嵌 0x1A），逐字节收集响应（上限 kSmsSendTimeoutMs）：
   //      见 OK 即成功；未见 +CMGS 先见 ERROR 即失败；+CMGS 已确认但 2s 内无 OK
-  //      也算成功（模组已入队，OK 可能迟至或不到）
+  //      也算成功（通信模组已入队，OK 可能迟至或不到）
   // 返回 Result{true, 0, resp}（ok=false 仅表示 port 越界）；成功与否看 err 是否为空
   Result sendSmsPdu(uint8_t port, uint32_t baud, int tpduLen, const String &pduHex,
                     String &err);
 
-  // 未请求上报（URC）消费回调：抽数任务每归档一段模组自发数据前调用，
+  // 未请求上报（URC）消费回调：抽数任务每归档一段通信模组自发数据前调用，
   // 返回 true 表示已被消费（不再记入 AT 历史）。
   // 注意：该回调在抽数任务上下文调用，不持任何桥锁（端口锁已先释放），
   // 因此可安全地做文件 I/O / 短信重组；仍不得回调本类会再次取端口锁的方法。
@@ -78,7 +78,7 @@ class SerialBridge {
   using UnsolicitedFn = std::function<bool(uint8_t port, const String &text)>;
   void setUnsolicitedHandler(UnsolicitedFn fn) { _urc = fn; }
 
-  // 每端口处理完后的周期性轮询回调（不持锁）：模组状态机用它驱动初始化/心跳。
+  // 每端口处理完后的周期性轮询回调（不持锁）：通信模组状态机用它驱动初始化/心跳。
   // 回调内应只用 trySend（非阻塞），以免拖住抽数任务。
   using PollFn = std::function<void(uint8_t port)>;
   void setPollHandler(PollFn fn) { _poll = fn; }
@@ -124,7 +124,7 @@ class SerialBridge {
     String pend;            // 自发上报的未成段数据（等间隔超时后归档）
     uint32_t pendMs = 0;    // pend 最后一次变化的时间戳
     uint8_t index = 0;      // 逻辑序号 0/1（日志用，显示为 index+1）
-    SemaphoreHandle_t mutex = nullptr;     // 每端口独立锁（避免故障模组阻塞另一模组）
+    SemaphoreHandle_t mutex = nullptr;     // 每端口独立锁（避免故障通信模组阻塞另一通信模组）
   };
 
   // FreeRTOS 任务入口，arg 指向 SerialBridge 实例

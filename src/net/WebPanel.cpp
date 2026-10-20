@@ -150,7 +150,7 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/ui/auth/events/sms/time/email/blacklist/log/mqtt/push：各模块引用
+// bridge/led/wifi/display/ui/auth/events/sms/time/email/blacklist/log/mqtt/push：各通信模组引用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, UIMenu &ui, AdminStore &auth,
                    StatusBus &events, SmsService &sms, TimeSync &time,
@@ -367,7 +367,7 @@ void WebPanel::setupRoutes() {
 
   // ---- 串口 AT ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
-  // 经短信模块发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
+  // 经短信通信模组发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
   _server.on("/api/at/send", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtSend(req); });
 
   // 增量拉取历史：?after=上一页最后ID&n=条数
@@ -484,20 +484,20 @@ void WebPanel::setupRoutes() {
   // 最新一条短信摘要（仪表盘用；与 SSE sms 事件同格式），无记录返回 {}
   _server.on("/api/sms/latest", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsLatest(req); });
 
-  // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
+  // 通信模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
   _server.on("/api/sms/ports", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPortsGet(req); });
 
-  // 配置模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
+  // 配置通信模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
   _server.on("/api/sms/ports", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPortsPost(req, json); });
 
-  // 重新初始化模组：JSON {"port":1}（仅启用态有效；置位 needReinit 由抽数任务重跑）
+  // 重新初始化通信模组：JSON {"port":1}（仅启用态有效；置位 needReinit 由抽数任务重跑）
   _server.on("/api/sms/reinit", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsReinit(req, json); });
 
   // 发送短信：JSON {"port":1,"phone":"..","content":".."}
   // 成功返回 {"ok":true,"id":记录ID}；失败 {"ok":false,"error":"原因"}。
-  // 模组已发出但记录未入库（userdata 异常）时仍算成功，附带 warn 提示。
+  // 通信模组已发出但记录未入库（userdata 异常）时仍算成功，附带 warn 提示。
   _server.on("/api/sms/send", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsSend(req, json); });
 
@@ -1286,7 +1286,7 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
     return;
   }
   if (!_sms.reinitPort((uint8_t)port)) {
-    sendErr(req, 400, "模组未启用或不存在");
+    sendErr(req, 400, "通信模组未启用或不存在");
     return;
   }
   sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
@@ -1306,12 +1306,12 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   bool stored = true;
   uint32_t id = _sms.send((uint8_t)port, phone, content, err, &stored);
   if (!id) {
-    _log.addf(LogLevel::kWarn, "sms", "发送失败（模组 %d -> %s）：%s",
+    _log.addf(LogLevel::kWarn, "sms", "发送失败（通信模组 %d -> %s）：%s",
               port, phone.c_str(), err.c_str());
     sendErr(req, 400, err.c_str());
     return;
   }
-  _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（模组 %d，记录 #%u）",
+  _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %d，记录 #%u）",
             phone.c_str(), port, (unsigned)id);
   if (!stored) {
     sendJson(req,
@@ -1688,7 +1688,7 @@ void WebPanel::handleOtaUploadFsChunk(AsyncWebServerRequest *req, String /*filen
 }
 
 // ---- 配置导入导出 ----
-// 导出：各模块直接把配置写入主文档的子对象（全程操作 JSON 对象，无字符串往返）。
+// 导出：各通信模组直接把配置写入主文档的子对象（全程操作 JSON 对象，无字符串往返）。
 void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonDocument doc;
   doc["ver"] = 1;                  // 配置格式版本，便于后续升级/兼容
@@ -1746,7 +1746,7 @@ void WebPanel::handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data
   s->concat((char *)data, len);
 }
 
-// 导入：请求收尾后解析整份 JSON，逐节写入各模块并落盘，最后延迟重启生效
+// 导入：请求收尾后解析整份 JSON，逐节写入各通信模组并落盘，最后延迟重启生效
 void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (!req->_tempObject) {
     sendErr(req, 400, "missing body");

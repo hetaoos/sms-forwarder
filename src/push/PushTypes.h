@@ -4,7 +4,7 @@
 
 // 推送通道类型（移植自 esp32-sms-forwarding）。
 // 仅纳入 webhook 类通道；MAILGUN 走 Web API（Basic 认证），同样受本框架调度。
-// 不含 PUSH_TYPE_SMS（短信回传备份，依赖模组发短信，定位不同，留作二期）。
+// 不含 PUSH_TYPE_SMS（短信回传备份，依赖通信模组发短信，定位不同，留作二期）。
 enum PushType {
   PUSH_TYPE_NONE         = 0,   // 占位/未配置
   PUSH_TYPE_POST_JSON    = 1,   // 通用 HTTP POST：按固定 JSON 结构 POST 到 url
@@ -57,7 +57,7 @@ enum MsgType {
 struct MsgTypeInfo {
   MsgType type = MSG_TYPE_SMS;
   String  typeLabel;   // 仅在 SMS 时使用（如「普通短信」/「STK 推送」）
-  int8_t  modemSlot = -1;  // 事件来源模组序号（0 基）；-1 表示与模组无关
+  int8_t  modemSlot = -1;  // 事件来源通信模组序号（0 基）；-1 表示与通信模组无关
 
   MsgTypeInfo() = default;
   MsgTypeInfo(MsgType t) : type(t) {}

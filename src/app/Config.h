@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// 全局配置：所有引脚 / 网络参数集中在这里，模块不写死常量
+// 全局配置：所有引脚 / 网络参数集中在这里，通信模组不写死常量
 namespace cfg {
 
 // ---------------- WiFi 默认账号（编译期可注入）----------------
@@ -108,10 +108,10 @@ constexpr uint8_t  kMailMaxAttempts = 3;             // 单封邮件最大尝试
 constexpr uint32_t kMailSocketTimeoutMs = 15000;     // SMTP 单次 socket 读写上限（ms）
 constexpr uint32_t kMailBootDelayMs = 15000;         // 启动邮件延迟（等 WiFi 连上再发）
 constexpr uint32_t kMailBootWaitMaxMs = 300000;      // 启动邮件等 WiFi 的最长等待（5 分钟，超时放弃）
-// WiFi 连上后留给模组初始化的宽限：期间模组一有结果（就绪/故障）就发；
-// 到期仍未出结果也照发（正文的模组状态会显示未就绪），避免模组异常时
+// WiFi 连上后留给通信模组初始化的宽限：期间通信模组一有结果（就绪/故障）就发；
+// 到期仍未出结果也照发（正文的通信模组状态会显示未就绪），避免通信模组异常时
 // 启动邮件一直发不出去。总时长仍受 kMailBootWaitMaxMs 之外的这段限制。
-constexpr uint32_t kMailBootModemWaitMs = 20000;     // WiFi 连上后最多再等模组 20s
+constexpr uint32_t kMailBootModemWaitMs = 20000;     // WiFi 连上后最多再等通信模组 20s
 
 // ---------------- 定时在线通知排程模式（与 esp32-sms-forwarding 的 Schedule.mode 一致）-
 // 总控开关为通知类型位 kEmailNotifyOnline（Web「通知类型」里的「定时在线通知」）；
@@ -123,8 +123,8 @@ constexpr uint8_t kSchedModeInterval = 1;  // 固定间隔（intervalH 小时）
 // 窗口内的迟到触发仍算有效（配合 NVS 记录的上次触发时刻，不会重复发）
 constexpr uint32_t kMailDailyWindowSec = 600;
 
-// ---------------- 外部串口（AT 模块）----------------
-// 串口1：TX -> 模块 RX，RX <- 模块 TX
+// ---------------- 外部串口（AT 通信模组）----------------
+// 串口1：TX -> 通信模组 RX，RX <- 通信模组 TX
 constexpr int8_t kUart1Tx = 17;    // 串口1 TX 引脚
 constexpr int8_t kUart1Rx = 18;    // 串口1 RX 引脚
 // 串口2
@@ -189,7 +189,7 @@ constexpr uint32_t kUiFontGlyphCacheCnt = 256;
 constexpr uint16_t kHttpPort = 80;      // HTTP 控制台端口
 constexpr uint32_t kUiRefreshMs = 500;  // 屏幕刷新周期
 // 开机页（Logo + 进度条）展示时长：这段时间里只画开机页，不去采集业务状态，
-// 让中文字库加载与各模块初始化都发生在「不取数」的窗口内，避免初始化期冲突
+// 让中文字库加载与各通信模组初始化都发生在「不取数」的窗口内，避免初始化期冲突
 constexpr uint32_t kBootScreenMs = 2500;
 constexpr uint32_t kBootBarStepMs = 100;  // 进度条推进间隔
 
@@ -225,8 +225,8 @@ constexpr uint16_t kAtHistoryRingSizeNoPsram = 30; // 退化到内部堆时的�
 constexpr uint16_t kAtHistoryCmdMax = 256;         // 命令字段长度（含 '\0'，超长截断）
 constexpr uint16_t kAtHistoryRespMax = 1024;       // 响应字段长度（含 '\0'，超长截断）
 
-// ---------------- 短信（4G 模组） ----------------
-constexpr uint8_t kSmsMaxModems = 2;          // 可接模组数（与双串口一一对应）
+// ---------------- 短信（通信模组） ----------------
+constexpr uint8_t kSmsMaxModems = 2;          // 可接通信模组数（与双串口一一对应）
 constexpr uint16_t kSmsStoreMax = 1000;       // 短信存储条数上限（FIFO 淘汰）
 constexpr uint8_t kSmsConcatSlots = 5;        // 并发长短信重组槽位
 constexpr uint8_t kSmsConcatMaxParts = 20;    // 单条长短信最多分段
@@ -245,9 +245,9 @@ constexpr uint32_t kSimTimeCmdMs    = 3000;                     // AT+CCLK? 响�
 constexpr uint32_t kTimePersistMs   = 10UL * 60UL * 1000UL;     // 时间落盘周期（10 分钟）
 constexpr const char *kNvsKeyLastTs = "lastts";                 // NVS 键：最后已知纪元时间（秒）
 
-// ---------------- 模组初始化状态机（适配 esp32-sms-forwarding 健壮流程）-
+// ---------------- 通信模组初始化状态机（适配 esp32-sms-forwarding 健壮流程）-
 // 全部非阻塞：每个状态的动作经 tick() 节流驱动，单个动作最多持端口锁 1.5s，
-// 抽数任务对忙端口 try-lock 跳过——故障/未连接模组绝不阻塞另一模组与 Web。
+// 抽数任务对忙端口 try-lock 跳过——故障/未连接通信模组绝不阻塞另一通信模组与 Web。
 constexpr uint32_t kModemAtPollMs = 1000;       // 等 AT 就绪轮询间隔
 constexpr uint8_t  kModemAtReadyMax = 20;      // AT 就绪最大尝试(~20s)后转故障
 constexpr uint32_t kModemCpinPollMs = 1500;    // 等待 SIM 就绪轮询间隔
@@ -259,7 +259,7 @@ constexpr uint32_t kModemLivenessMs = 30000;   // 就绪后心跳间隔（探活
 constexpr uint8_t  kModemLivenessMaxFail = 3;  // 连续心跳失败转重初始化
 constexpr uint32_t kModemFaultRetryMs = 15000; // 故障态重试间隔
 constexpr uint32_t kModemTeleMs = 4000;        // 就绪后遥测轮询周期（信号/运营商/注册/IMEI）
-// 模组硬复位（EN 引脚）：-1 表示不控制（沿用模组自身上电时序）
+// 通信模组硬复位（EN 引脚）：-1 表示不控制（沿用通信模组自身上电时序）
 constexpr int8_t   kModemEnPin1 = -1;
 constexpr int8_t   kModemEnPin2 = -1;
 constexpr bool     kModemEnActiveLow = true;   // true: EN 拉低=关机；false: 拉高=关机

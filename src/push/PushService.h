@@ -11,7 +11,7 @@
 #include "push/MsgContext.h"
 #include "push/PushChannels.h"
 
-// PushService：统一的 webhook 推送通道框架（参考 esp32-sms-forwarding 的 push 模块，
+// PushService：统一的 webhook 推送通道框架（参考 esp32-sms-forwarding 的 push 通信模组，
 // 适配本项目「按功能自管 NVS」架构）。
 //
 // 能力：
@@ -91,7 +91,7 @@ class PushService {
     String  sender;     // 短信发件人
     String  message;    // 短信正文
     String  timestamp;  // 时间戳（字符串，便于直接下发）
-    int8_t  modem = -1; // 接收模组串口号（<0 未知）
+    int8_t  modem = -1; // 接收通信模组串口号（<0 未知）
     MsgType type = MSG_TYPE_SMS;
   };
 

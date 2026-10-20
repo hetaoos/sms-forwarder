@@ -1,7 +1,16 @@
 # 短信转发器（SMS Forwarder）
 
-基于 ESP32-S3 的双串口 AT 透传设备：外接两个 4G 模块串口，通过 ST7789 屏幕
-实时显示运行状态与最近一条 AT 交互，并内置 Web 控制台进行远程管理。
+基于 ESP32-S3 的短信转发设备：外接两个 4G 通信模组，通过 ST7789 屏幕实时显示运行状态与最近一条交互记录，并内置 Web 控制台进行远程管理。
+
+## 目录
+
+- [功能特性](#功能特性)
+- [硬件](#硬件)
+- [快速开始](#快速开始)
+- [编译期配置](#编译期配置)
+- [Web API 参考](#web-api-参考)
+- [脚本示例](#脚本示例)
+- [项目结构](#项目结构)
 
 ## 功能特性
 
@@ -45,7 +54,7 @@
     **设备启动完成** / **定时在线通知**（两种排程：固定间隔 N 小时 /
     每日定点时:分，未勾选则不触发）
   - 运行期插拔卡检测：遥测周期查询 `AT+CPIN?`，掉卡/插卡成对通知
-    （开机首次就绪与模组重启不误报）
+    （开机首次就绪与通信模组重启不误报）
   - 非阻塞入队 + 主循环发送：短信/SIM 回调（串口抽数任务）只做入队，
     SMTP 会话在 `App::tick` 执行，失败退避重试 3 次，认证失败不重试
   - 配置存 NVS（`appcfg` / `email`），授权码不回显；网页可发送测试邮件
@@ -54,27 +63,44 @@
   - 仅支持隐式 TLS 端口（465 等，握手即加密），不支持 587（STARTTLS）
 - **PSRAM 大块内存**（`app/Psram.h`）：ESP32-S3 片外 8MB PSRAM 用于承载瞬时大块
   数据，内部 DRAM（327KB，还要与任务栈、LWIP 缓冲共用）只留短字符串：
-  - 邮件正文构造：CSS + 卡片 + 多模组表格直接拼进 PSRAM 缓冲区，
+  - 邮件正文构造：CSS + 卡片 + 多通信模组表格直接拼进 PSRAM 缓冲区，
     并以「静态内容」形式交给 ReadyMail（`body(const char*, size_t)`），全程不回拷 DRAM
   - 短信列表分页：结果容器与响应 JSON 内存池均分配在 PSRAM（一页最多 100 条）
   - 设备日志环（见上）
   - 无 PSRAM 或空间不足时自动回退内部堆，功能不变（构造失败则丢弃本次通知并打日志）
 
-## 硬件与引脚
+## 硬件
 
 板型 `esp32s3_120_16_8-qio_opi`（Arduino 框架），引脚定义集中在
 `src/app/Config.h`：
 
 | 功能 | 引脚 | 说明 |
 |------|------|------|
-| 串口1 TX / RX | GPIO17 / GPIO18 | 外接 4G 模块 |
-| 串口2 TX / RX | GPIO41 / GPIO40 | 外接 4G 模块 |
+| 串口1 TX / RX | GPIO17 / GPIO18 | 外接通信模组 |
+| 串口2 TX / RX | GPIO41 / GPIO40 | 外接通信模组 |
 | TFT CS / RST / DC | GPIO15 / GPIO5 / GPIO14 | ST7789 控制 |
 | TFT MOSI / SCLK | GPIO13 / GPIO12 | SPI（SPI2，40MHz） |
 | TFT BLK | GPIO8 | PWM 背光，默认 80% |
 | RGB LED | GPIO48 | 板载 WS2812 |
 
-## 编译与烧录
+分区表 `partitions/esp32s3_16mb.csv`（16MB Flash）布局；app 分区起点与大小均
+64KB 对齐，`userdata` 刷固件后仍保留：
+
+| 分区 | 地址范围 | 大小 | 用途 |
+|------|---------|------|------|
+| nvs | 0x009000~0x018FFF | 64KB | 配置存储（WiFi 等，按功能存 JSON） |
+| otadata | 0x019000~0x01AFFF | 8KB | OTA 启动槽位记录 |
+| app0 / app1 | 0x020000 / 0x420000 | 各 4MB | 双 OTA 固件槽位 |
+| userdata | 0x820000~0xD1FFFF | 5MB | 用户数据，刷固件保留（挂载 `/data`） |
+| spiffs | 0xD20000~0xFDFFFF | 2.75MB | 资源分区：Web 页面 / 字体 / 图标（挂载 `/`） |
+| coredump | 0xFE0000~0xFFFFFF | 128KB | 崩溃转储 |
+
+`pio run -t uploadfs` 的目标是表中最后一个 FS 分区（spiffs 资源分区），
+只影响 Web 资源；`userdata` 仅由设备运行期读写，重烧固件不会丢失。
+
+## 快速开始
+
+### 编译与烧录
 
 依赖 PlatformIO Core（>= 6），库版本以 `platformio.ini` 声明为准：
 
@@ -105,48 +131,7 @@ pio device monitor -e esp32s3
 与 `WebPanel` 都会优先读取 `.gz` 并返回 `Content-Encoding: gzip`，浏览器
 自动解压。烧录固件（`pio run -t upload`）成功后也会自动上传一次 FS 镜像。
 
-分区表 `partitions/esp32s3_16mb.csv`（16MB Flash）布局；app 分区起点与大小均
-64KB 对齐，`userdata` 刷固件后仍保留：
-
-| 分区 | 地址范围 | 大小 | 用途 |
-|------|---------|------|------|
-| nvs | 0x009000~0x018FFF | 64KB | 配置存储（WiFi 等，按功能存 JSON） |
-| otadata | 0x019000~0x01AFFF | 8KB | OTA 启动槽位记录 |
-| app0 / app1 | 0x020000 / 0x420000 | 各 4MB | 双 OTA 固件槽位 |
-| userdata | 0x820000~0xD1FFFF | 5MB | 用户数据，刷固件保留（挂载 `/data`） |
-| spiffs | 0xD20000~0xFDFFFF | 2.75MB | 资源分区：Web 页面 / 字体 / 图标（挂载 `/`） |
-| coredump | 0xFE0000~0xFFFFFF | 128KB | 崩溃转储 |
-
-`pio run -t uploadfs` 的目标是表中最后一个 FS 分区（spiffs 资源分区），
-只影响 Web 资源；`userdata` 仅由设备运行期读写，重烧固件不会丢失。
-
-### 内置默认 WiFi 账号（可选）
-
-在 `platformio.ini` 的 `build_flags` 中修改；不设置则默认为空串，
-完全依赖 NVS 配置（首次无配置时自动进入 AP 配网）：
-
-```ini
-build_flags =
-    -Isrc
-    -DLGFX_USE_V1=1
-    -DWIFI_SSID_DEFAULT=\"MyWiFi\"
-    -DWIFI_PASS_DEFAULT=\"MyPass\"
-```
-
-### 出厂 Web 管理账号（可选）
-
-同上，在 `build_flags` 中修改。**用户名与密码必须同时有值**才采用编译期值；
-任一为空/缺失（或长度超限：用户名 >32、密码 >64 字符）则整体回落 `admin` / `admin123`
-（在启动时初始化 NVS 账号时判定，见 `AdminStore::begin`）。
-仅在 NVS 中无有效账号记录时生效（首次启动写入 NVS，之后以 NVS 为准，可在网页修改）：
-
-```ini
-build_flags =
-    -DWEB_AUTH_USER_DEFAULT=\"admin\"
-    -DWEB_AUTH_PASS_DEFAULT=\"admin123\"
-```
-
-## 首次配网流程
+### 首次配网
 
 1. 烧录后若无任何 WiFi 配置，设备开启热点 **`SMS-Forwarder-Setup`**（开放，无密码）
 2. 连接该热点，浏览器打开 **`http://192.168.4.1/login`**，在独立登录页输入
@@ -171,7 +156,37 @@ build_flags =
 启动时按 `list` 顺序依次尝试，每组等待 8 秒，全部失败 3 轮后进入 AP 配网模式。
 Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调整顺序，上限 5 组。
 
-## HTTP API
+## 编译期配置
+
+以下两项均为可选，在 `platformio.ini` 的 `build_flags` 中注入；不设置时
+依赖 NVS 配置（首次无配置自动进入 AP 配网，账号回落 `admin` / `admin123`）。
+
+### 默认 WiFi 账号
+
+```ini
+build_flags =
+    -Isrc
+    -DLGFX_USE_V1=1
+    -DWIFI_SSID_DEFAULT=\"MyWiFi\"
+    -DWIFI_PASS_DEFAULT=\"MyPass\"
+```
+
+### 出厂 Web 管理账号
+
+**用户名与密码必须同时有值**才采用编译期值；任一为空/缺失（或长度超限：
+用户名 >32、密码 >64 字符）则整体回落 `admin` / `admin123`
+（在启动时初始化 NVS 账号时判定，见 `AdminStore::begin`）。
+仅在 NVS 中无有效账号记录时生效（首次启动写入 NVS，之后以 NVS 为准，可在网页修改）：
+
+```ini
+build_flags =
+    -DWEB_AUTH_USER_DEFAULT=\"admin\"
+    -DWEB_AUTH_PASS_DEFAULT=\"admin123\"
+```
+
+## Web API 参考
+
+### 约定与认证
 
 **统一约定：请求与响应均为 JSON**——POST 请求体为 JSON
 （`Content-Type: application/json`，非 JSON 的 POST 不匹配处理器）；
@@ -252,7 +267,7 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 
 `eol` 取值：`0`=CRLF，`1`=CR，`2`=LF，`3`=无。
 
-### 设备日志（PSRAM 环形缓冲）
+### 设备日志
 
 运行日志存于 PSRAM 的定长记录环（`log/LogStore`，默认 512 条，写满 FIFO
 淘汰最旧；无 PSRAM 时自动退化为内部堆，功能不变）。时间戳与短信记录一致：
@@ -294,13 +309,13 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 （旧固件没有总开关，升级后保持原行为）。
 
 邮件模板：所有通知邮件共用一套卡片式 HTML（`EmailService::buildHtml`）——
-灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各模组
+灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各通信模组
 本机号码或设备 IP / 运行时长）+ 底部标识；短信邮件额外带验证码高亮块
 （识别「验证码 / OTP / code」等关键词附近的 4~6 位数字串，标题形如
 「验证码: 123456 来自 示例」）。HTML 超长（>6000 字符）时自动降级为纯文本。
 
 通知类型默认四类全开；「SIM 状态变更」仅在运行时插拔卡时触发（开机首次
-就绪、模组重启后的重新就绪均不通知）。发送走主循环队列，失败退避重试 3 次
+就绪、通信模组重启后的重新就绪均不通知）。发送走主循环队列，失败退避重试 3 次
 （2s / 4s），认证失败（账号或授权码错）直接丢弃并提示，不消耗重试。
 
 **定时在线通知排程**（由通知类型位 bit3 总控，勾选后按排程触发）：
@@ -312,12 +327,23 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 
 保存配置（含排程）后会立即补发一封在线通知，便于确认配置生效。
 
-邮件配置脚本示例（Bearer 令牌）：
+## 脚本示例
+
+下面示例用 Bearer 令牌调用各接口（先用 `/api/login` 换取 `token`）：
 
 ```bash
 TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login \
   | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# 查询状态（GET）
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/status
+
+# 保存 WiFi（POST + JSON 请求体）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"ssid":"MyWiFi","pass":"12345678","connect":true}' \
+  http://设备IP/api/wifi/save
 
 # 查询邮件配置（GET）
 curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/email
@@ -344,30 +370,13 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 curl -X POST -H "Authorization: Bearer $TOKEN" http://设备IP/api/email/test
 ```
 
-脚本调用示例（Bearer 令牌）：
-
-```bash
-TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login \
-  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-
-# 查询状态（GET）
-curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/status
-
-# 保存 WiFi（POST + JSON 请求体）
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"ssid":"MyWiFi","pass":"12345678","connect":true}' \
-  http://设备IP/api/wifi/save
-```
-
-## 目录结构
+## 项目结构
 
 ```
 src/
 ├── main.cpp              Arduino 入口（setup/loop 驱动 App）
 ├── app/                  应用层
-│   ├── App.h/.cpp        模块装配与主循环调度
+│   ├── App.h/.cpp        通信模组装配与主循环调度
 │   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 邮件通知 / 日志环
 │   ├── Psram.h           PSRAM 工具：可增长缓冲区 + 容器 / ArduinoJson 分配器
 │   └── StatusInfo.h      App -> Display 的状态快照结构
@@ -397,7 +406,7 @@ data/
 │   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
 │   ├── display.html      屏幕显示：开关 / 背光亮度调节
 │   ├── sms.html          短信：收发记录 / 发送 / 搜索 / 详情 / 删除 / 清空
-│   ├── modem.html        4G 模组：状态 / 信号 / 运营商 / 号码 / 启用与别名
+│   ├── modem.html        通信模组：状态 / 信号 / 运营商 / 号码 / 启用与别名
 │   ├── push.html         推送通道（规划中，13 种方式）
 │   ├── mqtt.html         MQTT（规划中）
 │   ├── blacklist.html    黑名单：精确/前缀/通配符匹配，短信命中后静默丢弃或仅记录不推送（来电拦截待来电检测落地）

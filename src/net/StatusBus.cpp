@@ -7,12 +7,12 @@
 
 namespace {
 
-// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace
 
-// wifi/bridge/led/display/ui/sms/time：各模块引用，保存供 tick 采集使用
+// wifi/bridge/led/display/ui/sms/time：各通信模组引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
                      Display &display, UIMenu &ui, SmsService &sms,
                      TimeSync &time)
@@ -96,7 +96,7 @@ void StatusBus::tick() {
     publish("sms", _sms.latestJson());
   }
 
-  // ---- 模组配置：变化才推 ----
+  // ---- 通信模组配置：变化才推 ----
   String ports = _sms.modemsJson();
   if (!_baseline || ports != _lastSmsPorts) {
     publish("smsports", "{\"ok\":true,\"modems\":" + ports + "}");

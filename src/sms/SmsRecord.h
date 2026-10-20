@@ -11,7 +11,7 @@ struct SmsMessage {
   String phone;            // 对方号码（发出时为目标号码）
   String content;          // 正文（UTF-8）
   uint32_t ts = 0;         // 时间戳（秒）；>= 1.6e9 视为真实纪元时间，否则为开机秒数
-  int8_t modem = -1;       // 模组串口号 1..kSmsMaxModems，-1 = 未知
+  int8_t modem = -1;       // 通信模组串口号 1..kSmsMaxModems，-1 = 未知
 };
 
 // 长短信重组槽位：同一槽位收齐 ref+total+sender 相同的全部分段

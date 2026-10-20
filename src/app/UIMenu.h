@@ -33,8 +33,8 @@ enum class PageId : uint8_t {
   kNone = 0,
   kSms,      // 短信列表（条目由短信预览生成）
   kSoc,      // SOC 信息
-  kModem1,   // 模块 1（串口 U1）
-  kModem2,   // 模块 2（串口 U2）
+  kModem1,   // 通信模组 1（串口 U1）
+  kModem2,   // 通信模组 2（串口 U2）
   kWifi,     // WiFi 状态
   kMail,     // 邮件通知状态
   kMqtt,     // MQTT 状态
@@ -83,12 +83,12 @@ struct MenuPage {
 struct SmsPreview {
   uint32_t id = 0;        // 存储 ID
   bool incoming = true;   // true = 收到，false = 发出
-  int8_t modem = -1;      // 模组串口号 1..2，-1 = 未知
+  int8_t modem = -1;      // 通信模组串口号 1..2，-1 = 未知
   uint32_t ts = 0;        // 时间戳（纪元秒或开机秒数）
   char phone[24] = "";    // 对方号码
   char time[18] = "";     // 可读时间 "10-20 12:00" / "12:00:00"
   char text[160] = "";    // 正文（UTF-8，超长截断）
-  char alias[18] = "";    // 来源模组别名（备注，空则无）
+  char alias[18] = "";    // 来源通信模组别名（备注，空则无）
 };
 
 // LCD 菜单导航状态机：由 4 键驱动（OK / UP / DOWN / BACK）
@@ -105,7 +105,7 @@ struct SmsPreview {
 //
 // 持有 Display 引用以直接调节背光与开关屏；状态页内容仍由 App 负责渲染。
 //
-// 同时是「屏幕设置」的归属模块（与邮件 / MQTT / 推送 / 黑名单同套路）：
+// 同时是「屏幕设置」的归属通信模组（与邮件 / MQTT / 推送 / 黑名单同套路）：
 // 背光亮度、无操作自动熄屏、无操作自动退回状态页三项自身持有并落 NVS，
 // 对外提供读写接口与导入导出，供 Web「屏幕显示」页直接操作。
 class UIMenu {

@@ -14,6 +14,7 @@ const $ = (s, r) => (r || document).querySelector(s);
  * 这里只负责按钮交互、模式切换与系统主题变化的实时跟随。
  * system 模式下若浏览器不支持 matchMedia 或 prefers-color-scheme，回落浅色。 */
 const THEME_KEY = 'smsf-theme';
+const SEND_PORT_KEY = 'smsf-send-port';   // 发送短信对话框“上次使用的通信模组”
 const themeMql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
 function themeMode() {
@@ -79,16 +80,16 @@ function fmtBytes(b) {
 }
 const fmt = fmtUptime;  // 模板里用的短名
 
-// ---- 模组状态 / 信号强度展示（仪表盘与短信页共用）----
-function modemName(p) { return '模组' + p; }
-// 显示名称：有别名时「别名（模组x）」，否则「模组x」；m 可为模组对象或 port 数字
+// ---- 通信模组状态 / 信号强度展示（仪表盘与短信页共用）----
+function modemName(p) { return '通信模组' + p; }
+// 显示名称：有别名时「别名（通信模组x）」，否则「通信模组x」；m 可为通信模组对象或 port 数字
 function modemLabel(m) {
   const port = (m && typeof m === 'object') ? m.port : m;
-  const base = '模组' + port;
+  const base = '通信模组' + port;
   const alias = (m && typeof m === 'object' && m.alias) ? String(m.alias).trim() : '';
   return alias ? (alias + '（' + base + '）') : base;
 }
-// 模组型号展示：取「厂商 + 最完整的料号」。CGMM 可能仅前缀（如 ML307A-DSLN），
+// 通信模组型号展示：取「厂商 + 最完整的料号」。CGMM 可能仅前缀（如 ML307A-DSLN），
 // 而 CGMR 常含完整料号/后缀（如 -MTSH1S00），故优先使用更长的那一个。
 function modemModel(m) {
   const vendor = String(m.vendor || '').trim();
@@ -116,11 +117,11 @@ function modemStateText(m) {
   switch (m.state) {
     case 'ready': return '已就绪';
     case 'fault': return '故障 / 未连接';
-    case 'wait_at': return '等待模组响应';
+    case 'wait_at': return '等待通信模组响应';
     case 'wait_cpin': return '等待 SIM 卡';
     case 'bring_rf': return '射频启动中';
     case 'wait_reg': return '等待网络注册';
-    case 'config': return '下发模组配置';
+    case 'config': return '下发通信模组配置';
     case 'poweron': return '上电中';
     default: return '初始化中';
   }
@@ -250,7 +251,7 @@ Alpine.store('live', {
   disp: {},             // 同 GET /api/disp
   at: [],               // AT 日志（全页面共享，300 条上限）
   sms: {},              // 最新一条短信摘要（SSE sms 事件）
-  smsports: [],         // 模组配置 [{port,enabled}]（SSE smsports 事件）
+  smsports: [],         // 通信模组配置 [{port,enabled}]（SSE smsports 事件）
   smsstats: {},         // 短信存储统计（SSE smsstats 事件）
   // 追加 AT 记录：按 id 去重（SSE 重推/自身回显/REST 兜底三种来源安全合并），
   // 非数字 id（本地占位）直接入列
@@ -428,7 +429,7 @@ const MENU = [
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
-    { id: 'modem', title: '4G 模组', icon: 'modem' },
+    { id: 'modem', title: '通信模组', icon: 'modem' },
   ]},
   { group: '设备控制', items: [
     { id: 'display', title: '屏幕显示', icon: 'display' },
@@ -579,7 +580,7 @@ function pageDashboard() {
     // 全部数据来自 SSE 实时仓（外壳级共享），本页不做任何轮询
     get st() { return Alpine.store('live').status; },
     get stats() { return Alpine.store('live').stats; },
-    get modems() { return Alpine.store('live').smsports; },  // 模组状态（含信号/运营商，由 SSE 实时更新）
+    get modems() { return Alpine.store('live').smsports; },  // 通信模组状态（含信号/运营商，由 SSE 实时更新）
     get recent() {
       const at = Alpine.store('live').at;
       return at.slice(-5).reverse();
@@ -623,9 +624,9 @@ function pageDashboard() {
     calibText() {
       switch (this.st.timeSrc) {
         case 'ntp': return 'SNTP 每 24h 自动校准';
-        case 'sim': return '模组 NITZ，NTP 恢复后覆盖';
+        case 'sim': return '通信模组 NITZ，NTP 恢复后覆盖';
         case 'nvs': return '重启恢复值，等待 NTP / SIM 校准';
-        default: return '等待 WiFi 连接或模组就绪';
+        default: return '等待 WiFi 连接或通信模组就绪';
       }
     },
     // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
@@ -663,9 +664,9 @@ function pageDashboard() {
       return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
     },
     go(id) { location.hash = '#/' + id; },
-    // 按串口号取模组对象（modems 来自 SSE smsports 事件）
+    // 按串口号取通信模组对象（modems 来自 SSE smsports 事件）
     modemOf(p) { return (this.modems || []).find(m => m.port === p) || null; },
-    // 模组信号值（主值行）：禁用 / 初始化中 / dBm
+    // 通信模组信号值（主值行）：禁用 / 初始化中 / dBm
     modemDbm(p) {
       const m = this.modemOf(p);
       if (!m) return '-';
@@ -1221,7 +1222,7 @@ function pageAuth() {
 }
 
 /* ---------- 短信 ----------
- * 收发 / 列表 / 删除 + 模组启用管理；新短信经 SSE sms 事件实时刷新列表 */
+ * 收发 / 列表 / 删除 + 通信模组启用管理；新短信经 SSE sms 事件实时刷新列表 */
 function pageSms() {
   return {
     modems: [],               // [{port,enabled}]
@@ -1233,7 +1234,7 @@ function pageSms() {
     detail: null,
 
     init() {
-      // SSE 驱动：新短信 -> 刷新列表（无筛选时）；模组配置 -> 同步开关
+      // SSE 驱动：新短信 -> 刷新列表（无筛选时）；通信模组配置 -> 同步开关
       this.$watch('$store.live.sms', () => { if (!this.q) this.reload(); });
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
       const live = Alpine.store('live');
@@ -1243,14 +1244,22 @@ function pageSms() {
       this.loadStats();
     },
 
-    /* ---- 模组 ---- */
+    /* ---- 通信模组 ---- */
+    // 默认通信模组：上次使用的（仍可用则优先）否则第一个启用的
+    defaultSendPort() {
+      const enabled = this.enabledPorts();
+      if (!enabled.length) return 0;
+      let saved = 0;
+      try { saved = parseInt(localStorage.getItem(SEND_PORT_KEY) || '0', 10) || 0; } catch (e) {}
+      if (saved && enabled.find(m => m.port === saved)) return saved;
+      return enabled[0].port;
+    },
     applyPorts(list) {
       this.modems = list || [];
-      // 当前选择的模组被禁用时，切到第一个启用的模组
+      // 当前选择的通信模组被禁用时，回落到上次使用 / 第一个启用的通信模组
       const cur = this.modems.find(m => m.port === this.sendPort);
       if (!cur || !cur.enabled) {
-        const first = this.modems.find(m => m.enabled);
-        this.sendPort = first ? first.port : 0;
+        this.sendPort = this.defaultSendPort();
       }
     },
     async loadPorts() {
@@ -1263,11 +1272,8 @@ function pageSms() {
 
     /* ---- 发送（对话框） ---- */
     openSend() {
-      // 默认选中第一个启用的模组
-      if (!this.enabledPorts().find(m => m.port === this.sendPort)) {
-        const first = this.enabledPorts()[0];
-        this.sendPort = first ? first.port : 0;
-      }
+      // 默认选中：上次使用的通信模组（仍可用）或第一个启用的通信模组
+      this.sendPort = this.defaultSendPort();
       this.sendHint = ''; this.sendErr = false;
       this.sendOpen = true;
     },
@@ -1276,14 +1282,14 @@ function pageSms() {
       const phone = this.phone.trim();
       if (!phone) { this.sendFail('请输入对方号码'); return; }
       if (!this.content.length) { this.sendFail('请输入短信内容'); return; }
-      if (!this.sendPort) { this.sendFail('没有可用的模组，请先在「4G 模组」中启用'); return; }
+      if (!this.sendPort) { this.sendFail('没有可用的通信模组，请先在「通信模组」中启用'); return; }
       this.sending = true;
       this.sendHint = '正在发送…';
       this.sendErr = false;
       let r;
       try {
         // 带 120s 超时（单段握手最坏 5s 等 > + 30s 等响应，长短信多段累加；
-        // 参考项目无此前端超时——掐断请求时服务端仍在发送，模组已把短信发出，
+        // 参考项目无此前端超时——掐断请求时服务端仍在发送，通信模组已把短信发出，
         // 会造成「界面报失败但其实发送成功」的误判）
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 120000);
@@ -1302,17 +1308,19 @@ function pageSms() {
       }
       this.sending = false;
       if (r.ok) {
+        // 记住本次使用的通信模组，下次打开对话框默认选中
+        try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
         this.phone = '';
         this.content = '';
         this.sendOpen = false;
         this.reload();
         this.loadStats();
-        // 模组已发出但记录未入库：后端返回 warn，提示但不判失败
+        // 通信模组已发出但记录未入库：后端返回 warn，提示但不判失败
         let warn = '';
         try { warn = (await r.json()).warn || ''; } catch (e) {}
         if (warn) toast('发送成功，但' + warn, 'warn');
       } else {
-        // 精确回显：HTTP 状态码 + 后端错误原因（如「模组尚未就绪」「号码格式不正确」）
+        // 精确回显：HTTP 状态码 + 后端错误原因（如「通信模组尚未就绪」「号码格式不正确」）
         const msg = await errText(r);
         this.sendFail('发送失败（HTTP ' + r.status + '）：' + msg);
       }
@@ -1387,7 +1395,7 @@ function pageSms() {
       return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     },
     preview(s) { return s.length > 80 ? s.slice(0, 80) + '…' : s; },
-    // 按模组号取显示名（含别名）：记录 / 详情里模组号字段为 modem，需回查别名
+    // 按通信模组号取显示名（含别名）：记录 / 详情里通信模组号字段为 modem，需回查别名
     modemLabelOf(port) {
       const m = this.modems.find(x => x.port === port);
       return modemLabel(m || { port: port });
@@ -1395,13 +1403,13 @@ function pageSms() {
   };
 }
 
-/* ---------- 4G 模组（查看 + 设置：状态 / 信号 / 运营商 / 注册 / 号码） ---------- */
+/* ---------- 通信模组（查看 + 设置：状态 / 信号 / 运营商 / 注册 / 号码） ---------- */
 function pageModem() {
   return {
     modems: [],
-    aliasDraft: {},            // 各模组别名草稿（按 port 暂存输入）
+    aliasDraft: {},            // 各通信模组别名草稿（按 port 暂存输入）
     init() {
-      // SSE 推送模组状态（含遥测）时同步
+      // SSE 推送通信模组状态（含遥测）时同步
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
       const live = Alpine.store('live');
       if (live.smsports.length) this.applyPorts(live.smsports);
@@ -1430,11 +1438,11 @@ function pageModem() {
     },
     async togglePort(p, enabled) {
       const r = await postOp('/api/sms/ports', { port: p, enabled: enabled },
-                             '模组' + p + (enabled ? ' 已启用' : ' 已禁用'));
+                             '通信模组' + p + (enabled ? ' 已启用' : ' 已禁用'));
       if (r) this.applyPorts((await r.json()).modems || []);
     },
     async reinitPort(p) {
-      const r = await postOp('/api/sms/reinit', { port: p }, '模组' + p + ' 重新初始化');
+      const r = await postOp('/api/sms/reinit', { port: p }, '通信模组' + p + ' 重新初始化');
       if (r) this.applyPorts((await r.json()).modems || []);
     },
     enabledPorts() { return this.modems.filter(m => m.enabled); },

@@ -41,7 +41,7 @@
 // 账号密码存于 NVS（AdminStore），修改后登录会话作废（API 令牌独立保留）。
 class WebPanel {
  public:
-  // 注入各模块引用（不持有所有权）
+  // 注入各通信模组引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
   // ui：菜单状态机（屏幕设置的持有者，/api/disp 读写它）；
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
@@ -173,7 +173,7 @@ class WebPanel {
   void handleWifiMove(AsyncWebServerRequest *req, JsonVariant &json);
   void handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json);
 
-  // 短信：统计 / 最新 / 模组列表 / 列表 / 删除 / 配置模组 / 重初始化 / 发送
+  // 短信：统计 / 最新 / 通信模组列表 / 列表 / 删除 / 配置通信模组 / 重初始化 / 发送
   void handleSmsStats(AsyncWebServerRequest *req);
   void handleSmsLatest(AsyncWebServerRequest *req);
   void handleSmsPortsGet(AsyncWebServerRequest *req);

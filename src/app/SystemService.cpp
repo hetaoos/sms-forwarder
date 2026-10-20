@@ -62,7 +62,7 @@ bool SystemService::importFrom(JsonObjectConst o) {
       _dailyMin = (uint16_t)constrain(hh * 60 + mm, 0, 1439);
   }
   if (o["weekdays"].is<uint8_t>()) _weekdays = o["weekdays"].as<uint8_t>() & 0x7F;
-  save();   // 与各模块一致：importFrom 内自行落盘
+  save();   // 与各通信模组一致：importFrom 内自行落盘
   return true;
 }
 

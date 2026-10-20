@@ -9,7 +9,7 @@
 
 namespace {
 
-// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace
@@ -100,7 +100,7 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
   return id;
 }
 
-// 分页 + 关键字 + 模组过滤
+// 分页 + 关键字 + 通信模组过滤
 // 设计：加锁只做目录枚举（取文件名）；之后解锁，只读首行头做过滤/排序；
 // 仅对命中且进入当前页的记录按需补读正文。全程不持锁读取上千个文件正文，
 // 避免阻塞抽数任务（短信写入）与并发删除。
@@ -138,7 +138,7 @@ void SmsStore::list(int page, int pageSize, const String &q, int8_t modem,
     if (readHeader(id, m)) cand.push_back(m);
   }
 
-  // 3) 过滤（模组 + 关键字）；关键字命中正文时按候选补读正文
+  // 3) 过滤（通信模组 + 关键字）；关键字命中正文时按候选补读正文
   String ql = q;
   ql.toLowerCase();
   bool hasQ = q.length() > 0;

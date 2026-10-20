@@ -75,15 +75,15 @@ const MenuPage kPageScreen = {
     (uint8_t)(sizeof(kScreenItems) / sizeof(kScreenItems[0])), nullptr, 0,
 };
 
-// ---- 模块（两个串口各一页）----
-const MenuPage kPageModem1 = {"模块 1", nullptr, 0, nullptr, 0, PageId::kModem1};
-const MenuPage kPageModem2 = {"模块 2", nullptr, 0, nullptr, 0, PageId::kModem2};
+// ---- 通信模组（两个串口各一页）----
+const MenuPage kPageModem1 = {"通信模组 1", nullptr, 0, nullptr, 0, PageId::kModem1};
+const MenuPage kPageModem2 = {"通信模组 2", nullptr, 0, nullptr, 0, PageId::kModem2};
 const MenuItem kModemItems[] = {
-    {UI_ICON_SIM, "模块 1 (U1)", &kPageModem1, UiAction::kNone},
-    {UI_ICON_SIM, "模块 2 (U2)", &kPageModem2, UiAction::kNone},
+    {UI_ICON_SIM, "通信模组 1 (U1)", &kPageModem1, UiAction::kNone},
+    {UI_ICON_SIM, "通信模组 2 (U2)", &kPageModem2, UiAction::kNone},
 };
 const MenuPage kPageModem = {
-    "模块", kModemItems,
+    "通信模组", kModemItems,
     (uint8_t)(sizeof(kModemItems) / sizeof(kModemItems[0])), nullptr, 0,
 };
 
@@ -104,7 +104,7 @@ const MenuItem kRootItems[] = {
     {UI_ICON_HOME, "仪表盘", nullptr, UiAction::kBackToStatus},
     {UI_ICON_SMS, "短信", &kPageSms, UiAction::kNone},
     {UI_ICON_MICROCHIP, "SOC", &kPageSoc, UiAction::kNone},
-    {UI_ICON_TOWER, "模块", &kPageModem, UiAction::kNone},
+    {UI_ICON_TOWER, "通信模组", &kPageModem, UiAction::kNone},
     {UI_ICON_DISPLAY, "屏幕", &kPageScreen, UiAction::kNone},
     {UI_ICON_LIGHTBULB, "RGB 灯", &kPageRgb, UiAction::kNone},
     {UI_ICON_WIFI, "WIFI", &kPageWifi, UiAction::kNone},
@@ -155,7 +155,7 @@ String mailTypesText(uint32_t m) {
 const char *timeSrcCn(const char *s) {
   if (!s || !*s) return "-";
   if (!strcmp(s, "ntp")) return "NTP 网络";
-  if (!strcmp(s, "sim")) return "SIM 模组";
+  if (!strcmp(s, "sim")) return "SIM 通信模组";
   if (!strcmp(s, "nvs")) return "上次记录";
   return "未同步";
 }
@@ -461,9 +461,9 @@ void UIMenu::fillSmsViewOf(const SmsPreview &m, String &out) {
   out += m.phone[0] ? m.phone : "-";
   out += "\n时间: ";
   out += m.time[0] ? m.time : "-";
-  out += "\n模组: ";
+  out += "\n通信模组: ";
   if (m.modem > 0) {
-    out += "模组";
+    out += "通信模组";
     out += String((int)m.modem);
     if (m.alias[0]) {
       out += " (";
@@ -601,10 +601,10 @@ void UIMenu::fillSoc(MenuPage &pg) {
   addInfo(pg, "时间源: %s", timeSrcCn(_snap.timeSrc));
 }
 
-// ---- 模块：单个串口的完整遥测 ----
+// ---- 通信模组：单个串口的完整遥测 ----
 void UIMenu::fillModem(MenuPage &pg, uint8_t idx) {
   const ModemSnapshot &m = _snap.modems[idx];
-  const char *defName = (idx == 0) ? "模组1" : "模组2";
+  const char *defName = (idx == 0) ? "通信模组1" : "通信模组2";
   addInfo(pg, "状态: %s", m.state);
   addInfo(pg, "名称: %s", m.alias[0] ? m.alias : defName);
   addInfo(pg, "型号: %s", m.model);
@@ -809,7 +809,7 @@ void UIMenu::tick() {
   // 新短信弹窗：到点自动收起（按任意键可提前收起）
   if (_popup && now - _popMs >= cfg::kUiSmsPopupMs) dismissPopup();
 
-  // 动态页（SOC / 模块 / WIFI / 邮件 / MQTT / 推送 / RGB）自节流刷新：
+  // 动态页（SOC / 通信模组 / WIFI / 邮件 / MQTT / 推送 / RGB）自节流刷新：
   // 菜单页平时只在按键后重绘，这些页的数据会自己变，需要按周期补一次
   if (!_statusMode && !_view && !_popup && _current && _current->id != PageId::kNone) {
     if (now - _lastDynMs >= cfg::kUiRefreshMs) {

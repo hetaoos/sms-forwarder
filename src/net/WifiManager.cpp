@@ -8,7 +8,7 @@
 
 namespace {
 
-// 本模块日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace

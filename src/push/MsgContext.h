@@ -3,7 +3,7 @@
 
 // 消息上下文：用户在自定义模板中可引用的全部字段。
 // 占位符规则：模板中使用 `{字段名}` 引用；未识别的占位符按原样保留，方便排查。
-// 说明：carrier/signal/iccid/to 等模组专属字段本框架暂不填充（留空），
+// 说明：carrier/signal/iccid/to 等通信模组专属字段本框架暂不填充（留空），
 // 默认推送体不使用这些字段；自定义模板若引用则保留字面量。
 struct MessageContext {
   String from;          // 来源（短信发件人）
@@ -14,7 +14,7 @@ struct MessageContext {
   String carrier;       // 运营商（暂未填充）
   String to;            // 接收方号码（本机号码，暂未填充）
   String simSlot;       // SIM 槽位，形如 "SIM1" / "SIM2"
-  String modemIndex;    // 来源模组序号，从 1 开始，形如 "1" / "2"
+  String modemIndex;    // 来源通信模组序号，从 1 开始，形如 "1" / "2"
   String iccid;         // ICCID（暂未填充）
   String signal;        // 信号强度（暂未填充）
   String remark;        // 设备备注（暂未填充）

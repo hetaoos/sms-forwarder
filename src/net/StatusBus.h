@@ -19,7 +19,7 @@
 // 设备状态，取代前端对各状态接口的定时轮询。
 //
 // 设计要点：
-//   1. diff 推送：tick() 每 kSsePushMs 采集各模块状态，与上次快照做
+//   1. diff 推送：tick() 每 kSsePushMs 采集各通信模组状态，与上次快照做
 //      字符串比对，只发送发生变化的事件；无客户端时重置基线并跳过采集；
 //   2. AT 历史增量：记录已推送的 lastHistoryId，只推新记录（断线期间的
 //      记录由前端重连后的 REST 兜底拉取补齐）；
@@ -29,7 +29,7 @@
 //      不另做鉴权；事件 id 递增，为 Last-Event-ID 续传预留。
 class StatusBus {
  public:
-  // wifi/bridge/led/display/ui/sms/time：各模块引用（不持有所有权）
+  // wifi/bridge/led/display/ui/sms/time：各通信模组引用（不持有所有权）
   // ui：取屏幕设置（自动熄屏 / 自动返回状态页）随屏幕状态一并推送
   StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led, Display &display,
             UIMenu &ui, SmsService &sms, TimeSync &time);
@@ -79,6 +79,6 @@ class StatusBus {
   String _lastRgb;
   String _lastDisp;
   uint32_t _lastSmsId = 0;   // 上次已推送的最新短信 ID
-  String _lastSmsPorts;      // 上次已推送的模组配置 JSON
+  String _lastSmsPorts;      // 上次已推送的通信模组配置 JSON
   String _lastSmsStats;      // 上次已推送的短信存储统计 JSON
 };
