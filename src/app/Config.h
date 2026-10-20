@@ -184,6 +184,18 @@ constexpr uint32_t kUiSmsPopupMs = 30000;
 // 菜单「短信」页最多预览的条数（受菜单槽位限制，取小值；区域可滚动，8 条够翻一阵）
 constexpr uint8_t kUiSmsPreviewMax = 8;
 
+// ---------------- LCD 工具箱（检查更新 / 重启 / 恢复出厂，见 app/UIMenu）----------------
+// 「重置」是破坏性操作：必须连按 OK 达 kToolResetConfirm 次才执行，且每按一下
+// 都会刷新计时——停手超过 kToolResetTimeoutMs 还没按满则计数清零，防止误触。
+constexpr uint8_t  kToolResetConfirm = 5;        // 恢复出厂需连按 OK 的次数
+constexpr uint32_t kToolResetTimeoutMs = 8000;   // 连按中断多久未续按则计数清零（ms）
+// 确认重启 / 重置后的延迟：给屏幕留出提示时间，期间按 BACK 可取消
+// （与 Web「系统维护」的 2s 延迟一致）
+constexpr uint32_t kToolActDelayMs = 2000;
+// 发起 OTA 检查/升级后等待其真正启动的宽限：Ota 内部有 30s 防抖与占用判定，
+// 被挡下时不会进入非 IDLE 状态，超过宽限即回报「操作未开始」
+constexpr uint32_t kToolOtaStartGraceMs = 3000;
+
 // ---------------- LVGL UI（src/ui）----------------
 // LVGL 的心跳间隔：lv_timer_handler() 会返回下一次应调用的毫秒数，返回值异常小
 // （忙时可能为 0）时用它兜底，避免在主循环里空转烧 CPU

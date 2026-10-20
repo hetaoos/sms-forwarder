@@ -25,6 +25,10 @@ enum class UiAction : uint8_t {
   kIdleUp,         // 自动返回状态页时间 +
   kIdleDown,       // 自动返回状态页时间 -
   kSmsOpen,        // 打开短信详情（可滚动文本页，取当前光标项）
+  kOtaCheck,       // 工具箱：检查新版本（发现新版本后不自动升级，留待用户确认）
+  kOtaUpgrade,     // 工具箱：升级到检查到的新版本（用户确认入口，仅发现新版本后出现）
+  kRestart,        // 工具箱：重启设备
+  kReset,          // 工具箱：恢复出厂设置（需连按 OK kToolResetConfirm 次确认）
 };
 
 // 动态页标识：静态页为 kNone（内容编译期确定）；
@@ -42,6 +46,7 @@ enum class PageId : uint8_t {
   kRgb,      // RGB 灯
   kAbout,    // 关于
   kScreenInfo,  // 屏幕信息（型号 / 接线）
+  kToolbox,  // 工具箱（检查新版本并更新 / 重启 / 恢复出厂）
 };
 
 // 进度条数据源：菜单页底部可显示一条进度条（亮度 / 超时 / RGB 亮度调节用）。
@@ -52,6 +57,7 @@ enum class BarSrc : uint8_t {
   kAutoOff,    // 自动熄屏时间（0 - kUiAutoOffSecMax）
   kIdle,       // 自动返回状态页时间（0 - kUiIdleReturnSecMax）
   kRgbBright,  // RGB 灯亮度（0-100）
+  kOta,        // OTA 升级进度（0-100，工具箱页下载/烧录阶段显示）
 };
 
 // 前向声明：菜单项可指向子页面
@@ -142,6 +148,19 @@ class UIMenu {
   using RgbFn = std::function<void(uint8_t cmd)>;
   void setRgbControl(RgbFn f) { _rgbFn = std::move(f); }
 
+  // ============ 工具箱回调（App 注入，避免 UI 层直接依赖 Ota / NVS / 文件系统）============
+  // check：发起一次版本检查；upgrade(tag)：升级到指定 Release tag（仅用户确认后
+  // 才调用，不自动升级）；restart / reset：重启设备 / 恢复出厂。
+  // 四个回调都只负责「发起」：耗时动作在 Ota 后台任务或延迟重启任务里执行，
+  // 不阻塞主循环与屏幕渲染。
+  using OtaCheckFn = std::function<void()>;
+  using OtaUpgradeFn = std::function<void(const String &tag)>;
+  using SysFn = std::function<void()>;
+  void setOtaCheckFn(OtaCheckFn f) { _otaCheckFn = std::move(f); }
+  void setOtaUpgradeFn(OtaUpgradeFn f) { _otaUpgradeFn = std::move(f); }
+  void setRestartFn(SysFn f) { _restartFn = std::move(f); }
+  void setResetFn(SysFn f) { _resetFn = std::move(f); }
+
   // ============ 新短信弹窗 ============
   // 由 App 在主循环（loop 任务）检测到新短信时调用：立刻弹到屏上并点亮屏幕。
   // 只存一份定长副本，不持有外部引用，无跨任务生命周期问题。
@@ -196,9 +215,18 @@ class UIMenu {
   // 当前页的有效条目数：动态页取上次重建后的条数，静态页取编译期数组长度
   uint8_t currentItemCount() const;
   void moveCursor(int8_t dir);
-  void activate();
+  // ev 传入按键事件：重置确认只认短按（kClick），长按连发不计入，防止按住不放凑满次数
+  void activate(KeyEvent ev);
   void back();
   void setBright(int v);
+
+  // ---- 工具箱 ----
+  // 推进 OTA 检查/升级状态机（由「工具箱」动态页每次渲染时调用，500ms 节流）：
+  // 检查收尾发现新版本只记录并展示「升级到新版本」入口，不自动升级——
+  // 是否更新由用户按 OK 确认（见 activate 的 kOtaUpgrade）。
+  void pollToolbox();
+  // 填充「工具箱」页：版本信息 + OTA 状态 + 三个动作项（下载/烧录阶段挂进度条）
+  void fillToolbox(MenuPage &pg);
 
   // ---- 可滚动文本页 ----
   // 打开一个文本页：title 为标题；fill 为空表示静态文本（不随周期刷新）
@@ -294,4 +322,25 @@ class UIMenu {
   uint16_t _idleSec = cfg::kUiIdleReturnDefaultSec;    // 0 = 禁用
   bool _brightDirty = false;      // 亮度已改、待落盘（菜单连调时防抖）
   uint32_t _brightDirtyMs = 0;    // 亮度最后一次被改动的时刻（ms）
+
+  // ---- 工具箱（检查更新 / 重启 / 恢复出厂）----
+  // OTA 操作阶段：kIdle 空闲 / kCheck 已发起检查 / kFound 发现新版本（等用户确认）/
+  // kUpgrade 已发起升级。与 Ota 内部状态机并行：本类只驱动「检查->等确认->升级」
+  // 的链式前进，下载/烧录进度直接读 Ota::status() 展示，不自己维护。
+  enum class ToolPhase : uint8_t { kIdle = 0, kCheck, kFound, kUpgrade };
+  ToolPhase _toolPhase = ToolPhase::kIdle;
+  String _toolMsg;                // 状态行附加说明（操作结论：已是最新/失败原因等）
+  String _toolNewVer;             // 检查发现的新版本（待用户按 OK 确认后升级）
+  uint32_t _toolMs = 0;           // 发起 OTA 操作的时刻（判断是否真正启动）
+  bool _toolStarted = false;      // 是否已见到非 IDLE 状态（确认操作真正开始）
+  uint8_t _resetCount = 0;        // 重置连按计数（满 kToolResetConfirm 次才执行）
+  uint32_t _resetMs = 0;          // 上次按重置的时刻（超时未续按则清零）
+  bool _resetPending = false;     // 已按满次数、倒计时等待执行（BACK 可取消）
+  uint32_t _resetActMs = 0;       // 按满次数的时刻（倒计时起点）
+  bool _restartPending = false;   // 重启倒计时中（BACK 可取消）
+  uint32_t _restartMs = 0;        // 确认重启的时刻（倒计时起点）
+  OtaCheckFn _otaCheckFn;         // 未注入时「检查新版本并更新」无响应
+  OtaUpgradeFn _otaUpgradeFn;     // 未注入时检查到新版本也无法升级
+  SysFn _restartFn;               // 未注入时重启项无响应
+  SysFn _resetFn;                 // 未注入时重置项无响应
 };

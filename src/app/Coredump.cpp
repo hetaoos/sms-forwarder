@@ -81,7 +81,7 @@ void Coredump::init() {
     Preferences prefs;
     if (prefs.begin(cfg::kNvsNamespaceCoredump, true)) {  // 只读方式打开
       long ts = prefs.getLong(cfg::kNvsKeyCdCrashTs, 0);
-      s_crashVersion = prefs.getStr(cfg::kNvsKeyCdCrashVer, "");
+      s_crashVersion = prefs.getString(cfg::kNvsKeyCdCrashVer, "");
       prefs.end();
       if (ts >= static_cast<long>(kEpochFloor)) {
         s_crashTime = static_cast<time_t>(ts);
@@ -100,7 +100,7 @@ void Coredump::init() {
     Preferences prefs;
     if (prefs.begin(cfg::kNvsNamespaceCoredump, false)) {  // 读写方式打开
       prefs.putLong(cfg::kNvsKeyCdCrashTs, static_cast<long>(s_crashTime));
-      prefs.putStr(cfg::kNvsKeyCdCrashVer, s_crashVersion);
+      prefs.putString(cfg::kNvsKeyCdCrashVer, s_crashVersion);
       prefs.end();
     }
     _log.addf(LogLevel::kWarn, "coredump",

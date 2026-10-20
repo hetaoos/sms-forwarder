@@ -9,7 +9,13 @@
 #include "app/SystemService.h"  // 定时重启（系统保活）
 #include "app/UserFs.h"
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
+#include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
+
+#include <Preferences.h>
+#include <esp_system.h>          // esp_restart()
+#include <freertos/FreeRTOS.h>   // xTaskCreate / vTaskDelay
+#include <freertos/task.h>
 
 // 初始化调试串口与所有子通信模组；返回 true 表示装配完成
 bool App::begin() {
@@ -48,6 +54,35 @@ bool App::begin() {
     if (cmd == 0) _led.next();
     else if (cmd == 1) _led.setBrightness((uint8_t)(_led.brightness() + 10));
     else if (cmd == 2) _led.setBrightness((uint8_t)(_led.brightness() - 10));
+  });
+  // LCD「工具箱」页动作（检查新版本并更新 / 重启 / 恢复出厂）。
+  // 回调只负责「发起」：耗时动作在 Ota 后台任务或延迟重启任务里执行，不阻塞主循环。
+  // 恢复出厂与 Web「系统维护」的出厂复位同语义：清空 NVS 配置 + 格式化用户数据分区
+  _ui.setOtaCheckFn([]() { Ota::startVersionCheck(); });
+  _ui.setOtaUpgradeFn([](const String &tag) { Ota::startOnlineUpgrade(tag); });
+  _ui.setRestartFn([]() {
+    xTaskCreate(
+        [](void *) {
+          vTaskDelay(pdMS_TO_TICKS(2000));
+          esp_restart();
+          vTaskDelete(nullptr);
+        },
+        "ui_rst", 2048, nullptr, 5, nullptr);
+  });
+  _ui.setResetFn([]() {
+    Preferences prefs;
+    if (prefs.begin(cfg::kNvsNamespace, false)) {
+      prefs.clear();   // 移除 appcfg 命名空间下所有键（WiFi/账号/短信/邮件/MQTT/推送/黑名单/屏幕）
+      prefs.end();
+    }
+    userfs::format();  // 清空 /data 用户数据（短信记录等），随后重启回到首次启动状态
+    xTaskCreate(
+        [](void *) {
+          vTaskDelay(pdMS_TO_TICKS(2000));
+          esp_restart();
+          vTaskDelete(nullptr);
+        },
+        "ui_fac", 2048, nullptr, 5, nullptr);
   });
   _bridge.begin();                     // 启动串口抽数任务
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等通信模组自发数据前交给短信服务
@@ -394,6 +429,15 @@ const char *App::fmtBytes(uint32_t bytes) {
 void App::tick() {
   _wifi.tick();
   _time.tick();                        // NTP 超时判定 / SIM NITZ 重试 / 时间落盘
+  // 崩溃时刻估算：时钟已同步时每 10s 把最新已知时间写入 RTC 内存（panic 重启
+  // 保留、断电丢失；断电场景由 TimeSync 落盘的 NVS lastts 兜底，见 Coredump::init）
+  {
+    static uint32_t s_lastCdMs = 0;
+    if (_time.isSynced() && millis() - s_lastCdMs >= 10000) {
+      s_lastCdMs = millis();
+      Coredump::updateLastKnownTime(time(nullptr));
+    }
+  }
   SystemService::instance().tick(_time);  // 定时重启检测（到点延迟 2s 重启）
   _events.tick();
   _sms.tick();

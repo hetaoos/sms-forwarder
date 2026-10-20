@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "app/Config.h"
+#include "ota/Ota.h"    // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"
 #include "ui/UiIcons.h"
 
@@ -98,6 +99,9 @@ const MenuPage kPageMqtt = {"MQTT", nullptr, 0, nullptr, 0, PageId::kMqtt};
 const MenuPage kPagePush = {"推送通道", nullptr, 0, nullptr, 0, PageId::kPush};
 const MenuPage kPageAbout = {"关于", nullptr, 0, nullptr, 0, PageId::kAbout};
 
+// ---- 工具箱：检查新版本并更新 / 重启 / 恢复出厂（动态页，内容随 OTA 状态重建）----
+const MenuPage kPageToolbox = {"工具箱", nullptr, 0, nullptr, 0, PageId::kToolbox};
+
 // ---- 根菜单 ----
 // 条目多于菜单槽位（8 行）时自动滚动，页脚显示「当前/总数」
 const MenuItem kRootItems[] = {
@@ -111,6 +115,7 @@ const MenuItem kRootItems[] = {
     {UI_ICON_MAIL, "邮件通知", &kPageMail, UiAction::kNone},
     {UI_ICON_MQTT, "MQTT", &kPageMqtt, UiAction::kNone},
     {UI_ICON_PUSH, "推送通道", &kPagePush, UiAction::kNone},
+    {UI_ICON_MENU, "工具箱", &kPageToolbox, UiAction::kNone},
     {UI_ICON_INFO, "关于", &kPageAbout, UiAction::kNone},
 };
 
@@ -158,6 +163,20 @@ const char *timeSrcCn(const char *s) {
   if (!strcmp(s, "sim")) return "SIM 通信模组";
   if (!strcmp(s, "nvs")) return "上次记录";
   return "未同步";
+}
+
+// OTA 状态机 -> 中文（工具箱页状态行用）
+const char *otaStateCn(OtaState s) {
+  switch (s) {
+    case OtaState::IDLE: return "空闲";
+    case OtaState::CHECKING: return "正在检查更新";
+    case OtaState::DOWNLOADING: return "正在下载固件";
+    case OtaState::WRITING: return "正在写入固件";
+    case OtaState::SUCCESS: return "升级成功";
+    case OtaState::FAILED: return "升级失败";
+    case OtaState::FLASHING_FS: return "正在下载 Web UI";
+  }
+  return "-";
 }
 
 }  // namespace
@@ -259,7 +278,7 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     } else if (key == KeyId::kDown) {
       if (infoPage) ui::instance().menuScrollBy(step); else moveCursor(1);
     }
-    else if (key == KeyId::kOk) activate();
+    else if (key == KeyId::kOk) activate(ev);
     else if (key == KeyId::kBack) back();
   } else if (ev == KeyEvent::kRepeat) {
     // 连发仅对 UP/DOWN/OK 有意义（滚动 / 移动光标 / 重复执行动作）
@@ -268,7 +287,7 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     } else if (key == KeyId::kDown) {
       if (infoPage) ui::instance().menuScrollBy(page); else moveCursor(1);
     }
-    else if (key == KeyId::kOk) activate();
+    else if (key == KeyId::kOk) activate(ev);
     // BACK 连发忽略
   }
   _dirty = true;
@@ -303,6 +322,7 @@ void UIMenu::render() {
   if (n > 0) {
     foot += String(_cursor + 1) + "/" + String(n) + " ";
     if (pg.id == PageId::kRgb) foot += "OK切换  " + String(_snap.rgbName);
+    else if (pg.id == PageId::kToolbox) foot += "OK执行 BACK返回";
     else foot += "OK进入 BACK返回";
   } else {
     foot += "U/D滚动 BACK返回";
@@ -337,7 +357,7 @@ void UIMenu::moveCursor(int8_t dir) {
   if (_cursor >= n) _cursor = 0;
 }
 
-void UIMenu::activate() {
+void UIMenu::activate(KeyEvent ev) {
   if (!_current) return;
   const bool dyn = (_current->id != PageId::kNone);
   const MenuItem *items = dyn ? _dynItems : _current->items;
@@ -396,12 +416,68 @@ void UIMenu::activate() {
       openView("短信详情", t);
       break;
     }
+    // ---- 工具箱 ----
+    case UiAction::kOtaCheck: {
+      // 检查中 / 升级中忽略连按；其余情况发起一次新检查
+      if (_toolPhase == ToolPhase::kCheck || _toolPhase == ToolPhase::kUpgrade) break;
+      const OtaStatusPayload st = Ota::status();
+      if (st.state != OtaState::IDLE) {
+        _toolMsg = "其它升级任务进行中";
+        break;
+      }
+      if (!_otaCheckFn) break;
+      _otaCheckFn();
+      _toolPhase = ToolPhase::kCheck;
+      _toolMs = millis();
+      _toolStarted = false;
+      _toolMsg = "正在检查更新...";
+      break;
+    }
+    case UiAction::kOtaUpgrade: {
+      // 用户确认升级：仅在「已发现新版本」时有效（入口由 fillToolbox 动态给出）
+      if (_toolPhase != ToolPhase::kFound || !_toolNewVer.length() || !_otaUpgradeFn) break;
+      _otaUpgradeFn(_toolNewVer);
+      _toolPhase = ToolPhase::kUpgrade;
+      _toolMs = millis();
+      _toolStarted = false;
+      _toolMsg = "开始升级...";
+      break;
+    }
+    case UiAction::kRestart: {
+      if (_restartPending || !_restartFn) break;   // 倒计时中不重复触发
+      _restartPending = true;
+      _restartMs = millis();
+      break;
+    }
+    case UiAction::kReset: {
+      // 只认短按：长按连发（kRepeat）不计入，必须实打实按满 kToolResetConfirm 次
+      if (ev != KeyEvent::kClick || _resetPending || !_resetFn) break;
+      _resetCount++;
+      _resetMs = millis();
+      if (_resetCount >= cfg::kToolResetConfirm) {
+        _resetPending = true;
+        _resetActMs = millis();
+      }
+      break;
+    }
     default:
       break;
   }
 }
 
 void UIMenu::back() {
+  // 重启 / 恢复出厂的倒计时宽限内按 BACK：取消本次操作（倒计时未到就不会执行）
+  if (_restartPending) {
+    _restartPending = false;
+    _toolMsg = "已取消重启";
+    return;
+  }
+  if (_resetPending) {
+    _resetPending = false;
+    _resetCount = 0;
+    _toolMsg = "已取消重置";
+    return;
+  }
   if (_depth > 0) {  // 弹出上一级页面，并恢复到离开时选中的那一项
     _depth--;
     _current = _stack[_depth].page;
@@ -535,6 +611,7 @@ void UIMenu::buildDynamic(MenuPage &pg) {
     case PageId::kRgb: fillRgb(pg); break;
     case PageId::kAbout: fillAbout(pg); break;
     case PageId::kScreenInfo: fillScreenInfo(pg); break;
+    case PageId::kToolbox: fillToolbox(pg); break;
     default: break;
   }
 }
@@ -720,6 +797,96 @@ void UIMenu::fillScreenInfo(MenuPage &pg) {
   addInfo(pg, "BLK:%d", (int)cfg::kTftBlk);
 }
 
+// ---- 工具箱：检查新版本并更新 / 重启 / 恢复出厂 ----
+
+// 推进 OTA 状态机：由「工具箱」页每次渲染时调用（动态页 500ms 节流）。
+//  - kCheck：等检查收尾（Ota 状态回 IDLE）。发现新版本 -> 只记录版本并给出
+//    「升级到新版本」入口，是否更新由用户按 OK 确认（kOtaUpgrade），不自动升级；
+//    没有新版本 -> 按 Ota 的 message 给结论（为空 = 已是最新）。
+//  - kFound：等待用户确认，不自动前进。
+//  - kUpgrade：等终态。SUCCESS 后设备 2s 自动重启；FAILED 后保留升级入口可重试。
+// 发起后 Ota 内部可能因 30s 防抖 / 通道占用而没真正启动（状态一直是 IDLE），
+// 超过 kToolOtaStartGraceMs 宽限即回报「操作未开始」，避免页面永远停在检查中。
+void UIMenu::pollToolbox() {
+  const ToolPhase phase = _toolPhase;
+  if (phase == ToolPhase::kIdle || phase == ToolPhase::kFound) return;
+  const OtaStatusPayload st = Ota::status();
+  const uint32_t now = millis();
+
+  if (!_toolStarted) {
+    if (st.state != OtaState::IDLE) {
+      _toolStarted = true;   // 确认已启动，进入等待收尾
+    } else if (now - _toolMs >= cfg::kToolOtaStartGraceMs) {
+      // 被 30s 防抖 / 通道占用挡下：检查并未真正开始，回到之前的状态
+      _toolPhase = _toolNewVer.length() ? ToolPhase::kFound : ToolPhase::kIdle;
+      _toolMsg = "操作未开始，请稍后再试";
+    }
+    return;
+  }
+
+  if (phase == ToolPhase::kCheck) {
+    if (st.state != OtaState::IDLE) return;   // 检查仍在进行（CHECKING）
+    if (!st.latestVersion.isEmpty()) {
+      // 发现新版本：不自动升级，展示入口等用户确认（见 kOtaUpgrade）
+      _toolPhase = ToolPhase::kFound;
+      _toolNewVer = st.latestVersion;
+      _toolMsg = "发现新版本，按 OK 升级";
+    } else {
+      _toolPhase = ToolPhase::kIdle;
+      _toolNewVer = "";   // 确实没有新版本，收回升级入口
+      // message 为空串即「已是最新版本」（Ota 检查收尾的约定，见 checkVersionTask）
+      _toolMsg = st.message.length() ? st.message : String("已是最新版本");
+    }
+    return;
+  }
+
+  // phase == kUpgrade：等到终态；下载 / 烧录途中继续由进度条展示
+  if (st.state == OtaState::SUCCESS) {
+    _toolPhase = ToolPhase::kIdle;
+    _toolMsg = "升级成功，即将重启";
+  } else if (st.state == OtaState::FAILED) {
+    _toolMsg = st.message.length() ? st.message : String("升级失败");
+    // 保留升级入口，用户可重试（版本仍是刚查到的那个）
+    _toolPhase = _toolNewVer.length() ? ToolPhase::kFound : ToolPhase::kIdle;
+  }
+}
+
+// 工具箱页内容：当前/最新版本 + OTA 状态 + 动作项。
+// 「升级到新版本」项只在发现新版本后出现——更新必须用户按 OK 确认，不自动下载。
+// 底部进度条只在下载与烧录阶段显示（barOf 读 Ota::status().progress）。
+void UIMenu::fillToolbox(MenuPage &pg) {
+  pollToolbox();   // 先推进状态机，再按最新状态渲染
+
+  const OtaStatusPayload st = Ota::status();
+  addInfo(pg, "当前版本: %s", st.currentVersion.c_str());
+  if (_toolNewVer.length()) {
+    addInfo(pg, "最新版本: %s", _toolNewVer.c_str());
+  }
+  addInfo(pg, "状态: %s", otaStateCn(st.state));
+  if (_toolMsg.length()) addInfo(pg, "%s", _toolMsg.c_str());
+
+  addItem(pg, UI_ICON_GLOBE, "检查新版本", nullptr, UiAction::kOtaCheck);
+  // 确认入口：仅「已发现新版本」时出现，按 OK 才下载升级
+  if (_toolPhase == ToolPhase::kFound && _toolNewVer.length()) {
+    addItem(pg, UI_ICON_REFRESH, "升级到新版本", nullptr, UiAction::kOtaUpgrade);
+  }
+  addItem(pg, UI_ICON_POWER, "重启", nullptr, UiAction::kRestart);
+  // 重置行按确认进度显示「重置 (n/5)」；按满次数后保持 5/5 直到执行或取消
+  char buf[32];
+  if (_resetCount > 0) snprintf(buf, sizeof(buf), "重置 (%u/5)", (unsigned)_resetCount);
+  else snprintf(buf, sizeof(buf), "重置");
+  addItem(pg, UI_ICON_INFO, buf, nullptr, UiAction::kReset);
+
+  // 倒计时提示（确认后的宽限，BACK 可取消；执行动作由 tick() 到点发起）
+  if (_restartPending) addInfo(pg, "设备即将重启，BACK 取消");
+  if (_resetPending) addInfo(pg, "正在恢复出厂设置...");
+
+  pg.bar = (st.state == OtaState::DOWNLOADING || st.state == OtaState::WRITING ||
+            st.state == OtaState::FLASHING_FS)
+               ? BarSrc::kOta
+               : BarSrc::kNone;
+}
+
 // ================= 进度条 =================
 
 bool UIMenu::barOf(const MenuPage &pg, int &pct, String &text) const {
@@ -747,6 +914,13 @@ bool UIMenu::barOf(const MenuPage &pg, int &pct, String &text) const {
       pct = v ? v * 100 / (int)cfg::kUiIdleReturnSecMax : 0;
       if (v && pct < 1) pct = 1;
       text = secText(_idleSec);
+      return true;
+    }
+    case BarSrc::kOta: {
+      // 工具箱：OTA 下载 / 烧录进度（只读快照，任务在 Ota 后台跑）
+      const OtaStatusPayload st = Ota::status();
+      pct = (int)st.progress;
+      text = String(pct) + "%";
       return true;
     }
     default:
@@ -815,6 +989,26 @@ void UIMenu::tick() {
     if (now - _lastDynMs >= cfg::kUiRefreshMs) {
       _lastDynMs = now;
       _dirty = true;
+    }
+  }
+
+  // ---- 工具箱 ----
+  // 重启 / 恢复出厂：确认后延迟 kToolActDelayMs 执行，给屏幕留出提示时间，
+  // 期间按 BACK 可取消（见 back()）。回调内部还会再延迟 2s 才真正重启
+  // （与 Web「系统维护」一致），屏幕提示不会被打断。
+  if (_restartPending && now - _restartMs >= cfg::kToolActDelayMs) {
+    _restartPending = false;
+    if (_restartFn) _restartFn();
+  }
+  if (_resetPending && now - _resetActMs >= cfg::kToolActDelayMs) {
+    _resetPending = false;
+    if (_resetFn) _resetFn();
+  }
+  // 重置连按计数：停手超时未续按、或已离开工具箱页 -> 清零，重新计
+  if (_resetCount > 0 && !_resetPending) {
+    if (now - _resetMs >= cfg::kToolResetTimeoutMs || _current != &kPageToolbox) {
+      _resetCount = 0;
+      _dirty = true;   // 标签从「重置 (n/5)」收回「重置」
     }
   }
 
