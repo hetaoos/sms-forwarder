@@ -41,6 +41,8 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   // >4KB 的分配会自动走 PSRAM（CONFIG_SPIRAM_USE_MALLOC），故两者需分别展示
   doc["psram"] = ESP.getFreePsram();
   doc["psramSize"] = ESP.getPsramSize();
+  // ROM（Flash）总容量，用于仪表盘展示设备存储规模
+  doc["romSize"] = ESP.getFlashChipSize();
   doc["color"] = c.name;
   JsonArray rgb = doc["rgb"].to<JsonArray>();
   rgb.add(c.r);

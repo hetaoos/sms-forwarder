@@ -83,8 +83,8 @@ constexpr RowDef kStatusRowDef[kStatusRowCnt] = {
     {UI_ICON_CLOCK, "运行"},        // 运行时长（已格式化）
     {UI_ICON_MEMORY, "内存"},       // 内部堆剩余 / PSRAM 剩余
     {UI_ICON_CPU, "负载"},          // CPU 使用率 / 芯片温度
-    {UI_ICON_SIM, "通信模组1"},
-    {UI_ICON_SIM, "通信模组2"},
+    {UI_ICON_SIM, "模组1"},
+    {UI_ICON_SIM, "模组2"},
     {UI_ICON_MQTT, "MQTT"},
     {UI_ICON_MAIL, "邮件"},
     {UI_ICON_PUSH, "推送"},

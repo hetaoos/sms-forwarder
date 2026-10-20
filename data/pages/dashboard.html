@@ -9,35 +9,38 @@
 
   <!-- 关键指标 -->
   <div class="stats">
-    <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
     <div class="stat"><div class="k">当前时间</div>
       <div class="v"><span x-text="st.timeSynced ? st.time.split(' ')[1] : '未同步'"></span>
         <div class="sub" x-show="st.timeSynced" x-text="st.time.split(' ')[0]"></div></div></div>
-    <div class="stat"><div class="k">WiFi 信号</div>
-      <div class="v" x-text="st.connected ? (st.rssi + ' dBm') : '-'"></div></div>
-    <div class="stat"><div class="k">WiFi 网络</div>
-      <div class="v" x-text="st.ssid || '-'"></div></div>
-    <div class="stat"><div class="k">当前 IP</div>
-      <div class="v" x-text="st.ip || '-'"></div></div>
+    <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
+    <div class="stat"><div class="k">WiFi</div>
+      <div class="v"><span x-text="st.ssid || '-'"></span>
+        <div class="sub" x-show="st.connected" x-text="st.rssi + ' dBm'"></div></div></div>
     <div class="stat"><div class="k">通信模组1 信号/连接</div>
       <div class="v"><span x-text="modemDbm(1)"></span>
         <div class="sub" x-show="modemOf(1) && modemOf(1).enabled && modemOf(1).ready" x-text="modemStateText(modemOf(1))"></div></div></div>
     <div class="stat"><div class="k">通信模组2 信号/连接</div>
       <div class="v"><span x-text="modemDbm(2)"></span>
         <div class="sub" x-show="modemOf(2) && modemOf(2).enabled && modemOf(2).ready" x-text="modemStateText(modemOf(2))"></div></div></div>
+    <div class="stat"><div class="k">IP / MAC</div>
+      <div class="v" style="font-size:13px;font-family:var(--mono);line-height:1.7">
+        <div x-text="st.ip || '-'"></div>
+        <div class="sub" x-text="st.mac || '-'"></div></div></div>
     <div class="stat"><div class="k">今日短信</div>
       <div class="v"><span x-text="(st.todaySms ? st.todaySms.recv : 0) + ' 收'"></span>
         <div class="sub" x-text="(st.todaySms ? st.todaySms.sent : 0) + ' 发'"></div></div></div>
+    <div class="stat"><div class="k">CPU 使用率</div>
+      <div class="v" x-text="st.cpuAvail ? st.cpu.toFixed(1) + ' %' : '不可用'"></div></div>
+    <div class="stat"><div class="k">芯片温度</div>
+      <div class="v" x-text="st.tempAvail ? st.temp.toFixed(1) + ' °C' : '不可用'"></div></div>
     <div class="stat"><div class="k">堆内存</div>
       <div class="v"><span x-text="fmtBytes(st.heap)"></span>
         <div class="sub" x-text="st.heapSize ? '共 ' + fmtBytes(st.heapSize) : ''"></div></div></div>
     <div class="stat"><div class="k">剩余 PSRAM</div>
       <div class="v"><span x-text="st.psramSize ? fmtBytes(st.psram) : '无'"></span>
         <div class="sub" x-text="st.psramSize ? '共 ' + fmtBytes(st.psramSize) : ''"></div></div></div>
-    <div class="stat"><div class="k">CPU 使用率</div>
-      <div class="v" x-text="st.cpuAvail ? st.cpu.toFixed(1) + ' %' : '不可用'"></div></div>
-    <div class="stat"><div class="k">芯片温度</div>
-      <div class="v" x-text="st.tempAvail ? st.temp.toFixed(1) + ' °C' : '不可用'"></div></div>
+    <div class="stat"><div class="k">ROM</div>
+      <div class="v" x-text="st.romSize ? fmtBytes(st.romSize) : '-'"></div></div>
   </div>
 
   <!-- 设备信息 + 时间同步 -->
