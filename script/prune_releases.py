@@ -2,7 +2,7 @@
 """
 同版本收敛：删除与本次构建同属一个 <VERSION> 的历史 Release / Tag。
 
-背景（为什么要删）：版本标识是 <VERSION>-<构建时间>-<短SHA>，每次 push 都能
+背景（为什么要删）：版本标识是 <VERSION>-<提交时间>-<短SHA>，每次 push 都能
 产出一个新 Release。同一版 VERSION 反复构建时，Release / Tag 会越堆越多，
 而设备端 OTA「检查更新」只会用到 tag 列表里最新的那个 —— 旧的那些除了占位
 没有任何用处。所以在创建本次 Release 之前，先把同版本的历史清掉，让

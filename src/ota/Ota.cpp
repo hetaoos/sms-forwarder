@@ -67,7 +67,7 @@ static const esp_partition_t* findFsPartition() {
 
 // ── Ota::version ────────────────────────────────────────
 // 当前跑的固件怎么称呼自己：直接就是所属 Release 的 tag，也就是完整版本标识
-// <VERSION>-<构建时间>-<短 SHA>（如 1.0.0-20261004T121442-f2b513a）。
+// <VERSION>-<提交时间>-<短 SHA>（如 1.0.0-20261020T224521-f2b513a）。
 // 这里不再自己拼一遍 —— 曾经用 APP_BUILD_DATE/TIME + SHA 现场拼，而 CI 一旦
 // 注入了 APP_BUILD_TIMESTAMP 就会与 APP_BUILD_DATE 的格式漂移，拼出来的东西
 // 与 Release tag 对不上，OTA 比较随之失灵。单一来源反而不会错。
@@ -380,13 +380,14 @@ static String currentReleaseTag() {
 //   设备当前 tag: 1.0.0-20261004T125918-931584f
 //   远端最新 tag: 1.0.0-20261004T125645-931584f
 //
-// 两者 VERSION 相同、短 SHA 相同，只是构建时间不同 —— 而且设备这个还更晚。
+// 两者 VERSION 相同、短 SHA 相同，只是时间戳不同 —— 而且设备这个还更晚。
 // 旧代码直接比字符串不相等，于是报「发现新版本」，用户点升级就把固件**降级**
 // 到同一份代码的更早一次构建。这不是显示问题，是行为错误。
 //
-// 根因是「构建时间」被塞进了版本标识却当作排序依据：它只保证单调递增于
-// **同一条流水线**，而设备上的固件可能是本地编译的（时间戳随手生成，落在
-// 已发布 Release 之后很常见）。所以比较必须按语义来，而不是按字面。
+// 根因是版本标识里的时间戳（HEAD 提交时间）只用于区分构建，却被当作排序
+// 依据：它只随代码提交递增，而设备上的固件可能来自本地分支（取本地 HEAD
+// 的提交时间，与已发布 Release 没有可比性）。所以比较必须按语义来，而不
+// 是按字面。
 struct VersionParts {
     String   version;    // 1.0.0
     String   timestamp;  // 20261004T125918（可能为空）
@@ -490,7 +491,7 @@ static bool isRemoteNewer(const String& remoteTag, const String& currentTag) {
         return false;
     }
     if (r.sha == c.sha) {
-        LOG("OTA", "同一版本同一提交（%s），仅构建时间不同，不视为新版本", r.sha.c_str());
+        LOG("OTA", "同一版本同一提交（%s），仅时间戳不同，不视为新版本", r.sha.c_str());
         return false;
     }
     return true;

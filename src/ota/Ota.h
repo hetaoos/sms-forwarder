@@ -30,7 +30,7 @@ struct OtaStatusPayload {
 // OTA 下载时拼接的 URL 形如：
 //   <OTA_RELEASES_BASE_URL>/download/<Release tag>/ota-<Release tag>-<platform>.bin
 //
-// **Release tag 就是完整版本标识** <VERSION>-<构建时间>-<短 SHA>，如
+// **Release tag 就是完整版本标识** <VERSION>-<提交时间>-<短 SHA>，如
 // 1.0.0-20261004T121442-f2b513a。设备自报的版本、下载地址里的 tag、产物文件名
 // 里的 tag、比较用的 tag 都是同一个值，同源才可能一致 —— 曾经 tag 只到
 // VERSION（1.0.0）而产物名带时间戳，地址就必然 404。别再把它们拆开。

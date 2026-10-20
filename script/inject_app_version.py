@@ -10,6 +10,29 @@ def cst_now():
     return datetime.now(timezone(timedelta(hours=8)))
 
 
+def head_commit_timestamp():
+    """HEAD 的提交时间（committer date，CST，%Y%m%dT%H%M%S）；取不到返回 None。
+
+    与 script/gen_version.sh 同源：优先 git 提交时间，git 不可用才退回当前
+    系统时间 —— 本地编译拼出的 tag 与 CI 的 Release tag 同格式、同语义
+    （同一份代码得到同一个 tag），不会再因「编译时刻」不同而对不上。
+    """
+    try:
+        out = subprocess.check_output(
+            ["git", "log", "-1", "--format=%cd",
+             "--date=format-local:%Y%m%dT%H%M%S"],
+            cwd=project_dir, stderr=subprocess.DEVNULL,
+            env=dict(os.environ, TZ="Asia/Shanghai"),
+        ).decode().strip()
+        if len(out) == 15 and out[8] == "T":
+            return out
+        if out:
+            print("[inject_app_version] ⚠️  git 提交时间格式异常: '%s'，改用当前 CST 时间" % out)
+    except Exception:
+        pass
+    return None
+
+
 def read_version_prefix():
     version_file = os.path.join(project_dir, "VERSION")
     if os.path.exists(version_file):
@@ -20,8 +43,9 @@ def read_version_prefix():
     return "1"
 
 
-# --- 构建时间戳 ---
-# CI 注入的 APP_BUILD_TIMESTAMP 形如 20261004T121442（CST）。它的两个用途：
+# --- 版本时间戳 ---
+# CI 注入的 APP_BUILD_TIMESTAMP 形如 20261020T224521（CST），取自 HEAD 的
+# 提交时间（见 script/gen_version.sh）。它的两个用途：
 #   1. 与短 SHA 一起拼出 RELEASE_TAG（见下）
 #   2. 拆成 APP_BUILD_DATE / APP_BUILD_TIME 存进 esp_app_desc
 ts = os.environ.get("APP_BUILD_TIMESTAMP", "").strip()
@@ -48,15 +72,20 @@ if not app_version:
 
 # --- OTA_RELEASE_TAG ---
 # 设备自报的版本、OTA 的下载地址与版本比较全都基于它，必须与 CI 的 Release tag
-# 逐字一致：<VERSION>-<构建时间>-<短 SHA>，如 1.0.0-20261004T121442-f2b513a。
-# CI 通过 RELEASE_TAG 注入；本地编译按下述规则自拼一份，保证能过编译。
+# 逐字一致：<VERSION>-<提交时间>-<短 SHA>，如 1.0.0-20261020T224521-f2b513a。
+# CI 通过 RELEASE_TAG 注入；本地编译按下述规则自拼一份（提交时间同样取自
+# HEAD），保证能过编译、拼出来的值也与 CI 同构。
 #
 # ⚠️ 若这里退回成 VERSION 字面值（如 "1.0.0"），设备就会去
 # /releases/download/1.0.0/ota-1.0.0-esp32s3.bin 取固件 —— 而 CI 产出的文件名是
 # ota-1.0.0-<时间>-<sha>-esp32s3.bin，必然 404。缺值时的兜底也必须保持同一套格式。
 ota_release_tag = os.environ.get("RELEASE_TAG", "").strip()
 if not ota_release_tag:
-    local_ts = ts if (ts and len(ts) >= 15 and ts[8] == 'T') else cst_now().strftime("%Y%m%dT%H%M%S")
+    if ts and len(ts) >= 15 and ts[8] == 'T':
+        local_ts = ts
+    else:
+        # 本地编译：优先取 HEAD 提交时间，与 CI 规则逐字一致；git 不可用才用当前时间
+        local_ts = head_commit_timestamp() or cst_now().strftime("%Y%m%dT%H%M%S")
     ota_release_tag = f"{read_version_prefix()}-{local_ts}-{app_version_sha}"
     print(f"[inject_app_version] ⚠️  未注入 RELEASE_TAG，本地按 CI 规则拼出 {ota_release_tag}")
 
@@ -66,10 +95,15 @@ if ts and len(ts) >= 15 and ts[8] == 'T':
     app_build_time = f"{ts[9:11]}:{ts[11:13]}:{ts[13:15]}"
 else:
     if ts:
-        print(f"[inject_app_version] ⚠️  APP_BUILD_TIMESTAMP 格式非法: '{ts}'，改用当前 CST 时间")
-    now = cst_now()
-    app_build_date = now.strftime("%Y-%m-%d")
-    app_build_time = now.strftime("%H:%M:%S")
+        print(f"[inject_app_version] ⚠️  APP_BUILD_TIMESTAMP 格式非法: '{ts}'，改用 HEAD 提交时间")
+    commit_ts = head_commit_timestamp()
+    if commit_ts:
+        app_build_date = f"{commit_ts[0:4]}-{commit_ts[4:6]}-{commit_ts[6:8]}"
+        app_build_time = f"{commit_ts[9:11]}:{commit_ts[11:13]}:{commit_ts[13:15]}"
+    else:
+        now = cst_now()
+        app_build_date = now.strftime("%Y-%m-%d")
+        app_build_time = now.strftime("%H:%M:%S")
 
 # --- OTA 发布源地址 ---
 # 两个地址分工不同，都得注入：

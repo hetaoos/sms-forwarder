@@ -4,8 +4,8 @@
 #   - 本仓库只有一个硬件平台（ESP32-S3，16MB flash，双 OTA 槽位），编译一次即可
 #   - 产物文件名带平台后缀（-esp32s3），挂在同一个 Release 下
 #
-# 版本标识只有一套 —— RELEASE_TAG = <VERSION>-<构建时间>-<短 SHA>
-# （如 1.0.0-20261004T121442-f2b513a）。它同时是：
+# 版本标识只有一套 —— RELEASE_TAG = <VERSION>-<提交时间>-<短 SHA>
+# （如 1.0.0-20261020T224521-e6d1ec7，时间取自 HEAD 的提交时间）。它同时是：
 #   - Release 的 tag（每次构建一个新 Release，产物都挂上去）
 #   - 产物文件名里的 <tag>（ota-<tag>-esp32s3.bin 等）
 #   - 设备固件自报的版本（若启用 OTA 检查更新时的比较依据）
@@ -58,11 +58,12 @@
   script: bash script/print_version_tag.sh
   exports:
     # release_tag: Release 的 tag，也是产物文件名里的 <tag>，也是设备自报的版本。
-    # 一次构建一个值（含构建时间 + 短 SHA），所以每次 push 都会产生一个新的
-    # Release；不同构建的产物互不覆盖，回滚时能精确指到某一版。
+    # 取值由「代码」唯一决定（VERSION + HEAD 提交时间 + 短 SHA）：同一份代码
+    # 重复构建得到同一个 tag，产物可复现；新提交则产生新的 Release，不同构建
+    # 的产物互不覆盖，回滚时能精确指到某一版。
     release_tag: RELEASE_TAG
     # app_version / app_build_timestamp：编进固件（esp_app_desc / OTA_RELEASE_TAG），
-    # 与 RELEASE_TAG 同源，确保固件内构建时间/版本与 Release 一致。
+    # 与 RELEASE_TAG 同源（同为 HEAD 提交时间），确保固件内时间戳/版本与 Release 一致。
     app_version: APP_VERSION
     app_build_timestamp: APP_BUILD_TIMESTAMP
     # short_sha: 固件把它编进版本标识（见 inject_app_version.py）。它已经是
@@ -99,7 +100,7 @@
       python3 script/gen_release_notes.py "$RELEASE_TAG" release_notes.md
       ls -l dist/
   # 先清掉同版本的历史 Release / Tag，再建本次的。
-  # 必要性：版本标识带构建时间 + 短 SHA，同一版 VERSION 每 push 一次就多一个
+  # 必要性：版本标识带提交时间 + 短 SHA，同一版 VERSION 每 push 一次就多一个
   # Release；设备端 OTA「检查更新」只认 tag 列表里最新的一个，老的纯占位。
   # 脚本按严格前缀 <VERSION>- 删（不删裸 `1.0.0`，那是手动里程碑标签），
   # 且跳过 $RELEASE_TAG 自身 —— 删完再建，顺序不能反。

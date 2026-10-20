@@ -55,21 +55,33 @@ def find(tag, kind, platform):
 
 def main():
     tag = sys.argv[1]
-    # Commit 与构建时间：优先取环境变量（由 gen_version.sh / CI 注入），
-    # 缺失时按本地 git 与当前 CST 时间兜底，保证脚本可独立运行。
+    # Commit 与版本时间：优先取环境变量（由 gen_version.sh / CI 注入），
+    # 缺失时按本地 git（HEAD 提交时间）与当前 CST 时间兜底，保证脚本可独立运行。
+    import subprocess
+
     full_sha = os.environ.get("FULL_SHA", "")
     if not full_sha:
         try:
-            import subprocess
             full_sha = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
             ).decode().strip()
         except Exception:
             full_sha = "unknown"
+    # 时间戳与 gen_version.sh 同源：HEAD 提交时间（CST）；git 不可用才退回当前时间
     timestamp = os.environ.get("TIMESTAMP", "")
     if not timestamp:
-        timestamp = datetime.now(timezone(timedelta(hours=8))).strftime(
-            "%Y-%m-%dT%H:%M:%S+08:00")
+        try:
+            timestamp = subprocess.check_output(
+                ["git", "log", "-1", "--format=%cd",
+                 "--date=format-local:%Y-%m-%dT%H:%M:%S+08:00"],
+                env=dict(os.environ, TZ="Asia/Shanghai"),
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except Exception:
+            timestamp = ""
+        if not timestamp:
+            timestamp = datetime.now(timezone(timedelta(hours=8))).strftime(
+                "%Y-%m-%dT%H:%M:%S+08:00")
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "release_notes.md")
 
     lines = []
@@ -77,7 +89,7 @@ def main():
     lines.append("| 属性 | 值 |")
     lines.append("|------|-----|")
     lines.append("| Commit | %s |" % full_sha)
-    lines.append("| 构建时间 | %s |" % timestamp)
+    lines.append("| 提交时间 | %s |" % timestamp)
     lines.append("| 支持平台 | %s |" % "、".join(PLATFORMS))
     lines.append("")
 
