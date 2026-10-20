@@ -128,8 +128,8 @@
       <div class="row"><span class="k">连接状态</span><span class="v" x-text="st.connected ? '已连接' : '未连接'"></span></div>
       <div class="row"><span class="k">背光亮度</span><span class="v" x-text="(st.dispBright || 0) + '%'"></span></div>
       <div class="bar" style="margin-top:12px">
-        <button class="btn" @click="toggleDisp()" x-text="st.disp ? '关闭屏幕' : '打开屏幕'"></button>
-        <button class="btn ghost" @click="go('display')">屏幕设置</button>
+        <button class="btn sm" @click="toggleDisp()" x-text="st.disp ? '关闭屏幕' : '打开屏幕'"></button>
+        <button class="btn ghost sm" @click="go('display')">屏幕设置</button>
       </div>
     </div>
   </div>
@@ -145,8 +145,8 @@
         <span class="v" x-text="(st.rgb || []).join(', ')"></span></div>
       <div class="row"><span class="k">亮度</span><span class="v" x-text="(st.rgbBright || 0) + '%'"></span></div>
       <div class="bar" style="margin-top:12px">
-        <button class="btn" @click="nextLed()">切换颜色</button>
-        <button class="btn ghost" @click="go('rgb')">颜色设置</button>
+        <button class="btn sm" @click="nextLed()">切换颜色</button>
+        <button class="btn ghost sm" @click="go('rgb')">颜色设置</button>
       </div>
     </div>
 
