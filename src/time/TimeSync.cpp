@@ -62,8 +62,8 @@ void TimeSync::begin(SerialBridge &bridge, SmsService &sms) {
 }
 
 void TimeSync::syncNTP() {
-  configTime(cfg::kNtpGmtOffsetSec, 0, "pool.ntp.org", "ntp.aliyun.com",
-             "ntp.ntsc.ac.cn");
+  configTime(cfg::kNtpGmtOffsetSec, 0, "ntp.aliyun.com", "ntp.ntsc.ac.cn",
+             "pool.ntp.org");
   applyTimezone();
   // 后台周期校准：首次成功后 SNTP 任务按此间隔自动重新对时，系统时钟长期精准
   esp_sntp_set_sync_interval(cfg::kNtpResyncMs);
