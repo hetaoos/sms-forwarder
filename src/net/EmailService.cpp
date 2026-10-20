@@ -1158,9 +1158,14 @@ void EmailService::appendSimRows(PsBuffer &out) const {
                 (m["sim"] | false) ? String("已就绪") : String("未就绪"));
       String operCode = m["operCode"] | "";
       String oper = m["oper"] | "";
-      appendRow(out, p + "运营商",
-                operCode.length() > 0 ? operCode
-                                      : (oper.length() > 0 ? oper : String("未知")));
+      if (operCode.length() > 0) {
+        String cn = operCn(operCode);
+        appendRow(out, p + "运营商",
+                  cn.length() > 0 ? (operCode + " · " + cn) : operCode);
+      } else {
+        appendRow(out, p + "运营商",
+                  oper.length() > 0 ? oper : String("未知"));
+      }
       appendRow(out, p + "信号强度", signalText(m["csq"] | -1));
     }
   }

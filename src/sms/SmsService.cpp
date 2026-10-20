@@ -237,7 +237,10 @@ String SmsService::modemBrief(uint8_t port) const {
     default: s = "未知"; break;
   }
   if (m.initState == ModemInitState::kReady) {
-    if (m.oper.length()) { s += " "; s += m.oper; }
+    // 优先中文名（CMCC→中国移动），未知短代码才回退到 AT+COPS? 原始值（可能为数字）
+    String op = operCn(m.operCode);
+    if (op.length() == 0) op = m.oper;
+    if (op.length()) { s += " "; s += op; }
     if (m.csq >= 0) { s += " "; s += String(m.csq); }
   }
   return s;
@@ -802,11 +805,21 @@ void SmsService::pollInit(uint8_t port) {
             if (at("AT+COPS?", cfg::kSmsCmdTimeoutMs)) {
               int i = resp.indexOf("+COPS:");
               if (i >= 0) {
+                // +COPS: <mode>[,<format>[,<oper>]]；运营商是第三个字段
+                // （<format> 为 0/1/2，取错会拿到 "0" 而非真实运营商）
                 String seg = resp.substring(i + 6);   // 去掉 "+COPS:"
-                int fc = seg.indexOf(',');
-                int sc = (fc >= 0) ? seg.indexOf(',', fc + 1) : -1;
-                if (sc >= 0) { String op = seg.substring(fc + 1, sc); op.replace("\"", ""); m.oper = op; }
-                else m.oper = "";
+                int c1 = seg.indexOf(',');
+                int c2 = (c1 >= 0) ? seg.indexOf(',', c1 + 1) : -1;
+                String op;
+                if (c2 >= 0) {
+                  int c3 = seg.indexOf(',', c2 + 1);
+                  op = seg.substring(c2 + 1, c3 >= 0 ? c3 : seg.length());
+                  op.replace("\"", "");
+                  op.trim();
+                } else {
+                  op = "";  // 未注册：无运营商字段
+                }
+                m.oper = op;
                 m.operCode = operCode(m.oper);
               }
             }
