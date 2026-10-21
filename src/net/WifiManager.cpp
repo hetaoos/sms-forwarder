@@ -178,9 +178,19 @@ void WifiManager::loadApPass() {
     persistApPass();
     return;
   }
-  // NVS 已有记录：长度合规才采用，否则回落开放（不覆盖 NVS，避免反复告警）
-  if (validApPass(p)) {
-    _apPass = p;
+  // NVS 已有记录：persistApPass 写入的是 JSON 封装（{"ver":1,"pass":"..."}），
+  // 需解析取出真实密码，否则会把整段 JSON 当作密码（热点/LCD/网页均异常）。
+  String pass = "";
+  JsonDocument doc;
+  if (deserializeJson(doc, p) == DeserializationError::Ok &&
+      doc["pass"].is<const char *>()) {
+    pass = doc["pass"].as<const char *>();   // 复制出真实密码
+  } else {
+    _log.addf(LogLevel::kWarn, "wifi", "NVS 中 AP 密码解析失败，回落开放热点");
+  }
+  // 长度合规才采用，否则回落开放（不覆盖 NVS，避免反复告警）
+  if (validApPass(pass)) {
+    _apPass = pass;
   } else {
     _apPass = "";
     _log.addf(LogLevel::kWarn, "wifi", "NVS 中 AP 密码长度异常，回落开放热点");

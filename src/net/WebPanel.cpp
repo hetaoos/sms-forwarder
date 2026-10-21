@@ -24,6 +24,10 @@
 
 namespace {
 
+// 前向声明：公共 JSON 应答辅助函数（定义见文件后部）
+void sendJsonDoc(AsyncWebServerRequest *req, const JsonDocument &doc);
+void sendErr(AsyncWebServerRequest *req, int code, const char *msg);
+
 // 取字符串参数；req：请求对象；name：参数名；def：缺省值
 // 参数存在时返回其值（指针生命周期跟随请求），否则返回 def
 const char *param(AsyncWebServerRequest *req, const char *name,
@@ -72,7 +76,7 @@ void sendFile(AsyncWebServerRequest *req, const char *path, const char *mime) {
     req->send(resp);
     return;
   }
-  req->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
+  sendErr(req, 404, "not found");
 }
 
 // 从 Cookie 头中解析指定名称的值；不存在返回空串
@@ -107,15 +111,63 @@ void sendJsonWithCookie(AsyncWebServerRequest *req, const String &json,
 }
 
 // 统一错误响应：{"ok":false,"error":".."} + HTTP 状态码
-// req：请求对象；code：HTTP 状态码；msg：错误描述
+// req：请求对象；code：HTTP 状态码；msg：错误描述（自动转义）
 void sendErr(AsyncWebServerRequest *req, int code, const char *msg) {
-  req->send(code, "application/json",
-            String("{\"ok\":false,\"error\":\"") + msg + "\"}");
+  JsonDocument doc;
+  doc["ok"] = false;
+  doc["error"] = msg ? msg : "";
+  String out;
+  serializeJson(doc, out);
+  req->send(code, "application/json", out);
 }
 
-// 统一成功响应：{"ok":true}，可附额外字段（如 ",\"id\":12"）
-void sendOk(AsyncWebServerRequest *req, const String &extra = "") {
-  req->send(200, "application/json", String("{\"ok\":true") + extra + "}");
+// 统一成功响应：{"ok":true}
+void sendOk(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  sendJsonDoc(req, doc);
+}
+
+// 把已构造好的 JsonDocument 序列化并以 200 + application/json 发出
+// （替代每个 handler 重复的 String out; serializeJson(doc,out); req->send(...)）
+void sendJsonDoc(AsyncWebServerRequest *req, const JsonDocument &doc) {
+  String out;
+  serializeJson(doc, out);
+  req->send(200, "application/json", out);
+}
+
+// 成功响应并附带一条消息：{"ok":true,"message":"..."}
+void sendOkMsg(AsyncWebServerRequest *req, const char *msg) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["message"] = msg ? msg : "";
+  sendJsonDoc(req, doc);
+}
+
+// 成功响应并附带一个布尔字段：{"ok":true,"<key>":v}
+void sendOkFlag(AsyncWebServerRequest *req, const char *key, bool v) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc[key] = v;
+  sendJsonDoc(req, doc);
+}
+
+// 成功响应并附带一个整数字段：{"ok":true,"<key>":v}
+void sendOkInt(AsyncWebServerRequest *req, const char *key, int v) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc[key] = v;
+  sendJsonDoc(req, doc);
+}
+
+// 带 Set-Cookie 的成功响应：序列化 JsonDocument 并附加 Cookie 头
+void sendJsonDocWithCookie(AsyncWebServerRequest *req, const JsonDocument &doc,
+                           const String &cookie) {
+  String out;
+  serializeJson(doc, out);
+  AsyncWebServerResponse *resp = req->beginResponse(200, "application/json", out);
+  resp->addHeader("Set-Cookie", cookie);
+  req->send(resp);
 }
 
 // 从 JSON 变体取整数：兼容 int 与数字字符串
@@ -811,10 +863,11 @@ void WebPanel::handleLogin(AsyncWebServerRequest *req, JsonVariant &json) {
   String cookie = String(cfg::kCookieName) + "=" + sid +
                   "; HttpOnly; SameSite=Strict; Path=/; Max-Age=" +
                   String(cfg::kCookieMaxAge);
-  sendJsonWithCookie(req,
-                     "{\"ok\":true,\"user\":\"" + user +
-                         "\",\"token\":\"" + token + "\"}",
-                     cookie);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["user"] = user;
+  doc["token"] = token;
+  sendJsonDocWithCookie(req, doc, cookie);
 }
 
 void WebPanel::handleLogout(AsyncWebServerRequest *req) {
@@ -826,7 +879,9 @@ void WebPanel::handleLogout(AsyncWebServerRequest *req) {
   }
   String cookie = String(cfg::kCookieName) +
                   "=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
-  sendJsonWithCookie(req, "{\"ok\":true}", cookie);
+  JsonDocument doc;
+  doc["ok"] = true;
+  sendJsonDocWithCookie(req, doc, cookie);
 }
 
 void WebPanel::handleSession(AsyncWebServerRequest *req) {
@@ -834,16 +889,20 @@ void WebPanel::handleSession(AsyncWebServerRequest *req) {
     sendErr(req, 401, "unauthorized");
     return;
   }
-  sendJson(req, "{\"ok\":true,\"user\":\"" + _auth.user() + "\"}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["user"] = _auth.user();
+  sendJsonDoc(req, doc);
 }
 
 // ---- API 令牌 / 账号 ----
 void WebPanel::handleTokenGet(AsyncWebServerRequest *req) {
   if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
-  String json = "{\"ok\":true,\"enabled\":" +
-                String(_apiTokenEnabled ? "true" : "false") +
-                ",\"token\":\"" + (_apiTokenEnabled ? _apiToken : "") + "\"}";
-  sendJson(req, json);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["enabled"] = _apiTokenEnabled;
+  doc["token"] = _apiTokenEnabled ? _apiToken : String();
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -854,19 +913,24 @@ void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
   _apiTokenEnabled = json["enabled"].as<bool>();
   if (_apiTokenEnabled && _apiToken.length() != 32) _apiToken = genSecret();
   saveApiTokenCfg();
-  sendJson(req, "{\"ok\":true,\"enabled\":" +
-                String(_apiTokenEnabled ? "true" : "false") + "}");
+  sendOkFlag(req, "enabled", _apiTokenEnabled);
 }
 
 void WebPanel::handleTokenReset(AsyncWebServerRequest *req) {
   if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
   if (!_apiTokenEnabled) { sendErr(req, 403, "api token disabled"); return; }
   String t = resetApiToken();
-  sendJson(req, "{\"ok\":true,\"token\":\"" + t + "\"}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["token"] = t;
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleAuthGet(AsyncWebServerRequest *req) {
-  sendJson(req, "{\"ok\":true,\"user\":\"" + _auth.user() + "\"}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["user"] = _auth.user();
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1020,9 +1084,7 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
       o["tag"] = e.tag;
       o["msg"] = e.msg;
     }
-    String outInc;
-    serializeJson(doc, outInc);
-    sendJson(req, outInc);
+    sendJsonDoc(req, doc);
     return;
   }
 
@@ -1051,9 +1113,7 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
     o["tag"] = e.tag;
     o["msg"] = e.msg;
   }
-  String out;
-  serializeJson(doc, out);
-  sendJson(req, out);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleLogClear(AsyncWebServerRequest *req) {
@@ -1138,11 +1198,13 @@ void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
   else if (k == "back") key = KeyId::kBack;
   if (key == KeyId::kCount) { sendErr(req, 400, "unknown key"); return; }
   KeyInject::instance().push(key, ev);
-  sendJson(req, "{\"ok\":true}");
+  sendOk(req);
 }
 
 void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {
-  req->send(200, "application/json", "{\"default\":" + String(cfg::kUartBaud) + "}");
+  JsonDocument doc;
+  doc["default"] = cfg::kUartBaud;
+  sendJsonDoc(req, doc);
 }
 
 // ---- 系统状态 ----
@@ -1153,7 +1215,7 @@ void WebPanel::handleStatus(AsyncWebServerRequest *req) {
 // ---- 系统维护：立即重启 / 出厂复位 ----
 // 延迟 2s 重启（与 OTA / 配置导入一致，给响应留出发送时间）
 void WebPanel::handleSystemRestart(AsyncWebServerRequest *req) {
-  sendOk(req, ",\"message\":\"设备即将重启\"");
+  sendOkMsg(req, "设备即将重启");
   xTaskCreate(
       [](void *) {
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1172,7 +1234,7 @@ void WebPanel::handleSystemReset(AsyncWebServerRequest *req) {
     prefs.end();
   }
   userfs::format();  // 清空 /data 用户数据
-  sendOk(req, ",\"message\":\"已恢复出厂设置，设备即将重启\"");
+  sendOkMsg(req, "已恢复出厂设置，设备即将重启");
   xTaskCreate(
       [](void *) {
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1194,7 +1256,7 @@ void WebPanel::handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json) {
     return;
   }
   // importFrom 内已落盘；不重启，下次 tick 起按新计划执行
-  sendOk(req, ",\"message\":\"已保存，定时重启即时生效\"");
+  sendOkMsg(req, "已保存，定时重启即时生效");
 }
 
 // ---- WiFi 配网 ----
@@ -1205,16 +1267,24 @@ void WebPanel::handleWifiStatus(AsyncWebServerRequest *req) {
 void WebPanel::handleWifiScan(AsyncWebServerRequest *req) {
   int16_t state = WiFi.scanComplete();
   if (state == WIFI_SCAN_RUNNING) {
-    sendJson(req, "{\"busy\":1}");  // 扫描进行中，前端继续轮询
+    JsonDocument doc;
+  doc["busy"] = 1;
+  sendJsonDoc(req, doc);  // 扫描进行中，前端继续轮询
     return;
   }
   if (state == WIFI_SCAN_FAILED) {
     _wifi.startScan();              // 没有进行中的扫描 -> 启动一轮新的
-    sendJson(req, "{\"busy\":1}");
+    JsonDocument doc;
+  doc["busy"] = 1;
+  sendJsonDoc(req, doc);
     return;
   }
   // 结果已就绪，导出并释放底层缓存
-  sendJson(req, "{\"busy\":0,\"nets\":" + _wifi.scanJson() + "}");
+  String nets = _wifi.scanJson();
+  JsonDocument doc;
+  doc["busy"] = 0;
+  doc["nets"] = serialized(nets);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleWifiList(AsyncWebServerRequest *req) {
@@ -1282,13 +1352,15 @@ void WebPanel::handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json) 
     return;
   }
   _wifi.requestConnect(ssid, pass);
-  sendOk(req, ",\"connecting\":true");
+  sendOkFlag(req, "connecting", true);
 }
 
 // AP 配网热点密码：返回当前是否加密与实际密码（已认证管理员可见）
 void WebPanel::handleWifiApGet(AsyncWebServerRequest *req) {
-  sendJson(req, String("{\"secure\":") + (_wifi.apSecure() ? "true" : "false") +
-                   ",\"pass\":\"" + _wifi.apPass() + "\"}");
+  JsonDocument doc;
+  doc["secure"] = _wifi.apSecure();
+  doc["pass"] = _wifi.apPass();   // 直接赋值，ArduinoJson 自动转义密码特殊字符
+  sendJsonDoc(req, doc);
 }
 
 // AP 配网热点密码：修改并落盘；{"pass":""} 设为开放热点
@@ -1303,7 +1375,7 @@ void WebPanel::handleWifiApPost(AsyncWebServerRequest *req, JsonVariant &json) {
     sendErr(req, 400, err.c_str());
     return;
   }
-  sendOk(req, ",\"secure\":" + String(_wifi.apSecure() ? "true" : "false"));
+  sendOkFlag(req, "secure", _wifi.apSecure());
 }
 
 // ---- 短信 ----
@@ -1316,7 +1388,11 @@ void WebPanel::handleSmsLatest(AsyncWebServerRequest *req) {
 }
 
 void WebPanel::handleSmsPortsGet(AsyncWebServerRequest *req) {
-  sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+  String modems = _sms.modemsJson();   // 先落本地变量，保证 serialized() 指针在序列化时仍有效
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["modems"] = serialized(modems);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleSmsList(AsyncWebServerRequest *req) {
@@ -1345,9 +1421,7 @@ void WebPanel::handleSmsList(AsyncWebServerRequest *req) {
     o["ts"] = m.ts;
     o["modem"] = m.modem;
   }
-  String out;
-  serializeJson(doc, out);
-  sendJson(req, out);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleSmsDelete(AsyncWebServerRequest *req) {
@@ -1394,7 +1468,11 @@ void WebPanel::handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json)
     sendErr(req, 400, "missing enabled or alias");
     return;
   }
-  sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+  String modems = _sms.modemsJson();   // 先落本地变量，保证 serialized() 指针在序列化时仍有效
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["modems"] = serialized(modems);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1408,7 +1486,11 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
     sendErr(req, 400, "通信模组未启用或不存在");
     return;
   }
-  sendJson(req, String("{\"ok\":true,\"modems\":") + _sms.modemsJson() + "}");
+  String modems = _sms.modemsJson();   // 先落本地变量，保证 serialized() 指针在序列化时仍有效
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["modems"] = serialized(modems);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1433,12 +1515,14 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %d，记录 #%u）",
             phone.c_str(), port, (unsigned)id);
   if (!stored) {
-    sendJson(req,
-             "{\"ok\":true,\"stored\":false,\"warn\":"
-             "\"记录存储失败（userdata 分区异常），本条不会出现在列表中\"}");
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["stored"] = false;
+    doc["warn"] = "记录存储失败（userdata 分区异常），本条不会出现在列表中";
+    sendJsonDoc(req, doc);
     return;
   }
-  sendOk(req, String(",\"id\":") + id);
+  sendOkInt(req, "id", (int)id);
 }
 
 // 管理员短信远程控制：读取当前总开关与管理员号码列表
@@ -1451,9 +1535,7 @@ void WebPanel::handleSmsAdminGet(AsyncWebServerRequest *req) {
   JsonDocument src;
   deserializeJson(src, _sms.adminPhonesJson());
   for (auto v : src.as<JsonArray>()) arr.add(v);
-  String out;
-  serializeJson(doc, out);
-  sendJson(req, out);
+  sendJsonDoc(req, doc);
 }
 
 // 设置管理员：JSON {"enabled":bool,"phones":["138...","139..."]}（字段均可选）。
@@ -1495,9 +1577,7 @@ void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json)
   JsonDocument src;
   deserializeJson(src, _sms.adminPhonesJson());
   for (auto v : src.as<JsonArray>()) arr.add(v);
-  String out;
-  serializeJson(doc, out);
-  sendJson(req, out);
+  sendJsonDoc(req, doc);
 }
 
 // ---- 邮件通知 ----
@@ -1535,7 +1615,10 @@ void WebPanel::handleEmailTest(AsyncWebServerRequest *req) {
     sendErr(req, 500, "入队失败，请检查邮件配置与队列状态");
     return;
   }
-  sendJson(req, "{\"ok\":true,\"queued\":true}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["queued"] = true;
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1615,7 +1698,10 @@ void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
     sendErr(req, 500, "测试消息发布失败，请检查 MQTT 配置与连接状态");
     return;
   }
-  sendJson(req, "{\"ok\":true,\"queued\":true}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["queued"] = true;
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1656,7 +1742,11 @@ void WebPanel::handlePushGet(AsyncWebServerRequest *req) {
 }
 
 void WebPanel::handlePushTypes(AsyncWebServerRequest *req) {
-  sendJson(req, String("{\"ok\":true,\"types\":") + PushService::typesJson() + "}");
+  String types = PushService::typesJson();
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["types"] = serialized(types);
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handlePushEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1685,7 +1775,10 @@ void WebPanel::handlePushTest(AsyncWebServerRequest *req) {
     sendErr(req, 400, "推送未配置任何有效通道");
     return;
   }
-  sendJson(req, "{\"ok\":true,\"queued\":true}");
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["queued"] = true;
+  sendJsonDoc(req, doc);
 }
 
 void WebPanel::handlePushPost(AsyncWebServerRequest *req, JsonVariant &json) {
@@ -1745,9 +1838,7 @@ void WebPanel::handleBlackTest(AsyncWebServerRequest *req) {
   doc["matched"] = matched;
   doc["scope"] = matched ? (int)BlackList::kSms : 0;
   doc["note"] = _blacklist.lastNote();
-  String out;
-  serializeJson(doc, out);
-  sendJson(req, out);
+  sendJsonDoc(req, doc);
 }
 
 // ---- OTA 升级 ----
@@ -1808,7 +1899,7 @@ void WebPanel::handleOtaStart(AsyncWebServerRequest *req) {
     sendErr(req, 400, "升级任务已在运行或参数无效");
     return;
   }
-  sendOk(req, ",\"started\":true");
+  sendOkFlag(req, "started", true);
 }
 
 // 本地固件上传：收尾时返回结果（成功/失败由 Ota 状态决定）
@@ -2023,7 +2114,7 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   _log.addf(LogLevel::kInfo, "http", "配置导入成功，准备重启");
 
   // 先返回成功，再延迟 2 秒重启（与 OTA 一致，给响应留出发送时间）
-  sendOk(req, ",\"message\":\"配置导入成功，设备将在2秒后自动重启\"");
+  sendOkMsg(req, "配置导入成功，设备将在2秒后自动重启");
 
   xTaskCreate([](void *) {
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -2120,10 +2211,10 @@ void WebPanel::handleCoredumpClear(AsyncWebServerRequest *req) {
   }
   _log.addf(LogLevel::kInfo, "http", "已清除 coredump 分区: %s (size=%u)",
             part->label, static_cast<unsigned>(part->size));
-  sendOk(req, ",\"message\":\"coredump 已清除\"");
+  sendOkMsg(req, "coredump 已清除");
 }
 
 // ---- 兜底 404 ----
 void WebPanel::handleNotFound(AsyncWebServerRequest *req) {
-  req->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
+  sendErr(req, 404, "not found");
 }

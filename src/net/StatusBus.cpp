@@ -1,5 +1,7 @@
 #include "net/StatusBus.h"
 
+#include <ArduinoJson.h>
+
 #include "log/LogStore.h"
 #include "net/StateJson.h"
 
@@ -99,7 +101,12 @@ void StatusBus::tick() {
   // ---- 通信模组配置：变化才推 ----
   String ports = _sms.modemsJson();
   if (!_baseline || ports != _lastSmsPorts) {
-    publish("smsports", "{\"ok\":true,\"modems\":" + ports + "}");
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["modems"] = serialized(ports);  // 复用已序列化的通信模组数组（raw JSON）
+    String out;
+    serializeJson(doc, out);
+    publish("smsports", out);
     _lastSmsPorts = ports;
   }
 

@@ -25,20 +25,6 @@ void copyTo(char *dst, size_t n, const String &s) {
 
 }  // namespace
 
-// JSON 字符串转义（运营商/IMEI 等文本字段安全入 JSON）
-static String jsonStr(const String &s) {
-  String o;
-  o.reserve(s.length() + 2);
-  for (int i = 0; i < s.length(); i++) {
-    char c = s[i];
-    if (c == '"' || c == '\\') { o += '\\'; o += c; }
-    else if (c == '\n') o += "\\n";
-    else if (c == '\r') o += "\\r";
-    else o += c;
-  }
-  return o;
-}
-
 // 网络注册状态码 -> 可读文本（AT+CREG/CEREG 第二字段）
 static const char *regText(int stat) {
   switch (stat) {
@@ -222,30 +208,32 @@ bool SmsService::setModemAlias(uint8_t port, const String &alias) {
 }
 
 String SmsService::modemsJson() const {
-  String js = "[";
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
-    if (p > 1) js += ",";
     const ModemState &m = _modems[p];
     bool ready = m.initState == ModemInitState::kReady;
-    js += "{\"port\":" + String(p) +
-          ",\"enabled\":" + (m.enabled ? "true" : "false") +
-          ",\"ready\":" + (ready ? "true" : "false") +
-          ",\"state\":\"" + initStateName(m.initState) + "\"" +
-          ",\"csq\":" + String(m.csq) +
-          ",\"oper\":\"" + jsonStr(m.oper) + "\"" +
-          ",\"reg\":\"" + jsonStr(m.reg) + "\"" +
-          ",\"sim\":" + (m.simReady ? "true" : "false") +
-          ",\"act\":" + String(m.act) +
-          ",\"imei\":\"" + jsonStr(m.imei) + "\"" +
-          ",\"num\":\"" + jsonStr(m.num) + "\"" +
-          ",\"vendor\":\"" + jsonStr(m.vendor) + "\"" +
-          ",\"model\":\"" + jsonStr(m.model) + "\"" +
-          ",\"revision\":\"" + jsonStr(m.revision) + "\"" +
-          ",\"operCode\":\"" + jsonStr(m.operCode) + "\"" +
-          ",\"alias\":\"" + jsonStr(m.alias) + "\"}";
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = p;
+    o["enabled"] = m.enabled;
+    o["ready"] = ready;
+    o["state"] = initStateName(m.initState);
+    o["csq"] = m.csq;
+    o["oper"] = m.oper;   // 直接赋值，ArduinoJson 自动转义
+    o["reg"] = m.reg;
+    o["sim"] = m.simReady;
+    o["act"] = m.act;
+    o["imei"] = m.imei;
+    o["num"] = m.num;
+    o["vendor"] = m.vendor;
+    o["model"] = m.model;
+    o["revision"] = m.revision;
+    o["operCode"] = m.operCode;
+    o["alias"] = m.alias;
   }
-  js += "]";
-  return js;
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 // 单个通信模组的 LCD 简报：状态机阶段给中文短词，就绪态补上运营商与信号强度
@@ -752,15 +740,16 @@ static String adminHelpText() {
 }
 
 String SmsService::adminPhonesJson() const {
-  String js = "[";
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
   lock();
   for (uint8_t i = 0; i < _adminPhoneCount; i++) {
-    if (i) js += ",";
-    js += "\"" + jsonStr(_adminPhones[i]) + "\"";
+    arr.add(_adminPhones[i]);   // ArduinoJson 自动转义
   }
   unlock();
-  js += "]";
-  return js;
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 bool SmsService::setAdminPhones(const std::vector<String> &phones) {
@@ -1674,10 +1663,17 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
 // 最新一条短信的摘要 JSON
 String SmsService::latestJson() {
   SmsMessage m;
-  if (!_store.detail(_lastSmsId, m)) return "{}";
-  return String("{\"id\":") + m.id + ",\"incoming\":" +
-         (m.incoming ? "true" : "false") + ",\"phone\":\"" + m.phone +
-         "\",\"ts\":" + m.ts + ",\"modem\":" + m.modem + "}";
+  JsonDocument doc;
+  if (_store.detail(_lastSmsId, m)) {
+    doc["id"] = m.id;
+    doc["incoming"] = m.incoming;
+    doc["phone"] = m.phone;
+    doc["ts"] = m.ts;
+    doc["modem"] = m.modem;
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 // 载入 NVS 配置

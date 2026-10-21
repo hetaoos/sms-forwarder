@@ -1,5 +1,7 @@
 #include "sms/SmsStore.h"
 
+#include <ArduinoJson.h>
+
 #include "log/LogStore.h"
 
 #include <algorithm>
@@ -251,11 +253,22 @@ void SmsStore::clear() {
 
 // 存储统计
 String SmsStore::statsJson() {
-  if (!_enabled) return "{\"ok\":false,\"error\":\"store disabled\"}";
-  size_t total = userfs::totalBytes();
-  size_t used = userfs::usedBytes();
-  return String("{\"ok\":true,\"total\":") + _count + ",\"max\":" + _max +
-         ",\"used\":" + used + ",\"fsTotal\":" + total + "}";
+  JsonDocument doc;
+  if (!_enabled) {
+    doc["ok"] = false;
+    doc["error"] = "store disabled";
+  } else {
+    size_t total = userfs::totalBytes();
+    size_t used = userfs::usedBytes();
+    doc["ok"] = true;
+    doc["total"] = _count;
+    doc["max"] = _max;
+    doc["used"] = used;
+    doc["fsTotal"] = total;
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 // 今日短信统计（收/发）：本地午夜为界。结果缓存，跨午夜失效后重算一次

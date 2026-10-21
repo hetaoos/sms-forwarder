@@ -1,5 +1,6 @@
 #include "serial/AtHistory.h"
 
+#include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -16,32 +17,6 @@ void copyTrunc(char *dst, size_t cap, const char *src) {
   if (n > cap - 1) n = cap - 1;
   memcpy(dst, src, n);
   dst[n] = '\0';
-}
-
-// 转义 JSON 字符串中的特殊字符
-// s：原始字符串；返回可直接放进双引号内的安全内容
-String escape(const String &s) {
-  String out;
-  out.reserve(s.length() + 8);
-  for (size_t i = 0; i < s.length(); i++) {
-    char c = s[i];
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\r': out += "\\r"; break;
-      case '\n': out += "\\n"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if ((uint8_t)c < 0x20) {  // 其余控制字符按 \u00XX 转义
-          char tmp[8];
-          snprintf(tmp, sizeof(tmp), "\\u%04x", c);
-          out += tmp;
-        } else {
-          out += c;
-        }
-    }
-  }
-  return out;
 }
 
 }  // namespace
@@ -93,10 +68,15 @@ const AtHistory::Entry *AtHistory::get(uint32_t id) const {
 // id：目标记录 ID；返回该记录的 JSON 对象，不存在时返回 "{}"
 String AtHistory::entryJson(uint32_t id) const {
   const Entry *e = get(id);
-  if (!e) return String("{}");
-  return "{\"id\":" + String(e->id) + ",\"port\":" + String(e->port) +
-         ",\"cmd\":\"" + escape(e->cmd) + "\",\"resp\":\"" + escape(e->resp) +
-         "\"}";
+  if (!e) return String("{}");   // 未找到记录时返回空对象 "{}"
+  JsonDocument doc;
+  doc["id"] = e->id;
+  doc["port"] = e->port;
+  doc["cmd"] = e->cmd;   // 直接赋值，ArduinoJson 自动转义特殊字符
+  doc["resp"] = e->resp;
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 // 逻辑清空：把区间起点推到末尾，旧 ID 仍不可见
@@ -108,27 +88,38 @@ String AtHistory::toJson(int32_t afterId, size_t limit) const {
   uint32_t from = afterId < 0 ? _start : (uint32_t)(afterId + 1);
   if (from < _start) from = _start;
 
-  String out = "[";
-  size_t n = 0;
-  for (uint32_t id = from; _buf && id < _end && (limit == 0 || n < limit); id++) {
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (uint32_t id = from; _buf && id < _end && (limit == 0 || arr.size() < limit);
+       id++) {
     const Entry *e = get(id);
     if (!e) continue;
-    if (n++) out += ",";  // 第二条起补逗号
-    out += "{\"id\":" + String(e->id) + ",\"port\":" + String(e->port) +
-           ",\"cmd\":\"" + escape(e->cmd) + "\",\"resp\":\"" + escape(e->resp) +
-           "\"}";
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = e->id;
+    o["port"] = e->port;
+    o["cmd"] = e->cmd;   // 自动转义
+    o["resp"] = e->resp;
   }
-  out += "]";
+  String out;
+  serializeJson(doc, out);
   return out;
 }
 
 String AtHistory::statsJson() const {
-  if (!_buf) return "{\"ok\":false,\"error\":\"at history not ready\"}";
-  String js = String("{\"ok\":true,\"total\":") + (unsigned)(_end - _start) +
-              ",\"max\":" + _max +
-              ",\"psram\":" + (_psram ? "true" : "false") +
-              ",\"bytes\":" + (unsigned)(sizeof(Entry) * _max) +
-              ",\"psramTotal\":" + (unsigned)ESP.getPsramSize() +
-              ",\"psramFree\":" + (unsigned)ESP.getFreePsram() + "}";
-  return js;
+  JsonDocument doc;
+  if (!_buf) {
+    doc["ok"] = false;
+    doc["error"] = "at history not ready";
+  } else {
+    doc["ok"] = true;
+    doc["total"] = (unsigned)(_end - _start);
+    doc["max"] = _max;
+    doc["psram"] = _psram;
+    doc["bytes"] = (unsigned)(sizeof(Entry) * _max);
+    doc["psramTotal"] = (unsigned)ESP.getPsramSize();
+    doc["psramFree"] = (unsigned)ESP.getFreePsram();
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
 }

@@ -1,5 +1,7 @@
 #include "log/LogStore.h"
 
+#include <ArduinoJson.h>
+
 #include <esp_heap_caps.h>
 
 #include <ctype.h>
@@ -227,15 +229,26 @@ void LogStore::clear() {
 }
 
 String LogStore::statsJson() const {
-  if (!_buf) return "{\"ok\":false,\"error\":\"log ring not ready\"}";
+  JsonDocument doc;
+  if (!_buf) {
+    doc["ok"] = false;
+    doc["error"] = "log ring not ready";
+    String out;
+    serializeJson(doc, out);
+    return out;
+  }
   lock();
   // psramTotal/psramFree：设备 PSRAM 容量与剩余（页面据此区分「无 PSRAM」与
   // 「有 PSRAM 但分配失败」，而不是只显示一句落点结论）
-  String js = String("{\"ok\":true,\"total\":") + _count + ",\"max\":" + _max +
-              ",\"psram\":" + (_psram ? "true" : "false") +
-              ",\"bytes\":" + (unsigned)(sizeof(Entry) * _max) +
-              ",\"psramTotal\":" + (unsigned)ESP.getPsramSize() +
-              ",\"psramFree\":" + (unsigned)ESP.getFreePsram() + "}";
+  doc["ok"] = true;
+  doc["total"] = _count;
+  doc["max"] = _max;
+  doc["psram"] = _psram;
+  doc["bytes"] = (unsigned)(sizeof(Entry) * _max);
+  doc["psramTotal"] = (unsigned)ESP.getPsramSize();
+  doc["psramFree"] = (unsigned)ESP.getFreePsram();
   unlock();
-  return js;
+  String out;
+  serializeJson(doc, out);
+  return out;
 }

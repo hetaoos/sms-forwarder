@@ -1,5 +1,7 @@
 #include "serial/SerialBridge.h"
 
+#include <ArduinoJson.h>
+
 #include "log/LogStore.h"
 
 // 静态成员：单例指针，供中断/静态回调转发使用
@@ -497,21 +499,23 @@ SerialBridge::Stats SerialBridge::stats(uint8_t port) {
 
 // 汇总两个串口的统计为 JSON 数组字符串
 String SerialBridge::statsJson() {
-  String out = "[";
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
   for (uint8_t i = 0; i < 2; i++) {
     Stats s = stats(i + 1);
-    if (i) out += ",";
-    char buf[192];
-    snprintf(buf, sizeof(buf),
-             "{\"port\":%u,\"open\":%u,\"baud\":%u,\"rx\":%u,\"tx\":%u,\"err\":%u,"
-             "\"timeouts\":%u,\"recovers\":%u,\"idle\":%lu}",
-             (unsigned)(i + 1), s.opened ? 1 : 0, (unsigned)s.baud,
-             (unsigned)s.rx, (unsigned)s.tx, (unsigned)s.errors,
-             (unsigned)s.timeouts, (unsigned)s.recovers,
-             (unsigned long)s.lastRxMs);
-    out += buf;
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = (unsigned)(i + 1);
+    o["open"] = (unsigned)(s.opened ? 1 : 0);
+    o["baud"] = (unsigned)s.baud;
+    o["rx"] = (unsigned)s.rx;
+    o["tx"] = (unsigned)s.tx;
+    o["err"] = (unsigned)s.errors;
+    o["timeouts"] = (unsigned)s.timeouts;
+    o["recovers"] = (unsigned)s.recovers;
+    o["idle"] = (unsigned long)s.lastRxMs;
   }
-  out += "]";
+  String out;
+  serializeJson(doc, out);
   return out;
 }
 

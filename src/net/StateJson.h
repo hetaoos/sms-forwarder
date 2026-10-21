@@ -125,17 +125,30 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
 // 屏幕状态：与 GET /api/disp 响应一致
 // ui 提供持久化的自动熄屏 / 自动返回状态页时间（秒）
 inline String stateDispJson(Display &display, UIMenu &ui) {
-  return String("{\"ok\":true,\"on\":") + (display.screenOn() ? "true" : "false") +
-         ",\"bright\":" + String(display.brightness()) +
-         ",\"autoOffSec\":" + String(ui.autoOffSec()) +
-         ",\"idleSec\":" + String(ui.idleSec()) + "}";
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["on"] = display.screenOn();
+  doc["bright"] = display.brightness();
+  doc["autoOffSec"] = ui.autoOffSec();
+  doc["idleSec"] = ui.idleSec();
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
 
 // RGB 状态：与 GET /api/rgb 响应一致
 inline String stateRgbJson(RgbLed &led) {
   const RgbLed::Color &c = led.color();
-  String rgb = "[" + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
-  return String("{\"ok\":true,\"color\":\"") + c.name + "\",\"rgb\":" + rgb +
-         ",\"index\":" + String(led.index()) +
-         ",\"bright\":" + String(led.brightness()) + "}";
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["color"] = c.name;
+  JsonArray rgb = doc["rgb"].to<JsonArray>();
+  rgb.add(c.r);
+  rgb.add(c.g);
+  rgb.add(c.b);
+  doc["index"] = led.index();
+  doc["bright"] = led.brightness();
+  String out;
+  serializeJson(doc, out);
+  return out;
 }
