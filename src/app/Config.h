@@ -43,7 +43,17 @@ constexpr const char *kWebAuthUserFallback = "admin";
 constexpr const char *kWebAuthPassFallback = "admin123";
 
 // ---------------- AP 配网模式 ----------------
-constexpr const char *kApSsid = "SMS-Forwarder-Setup";  // AP 热点名（开放无密码，仅配网用）
+constexpr const char *kApSsid = "SMS-Forwarder-Setup";  // AP 热点名（仅配网用）
+
+// AP 配网热点密码：运行时 NVS 可改，编译期可注入默认（与 WEB_AUTH_*_DEFAULT 同套路）。
+// 在 platformio.ini 用 -DAP_PASS_DEFAULT=\"xxx\" 覆盖；未设置（空串）表示开放热点。
+// 非空必须是 8~63 字符（WPA2 要求），否则回落开放并告警（避免 softAP 静默失败）。
+// 首次启动（NVS 无记录）采用编译期值并落盘；之后以 NVS 为准，可在网页/设置修改。
+#ifndef AP_PASS_DEFAULT
+#define AP_PASS_DEFAULT ""
+#endif
+constexpr const char *kApPassDefault = AP_PASS_DEFAULT;  // AP 热点密码（可为空）
+constexpr size_t kApPassMaxLen = 63;                    // WPA2 口令长度上限
 constexpr const char *kCookieName = "sid";        // 登录会话 Cookie 名（HttpOnly + SameSite=Strict）
 constexpr uint8_t kMaxSessions = 8;               // 内存中同时有效的会话 / 访问令牌数上限
 constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（秒，7 天）
@@ -53,6 +63,7 @@ constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（�
 // {"ver":1,"list":[{"ssid":"...","pass":"..."}, ...]}
 constexpr const char *kNvsNamespace = "appcfg";  // NVS 命名空间
 constexpr const char *kNvsKeyWifi = "wifi";      // WiFi 配置键（JSON 对象）
+constexpr const char *kNvsKeyApPass = "appass";   // AP 配网热点密码键（{"ver":1,"pass":".."}）
 constexpr const char *kNvsKeyAuth = "auth";      // 管理账号键（JSON 对象，{"ver":1,"user":"..","pass":".."}）
 constexpr const char *kNvsKeySms = "sms";        // 短信配置键（{"ver":1,"max":n,"modems":[{"port":1,"enabled":true},..]}）
 constexpr const char *kNvsKeyToken = "apitoken"; // API 访问令牌键（持久化，重启不失效，用于脚本/第三方客户端）

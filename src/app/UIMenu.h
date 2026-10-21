@@ -25,6 +25,7 @@ enum class UiAction : uint8_t {
   kIdleUp,         // 自动返回状态页时间 +
   kIdleDown,       // 自动返回状态页时间 -
   kSmsOpen,        // 打开短信详情（可滚动文本页，取当前光标项）
+  kApInfo,         // 查看 AP 配网热点密码（可滚动文本页）
   kOtaCheck,       // 工具箱：检查新版本（发现新版本后不自动升级，留待用户确认）
   kOtaUpgrade,     // 工具箱：升级到检查到的新版本（用户确认入口，仅发现新版本后出现）
   kRestart,        // 工具箱：重启设备

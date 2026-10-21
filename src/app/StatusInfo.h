@@ -21,7 +21,8 @@ struct StatusInfo {
   bool apMode = false;        // 是否处于 AP 配网模式
   const char *ip = "-";       // 本机 IP 地址字符串（AP 模式为 192.168.4.1）
   const char *ssid = "-";     // 当前网络名（STA 已连 = SSID；AP = 热点名）
-  const char *apPass = "-";   // AP 热点密码文本（开放热点为“开放无密码”）
+  const char *apSsid = "-";   // AP 配网热点名（即 cfg::kApSsid）
+  const char *apPass = "-";   // AP 热点密码文本（开放热点为“开放无密码”，加密时为实际密码）
   const char *time = "--:--:--";  // 当前时间 "HH:MM:SS"（时钟未同步为 --:--:--）
   int8_t rssi = 0;            // WiFi 信号强度，单位 dBm（未连接时为 0）
   uint32_t uptimeSec = 0;     // 系统运行秒数

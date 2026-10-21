@@ -178,6 +178,9 @@ class WebPanel {
   void handleWifiDelete(AsyncWebServerRequest *req, JsonVariant &json);
   void handleWifiMove(AsyncWebServerRequest *req, JsonVariant &json);
   void handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json);
+  // AP 配网热点密码：查询 / 修改（NVS 持久化，运行时可改）
+  void handleWifiApGet(AsyncWebServerRequest *req);
+  void handleWifiApPost(AsyncWebServerRequest *req, JsonVariant &json);
 
   // 短信：统计 / 最新 / 通信模组列表 / 列表 / 删除 / 配置通信模组 / 重初始化 / 发送
   void handleSmsStats(AsyncWebServerRequest *req);

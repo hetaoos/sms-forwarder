@@ -55,6 +55,23 @@
     <div class="hint" x-show="!wifiHint">同 SSID 再次保存会覆盖密码；启动时按下方列表顺序依次尝试连接。</div>
   </div>
 
+  <!-- AP 配网热点密码 -->
+  <div class="card">
+    <h3>AP 配网热点密码
+      <span class="badge" :class="apSecure ? 'warn' : 'ok'" x-text="apSecure ? '加密' : '开放'"></span>
+    </h3>
+    <p class="page-desc">配网模式下设备热点的连接密码，留空为开放热点；运行时可改，重启后保持（编译期亦可注入默认值）。需 8~63 字符。</p>
+    <div class="bar">
+      <div class="field" style="flex:1;min-width:200px"><label>热点密码（留空=开放）</label>
+        <input x-model="apPass" type="password" autocomplete="new-password" placeholder="8~63 字符，或留空开放"></div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="saveAp()" :disabled="apSaving" x-text="apSaving ? '保存中…' : '保存'"></button></div>
+    </div>
+    <div :class="apIsErr ? 'form-err' : 'hint'" x-show="apHint">
+      <span class="ico" x-show="apIsErr">⚠</span><span x-text="apHint"></span>
+    </div>
+  </div>
+
   <!-- 已保存列表 -->
   <div class="card">
     <h3>已保存的网络 <span class="sub" x-text="saved.length + ' / 5'"></span></h3>

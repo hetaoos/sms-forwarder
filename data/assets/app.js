@@ -818,6 +818,8 @@ function pageWifi() {
     nets: [], scanHint: '', scanning: false,
     ssid: '', pass: '', saving: false, wifiHint: '', wifiIsErr: false,
     scanTimer: null,
+    // AP 配网热点密码（运行时可改）
+    apPass: '', apSecure: false, apSaving: false, apHint: '', apIsErr: false,
     // 状态与已保存列表来自 SSE 实时仓
     get wifi() { return Alpine.store('live').wifi; },
     get saved() { return Alpine.store('live').saved; },
@@ -826,6 +828,7 @@ function pageWifi() {
       const live = Alpine.store('live');
       if (!Object.keys(live.wifi).length) this.refresh();
       if (!live.saved.length) this.loadSaved();
+      await this.loadAp();
       // 扫描轮询计时器随切页清理
       onCleanup(() => { if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; } });
     },
@@ -873,6 +876,30 @@ function pageWifi() {
       this.scanHint = nets.length ? '' : '未发现网络';
     },
     pick(ssid) { this.ssid = ssid; this.pass = ''; },
+    // ---- AP 配网热点密码 ----
+    async loadAp() {
+      try {
+        const r = await apiFetch('/api/wifi/appass');
+        if (!r.ok) return;
+        const j = await r.json();
+        this.apSecure = !!j.secure;
+        this.apPass = j.pass || '';
+        this.apHint = '';
+      } catch (e) {}
+    },
+    apErr(msg) { this.apHint = msg; this.apIsErr = true; },
+    apBusy(msg) { this.apHint = msg; this.apIsErr = false; },
+    async saveAp() {
+      this.apSaving = true;
+      this.apBusy('正在保存…');
+      const r = await postOp('/api/wifi/appass', { pass: this.apPass });
+      this.apSaving = false;
+      if (!r) { this.apErr('保存失败，详见右上角提示'); return; }
+      const j = await r.json().catch(() => ({}));
+      this.apSecure = !!j.secure;
+      this.apBusy(this.apSecure ? '已设为加密热点' : '已设为开放热点');
+      toast('AP 热点密码已更新', 'ok');
+    },
     async save() {
       const ssid = this.ssid.trim();
       if (!ssid.length) { this.wifiErr('请先填写或选择 SSID'); return; }

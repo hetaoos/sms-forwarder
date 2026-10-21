@@ -135,18 +135,100 @@ void WifiManager::restartAttempts() {
   startNextAttempt();
 }
 
-// 进入 AP 配网模式：开放热点 + AP_STA 双栈，网页开启认证
+// 进入 AP 配网模式：按 _apPass 决定开放或加密热点 + AP_STA 双栈，网页开启认证
 void WifiManager::enterApMode() {
   if (_mode == WifiMode::kAp && _apUp) return;  // 已是 AP 模式，幂等返回
   _mode = WifiMode::kAp;
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                     IPAddress(255, 255, 255, 0));
-  WiFi.softAP(cfg::kApSsid);  // 开放热点，无密码
-  _apUp = true;
+  applyAp();
   _apRetryMs = millis();      // 重置后台重试计时
-  _log.addf(LogLevel::kInfo, "wifi", "已进入 AP 配网模式 '%s'（IP 192.168.4.1）",
-            cfg::kApSsid);
+  if (_apPass.length() >= 8)
+    _log.addf(LogLevel::kInfo, "wifi",
+              "已进入 AP 配网模式 '%s'（WPA2 加密，IP 192.168.4.1）", cfg::kApSsid);
+  else
+    _log.addf(LogLevel::kInfo, "wifi",
+              "已进入 AP 配网模式 '%s'（开放无密码，IP 192.168.4.1）", cfg::kApSsid);
+}
+
+// （重）创建 AP 热点：_apPass 合规则加密，否则开放
+void WifiManager::applyAp() {
+  if (_apPass.length() >= 8)
+    WiFi.softAP(cfg::kApSsid, _apPass.c_str());  // WPA2 加密热点
+  else
+    WiFi.softAP(cfg::kApSsid);                   // 开放热点
+  _apUp = true;
+}
+
+// 从 NVS 读取 AP 密码；无记录时用编译期默认（合规才采用）并落盘
+void WifiManager::loadApPass() {
+  Preferences prefs;
+  if (!prefs.begin(cfg::kNvsNamespace, true)) {  // 只读
+    _apPass = "";
+    return;
+  }
+  String p = prefs.getString(cfg::kNvsKeyApPass, "");
+  prefs.end();
+  if (!p.length()) {  // 首次启动：用编译期默认初始化并落盘
+    _apPass = validApPass(cfg::kApPassDefault) ? String(cfg::kApPassDefault) : String();
+    if (!validApPass(cfg::kApPassDefault) && cfg::kApPassDefault[0])
+      _log.addf(LogLevel::kWarn, "wifi",
+                "编译期 AP 密码长度不足 8 字符，WPA2 不支持，回落开放热点");
+    persistApPass();
+    return;
+  }
+  // NVS 已有记录：长度合规才采用，否则回落开放（不覆盖 NVS，避免反复告警）
+  if (validApPass(p)) {
+    _apPass = p;
+  } else {
+    _apPass = "";
+    _log.addf(LogLevel::kWarn, "wifi", "NVS 中 AP 密码长度异常，回落开放热点");
+  }
+}
+
+// 序列化为 JSON 写入 NVS
+bool WifiManager::persistApPass() const {
+  JsonDocument doc;
+  doc["ver"] = 1;
+  doc["pass"] = _apPass;
+  String out;
+  serializeJson(doc, out);
+  Preferences prefs;
+  if (!prefs.begin(cfg::kNvsNamespace, false)) return false;  // 读写
+  size_t written = prefs.putString(cfg::kNvsKeyApPass, out);
+  prefs.end();
+  return written == out.length();
+}
+
+// AP 密码是否合规：空串（开放）或 8~kApPassMaxLen 字符（WPA2）
+bool WifiManager::validApPass(const String &p) {
+  return p.length() == 0 || (p.length() >= 8 && p.length() <= cfg::kApPassMaxLen);
+}
+
+// 设置 AP 热点密码并落盘；AP 已启动则立即重建热点使新密码生效
+bool WifiManager::setApPass(const String &pass, String *err) {
+  if (!validApPass(pass)) {
+    if (err)
+      *err = "AP 密码需为 " + String(cfg::kApPassMaxLen) +
+             " 字符以内且空或≥8 字符（WPA2），或留空设为开放";
+    return false;
+  }
+  String old = _apPass;
+  _apPass = pass;
+  if (!persistApPass()) {
+    _apPass = old;
+    if (err) *err = "NVS 写入失败";
+    return false;
+  }
+  if (_apUp) {  // 重建热点使新密码生效（先断开再按当前 _apPass 重建）
+    WiFi.softAPdisconnect(false);
+    _apUp = false;
+    applyAp();
+    _log.addf(LogLevel::kInfo, "wifi", "AP 热点密码已更新（%s）",
+              _apPass.length() >= 8 ? "加密" : "开放");
+  }
+  return true;
 }
 
 // 初始化：读 NVS -> 组候选 -> 启动连接状态机
@@ -155,6 +237,7 @@ void WifiManager::begin() {
 
   lock();
   loadFromNvs();
+  loadApPass();   // AP 热点密码：NVS 优先于编译期默认
   // P3：首次启动（NVS 中完全没有 WiFi 配置键）且编译期内置了默认账号时，把该默认
   // 账号作为一条保存项写入 NVS（入库），使其持久化、在网页可见并可编辑，而非每次
   // 启动仅临时拼进候选。已写过的设备（NVS 有键）不再回填，尊重用户后续清空/修改。
@@ -319,6 +402,7 @@ void WifiManager::exportAllTo(JsonObject &o) const {
     e["ssid"] = _entries[i].ssid;
     e["pass"] = _entries[i].pass;
   }
+  o["apPass"] = _apPass;  // AP 热点密码（导出含明文，供备份/迁移）
   unlock();
 }
 
@@ -334,7 +418,10 @@ bool WifiManager::importAllFrom(const JsonObject &o) {
     _entries[_entryCount].pass = e["pass"] | "";
     _entryCount++;
   }
-  bool persisted = persistToNvs();
+  // AP 热点密码（导入同处理：合规才采用，否则保持原值/开放）
+  const char *ap = o["apPass"] | "";
+  if (ap[0] && validApPass(ap)) _apPass = ap;
+  bool persisted = persistToNvs() && persistApPass();
   unlock();
   if (persisted) {
     _log.addf(LogLevel::kInfo, "wifi", "已从备份导入 %u 个 WiFi 配置",
@@ -538,6 +625,8 @@ String WifiManager::statusJson() const {
   doc["rssi"] = rssi();
   doc["ap"] = _apUp;
   doc["apSsid"] = cfg::kApSsid;
+  doc["apSecure"] = apSecure();              // 热点是否加密（供前端提示）
+  doc["apPass"] = _apPass;                   // AP 密码（限已认证管理员可见）
   doc["apSta"] = WiFi.softAPgetStationNum();  // 当前连在热点上的客户端数（用于网页提示）
   doc["count"] = _entryCount;
   String out;

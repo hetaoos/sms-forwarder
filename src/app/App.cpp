@@ -207,8 +207,10 @@ void App::collectStatus(StatusInfo &out) {
   // 网络名：STA 已连显示 SSID，AP 模式显示热点名，未连接显示配置名
   sSsid = _wifi.ssid();
   out.ssid = sSsid.length() ? sSsid.c_str() : "-";
-  // AP 为开放热点（无密码），这里直接给可读文本而非空串
-  sPass = out.apMode ? "开放无密码" : "-";
+  // AP 配网热点信息（无论当前是否处于 AP 模式都展示，便于 LCD「查看热点密码」）
+  out.apSsid = cfg::kApSsid;
+  if (_wifi.apSecure()) sPass = _wifi.apPass();       // 加密：展示实际密码
+  else sPass = "开放无密码";                           // 开放：可读文本
   out.apPass = sPass.c_str();
 
   // ---- 现场拼装：本机信息 / 资源 / 通信模组 / 服务 ----

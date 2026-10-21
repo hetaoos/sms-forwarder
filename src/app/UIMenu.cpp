@@ -416,6 +416,20 @@ void UIMenu::activate(KeyEvent ev) {
       openView("短信详情", t);
       break;
     }
+    case UiAction::kApInfo: {
+      String t;
+      t += "热点: " + String(_snap.apSsid) + "\n";
+      if (_snap.apPass && strcmp(_snap.apPass, "开放无密码") == 0) {
+        t += "状态: 开放无密码\n";
+        t += "任意设备可直接连接 192.168.4.1 配网";
+      } else {
+        t += "状态: WPA2 加密\n";
+        t += "密码: " + String(_snap.apPass) + "\n";
+        t += "连接后访问 192.168.4.1 配网";
+      }
+      openView("AP 热点信息", t);
+      break;
+    }
     // ---- 工具箱 ----
     case UiAction::kOtaCheck: {
       // 检查中 / 升级中忽略连按；其余情况发起一次新检查
@@ -714,6 +728,11 @@ void UIMenu::fillWifi(MenuPage &pg) {
   addInfo(pg, "网页: http://%s", _snap.ip);
   addInfo(pg, "时间: %s", _snap.dateTime);
   addInfo(pg, "时间源: %s", timeSrcCn(_snap.timeSrc));
+  // AP 配网热点信息：直接在 WIFI 页展示（长密码可进「查看热点密码」滚动页抄录）
+  addInfo(pg, "热点: %s", _snap.apSsid);
+  addInfo(pg, "热点密码: %s", _snap.apPass);
+  // 查看 AP 配网热点密码（可滚动文本页，便于抄录长密码）
+  addItem(pg, UI_ICON_WIFI, "查看热点密码", nullptr, UiAction::kApInfo);
 }
 
 // ---- 邮件通知：开关 / 配置 / 服务器 / 收件 / 队列 ----

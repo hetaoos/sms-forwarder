@@ -498,6 +498,11 @@ void WebPanel::setupRoutes() {
   _server.on("/api/wifi/connect", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleWifiConnect(req, json); });
 
+  // AP 配网热点密码：GET 查询当前（secure + pass），POST 修改（empty=开放）
+  _server.on("/api/wifi/appass", HTTP_GET, [this](AsyncWebServerRequest *req) { handleWifiApGet(req); });
+  _server.on("/api/wifi/appass", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleWifiApPost(req, json); });
+
   // ================= 短信 =================
   // 顺序：所有 /api/sms/<子路径> 先注册，/api/sms（父路径）放最后
 
@@ -1252,6 +1257,27 @@ void WebPanel::handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json) 
   }
   _wifi.requestConnect(ssid, pass);
   sendOk(req, ",\"connecting\":true");
+}
+
+// AP 配网热点密码：返回当前是否加密与实际密码（已认证管理员可见）
+void WebPanel::handleWifiApGet(AsyncWebServerRequest *req) {
+  sendJson(req, String("{\"secure\":") + (_wifi.apSecure() ? "true" : "false") +
+                   ",\"pass\":\"" + _wifi.apPass() + "\"}");
+}
+
+// AP 配网热点密码：修改并落盘；{"pass":""} 设为开放热点
+void WebPanel::handleWifiApPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>() || !json["pass"].is<const char *>()) {
+    sendErr(req, 400, "pass required");
+    return;
+  }
+  String pass = json["pass"].as<String>();
+  String err;
+  if (!_wifi.setApPass(pass, &err)) {
+    sendErr(req, 400, err.c_str());
+    return;
+  }
+  sendOk(req, ",\"secure\":" + String(_wifi.apSecure() ? "true" : "false"));
 }
 
 // ---- 短信 ----

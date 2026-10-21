@@ -71,6 +71,17 @@ class WifiManager {
   // NVS 中已保存的配置组数（供 LCD「WIFI」页展示）
   uint8_t savedCount() const { return _entryCount; }
 
+  // ---------------- AP 配网热点密码（运行时 NVS 可改） ----------------
+  // 当前 AP 热点密码（运行时值，NVS 优先于编译期默认）；开放热点为空串
+  const String &apPass() const { return _apPass; }
+
+  // 当前 AP 是否加密（WPA2 要求密码 >= 8 字符）
+  bool apSecure() const { return _apPass.length() >= 8; }
+
+  // 设置 AP 热点密码并落盘：空串表示开放热点；非空必须是 8~kApPassMaxLen 字符，
+  // 越界返回 false（err 写入原因）。若 AP 当前已启动，立即重建热点使新密码生效。
+  bool setApPass(const String &pass, String *err = nullptr);
+
   // 已保存配置的 JSON：{"count":n,"list":[{"i":序号,"ssid":"..","hasPass":true},..]}
   // 密码不回传前端，避免泄露
   String listJson() const;
@@ -131,8 +142,20 @@ class WifiManager {
   // 显式试连失败后的回退：回到 NVS 候选重新开始，而不是直接跳 AP
   void restartAttempts();
 
-  // 进入 AP 配网模式：AP+STA 双栈，开放热点，网页需认证
+  // 进入 AP 配网模式：AP+STA 双栈，按 _apPass 决定开放或加密热点，网页需认证
   void enterApMode();
+
+  // （重）创建 AP 热点：_apPass 合规则加密，否则开放；置位 _apUp
+  void applyAp();
+
+  // 从 NVS 读取 AP 密码；无记录时用编译期默认（合规才采用）并落盘
+  void loadApPass();
+
+  // 把 _apPass 序列化为 JSON 写入 NVS；成功返回 true
+  bool persistApPass() const;
+
+  // AP 密码是否合规：空串（开放）或 8~kApPassMaxLen 字符（WPA2）
+  static bool validApPass(const String &p);
 
   // requestConnect 的加锁内部实现（save 持锁调用，避免可重入死锁）
   void requestConnectLocked(const String &ssid, const String &pass);
@@ -160,6 +183,7 @@ class WifiManager {
 
   WifiMode _mode = WifiMode::kConnecting;  // 当前工作模式
   bool _apUp = false;                      // AP 接口是否已启动
+  String _apPass;                          // AP 配网热点密码（空串=开放，NVS 持久化）
   bool _explicitTry = false;               // 是否为网页显式试连（失败回退而非进 AP）
   String _lastGoodSsid;                    // 上次成功连上的 SSID，重连时优先
 
