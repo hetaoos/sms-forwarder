@@ -843,7 +843,9 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   // 与 OTA 检查/升级、HTTP 推送共用 TLS 轮次锁：任意时刻最多一个 mbedTLS 上下文
   // 在建/在用，避免两个上下文并存撑爆堆（-32512）。OTA 升级期间此处以非阻塞方式
   // 让出（拿不到锁即返回 false，由 App::tick 重试），不会卡死主循环。
-  TlsTurn tlsTurn(0);
+  // 申请者标识 "邮件-SMTP" 会登记到 g_tlsHolder，拿不到锁时 TlsTurn 的告警里
+  // 会带上「是谁正占用着通道」，无需在此重复打印。
+  TlsTurn tlsTurn("邮件-SMTP", 0);
   if (!tlsTurn.held()) return false;
 
   // 清理上一次尝试的残留连接状态，确保每次从干净状态开始

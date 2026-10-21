@@ -216,11 +216,13 @@ static ProbeResult probeViaReleasesJson(String& outTag) {
         {
             // 轮次的作用域就是这一次尝试：尝试一结束就释放，退避期间不占着锁，
             // 否则「重试」会把别的 HTTPS 流量也一并挡住。
-            TlsTurn turn(OTA_HTTP_TIMEOUT_MS);
+            TlsTurn turn("OTA-版本检查[list]", OTA_HTTP_TIMEOUT_MS);
             if (!turn.held()) {
                 // 其它 TLS 会话（推送/下载）正占着，本轮直接放弃 —— 让检查任务
                 // 尽快收尾，而不是把整个检查拖成几十秒。
-                LOG("OTA", "版本检查[list]：TLS 通道被占用，本轮跳过");
+                const char* holder = tlsHolderNow();
+                LOG("OTA", "版本检查[list]：TLS 通道被 %s 占用，本轮跳过",
+                    holder ? holder : "其它任务");
                 return ProbeResult::FAILED;
             }
             if (attempt > 0) {
@@ -335,9 +337,11 @@ static ProbeResult probeViaBadge(String& outTag) {
     for (uint8_t attempt = 0; attempt < OTA_PROBE_RETRY_PER_CHANNEL; ++attempt) {
         ProbeResult r = ProbeResult::FAILED;
         {
-            TlsTurn turn(OTA_HTTP_TIMEOUT_MS);
+            TlsTurn turn("OTA-版本检查[badge]", OTA_HTTP_TIMEOUT_MS);
             if (!turn.held()) {
-                LOG("OTA", "版本检查[badge]：TLS 通道被占用，本轮跳过");
+                const char* holder = tlsHolderNow();
+                LOG("OTA", "版本检查[badge]：TLS 通道被 %s 占用，本轮跳过",
+                    holder ? holder : "其它任务");
                 return ProbeResult::FAILED;
             }
             if (attempt > 0) {
@@ -546,6 +550,12 @@ static void checkVersionTask(void* /*param*/) {
 }
 
 // ── otaTaskAbort — 失败后延时清理并终止任务（仅限 FreeRTOS 任务内调用）──
+// ⚠️ 本函数以 vTaskDelete 收尾，**不做 C++ 栈展开**：调用点作用域内的
+// TlsTurn / HttpSession 等 RAII 对象析构不会执行 —— TLS 上下文（~35KB）与
+// g_tlsMutex 轮次锁会一起泄漏，且锁泄漏会让后续所有 HTTPS 流量（版本检查、
+// 推送、邮件）永远拿不到轮次，直到重启才恢复。
+// 在持有 TLS 对象的块内调用前，必须先显式 reset()/release() 再进入本函数，
+// 参见 onlineUpgradeTask 下载阶段的 dlAbort 助手。
 [[noreturn]] static void otaTaskAbort(const String& userMsg) {
     g_state      = OtaState::FAILED;
     g_message    = userMsg;
@@ -602,36 +612,49 @@ static void onlineUpgradeTask(void* param) {
     {
         // 下载是用户主动触发的长任务，不重试，但必须排队等轮次 —— 与版本检查
         // 撞在一起时宁可多等一会儿，也别两个 TLS 上下文同时握手。
-        TlsTurn dlTurn(OTA_HTTP_TIMEOUT_MS * 2);
+        //
+        // ⚠️ 块内的失败一律走 dlAbort，不要直接调 otaTaskAbort：后者以
+        // vTaskDelete 收尾且不做 C++ 栈展开，dlSession（mbedTLS 上下文 ~35KB）
+        // 与 dlTurn（g_tlsMutex 轮次锁）都会泄漏 —— 锁泄漏会让后续所有 HTTPS
+        // 流量永远拿不到轮次，直到重启。下载循环内的失败是例外：只置
+        // dlFailed 后 break，到本 block 末尾正常出作用域，析构照常执行。
+        TlsTurn dlTurn("OTA-下载固件", OTA_HTTP_TIMEOUT_MS * 2);
         if (!dlTurn.held()) {
+            // 未拿到锁：此时无 TLS 会话可漏，dlTurn 也未持有锁，可直接中止
+            const char* holder = tlsHolderNow();
+            String busy = String("网络通道繁忙（") + (holder ? holder : "其它任务")
+                        + " 占用中），请稍后重试";
             esp_ota_abort(g_otaHandle);
-            otaTaskAbort("网络通道繁忙（其它 HTTPS 任务占用中），请稍后重试");
+            otaTaskAbort(busy);
         }
         auto dlSession = std::unique_ptr<HttpSession>(HttpSession::request(firmwareUrl));
-        if (!dlSession) {
+        // 块内中止助手：先归还 OTA 句柄、TLS 会话与轮次锁，再终止任务
+        auto dlAbort = [&](const String& msg) {
             esp_ota_abort(g_otaHandle);
-            otaTaskAbort("无法建立固件下载连接");
+            dlSession.reset();   // ~HttpSession：http.end() + 释放 mbedTLS 上下文
+            dlTurn.release();    // 归还 g_tlsMutex，避免后续 HTTPS 全部拿不到锁
+            otaTaskAbort(msg);
+        };
+        if (!dlSession) {
+            dlAbort("无法建立固件下载连接");
         }
         dlSession->http()->setTimeout(OTA_HTTP_TIMEOUT_MS);
         dlSession->http()->setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
         dlSession->http()->setRedirectLimit(10);
         int dlCode = dlSession->http()->GET();
         if (dlCode != 200) {
-            esp_ota_abort(g_otaHandle);
             LOG("OTA", "固件下载 HTTP 响应码: %d", dlCode);
-            otaTaskAbort("连接固件服务器失败，响应码: " + String(dlCode));
+            dlAbort("连接固件服务器失败，响应码: " + String(dlCode));
         }
 
         int contentLen = dlSession->http()->getSize();
         LOG("OTA", "固件大小: %d 字节", contentLen);
         if (contentLen <= 0) {
-            esp_ota_abort(g_otaHandle);
-            otaTaskAbort("固件服务器未返回有效大小");
+            dlAbort("固件服务器未返回有效大小");
         }
         if ((size_t)contentLen > g_otaPart->size) {
-            esp_ota_abort(g_otaHandle);
             LOG("OTA", "固件大小超过 OTA 分区: %d > %u", contentLen, (unsigned)g_otaPart->size);
-            otaTaskAbort("固件大小超过 OTA 分区");
+            dlAbort("固件大小超过 OTA 分区");
         }
 
         WiFiClient* dlStream = dlSession->http()->getStreamPtr();
@@ -711,9 +734,11 @@ static void onlineUpgradeTask(void* param) {
         int  fsTotalWritten = 0;
         // 同上：LittleFS 是可选阶段。拿不到轮次（别的 HTTPS 任务正占着）就跳过，
         // 只升固件 —— 让整条升级链不必为一个可选步骤卡住。
-        TlsTurn fsTurn(OTA_HTTP_TIMEOUT_MS * 2);
+        TlsTurn fsTurn("OTA-下载WebUI", OTA_HTTP_TIMEOUT_MS * 2);
         if (!fsTurn.held()) {
-            LOG("OTA", "LittleFS：网络通道繁忙，跳过 Web UI 升级");
+            const char* holder = tlsHolderNow();
+            LOG("OTA", "LittleFS：网络通道繁忙（%s 占用中），跳过 Web UI 升级",
+                holder ? holder : "其它任务");
             fsFailed = true;
         } else {
             auto fsSession = std::unique_ptr<HttpSession>(HttpSession::request(fsUrl));
@@ -744,6 +769,10 @@ static void onlineUpgradeTask(void* param) {
                         esp_err_t eraseErr = esp_partition_erase_range(fsPart, 0, fsPart->size);
                         if (eraseErr != ESP_OK) {
                             LOG("OTA", "LittleFS 分区擦除失败: %s", esp_err_to_name(eraseErr));
+                            // 同固件下载阶段：块内直接 abort 会因 vTaskDelete 不栈展开
+                            // 而泄漏 fsSession/fsTurn，先显式释放再终止任务
+                            fsSession.reset();
+                            fsTurn.release();
                             otaTaskAbort("Web UI 分区擦除失败: " + String(esp_err_to_name(eraseErr)));
                         }
 

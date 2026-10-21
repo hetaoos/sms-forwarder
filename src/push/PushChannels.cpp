@@ -99,9 +99,11 @@ static TlsSession request(const String& url) {
     delay(HTTP_COOLDOWN_MS - (now - s_lastHttpEndMs));
   }
   TlsSession ts;
-  ts.turn = TlsTurn(TLS_TURN_WAIT_MS);
+  ts.turn = TlsTurn("推送-HTTP", TLS_TURN_WAIT_MS);
   if (!ts.turn.held()) {
-    _log.addf(LogLevel::kWarn, "pushch", "TLS 通道被占用，跳过本次推送");
+    const char* holder = tlsHolderNow();
+    _log.addf(LogLevel::kWarn, "pushch", "TLS 通道被 %s 占用，跳过本次推送",
+              holder ? holder : "其它任务");
     return ts;
   }
   ts.session = std::unique_ptr<HttpSession>(HttpSession::request(url));
