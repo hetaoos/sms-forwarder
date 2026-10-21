@@ -1,14 +1,14 @@
 <div x-data="pageAdmin()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>管理员远程控制</h2>
+      <h2>管理员</h2>
       <p class="page-desc">授权手机号经短信下发命令，远程控制设备（代发 / 重启 / PING 等）</p>
     </div>
   </div>
 
   <div class="card">
     <div class="bar" style="margin-bottom:10px">
-      <h3 style="margin:0">管理员远程控制</h3>
+      <h3 style="margin:0">管理员</h3>
       <span class="badge" :class="(!adminEnabled ? 'info' : (admins.filter(v=>v).length ? 'ok' : 'warn'))"
             x-text="!adminEnabled ? '已关闭' : (admins.filter(v=>v).length ? ('已开启（'+admins.filter(v=>v).length+' 个）') : '已开启（未设号码）')"></span>
     </div>

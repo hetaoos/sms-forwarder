@@ -428,7 +428,7 @@ const MENU = [
   ]},
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
-    { id: 'admin', title: '管理员远程控制', icon: 'admin' },
+    { id: 'admin', title: '管理员', icon: 'admin' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
     { id: 'modem', title: '通信模组', icon: 'modem' },
   ]},
