@@ -16,9 +16,17 @@ LogStore &_log = devLog();
 // 读取 NVS 中的 JSON 配置，失败或不存在时按空列表处理
 void WifiManager::loadFromNvs() {
   _entryCount = 0;
+  _nvsHadKey = false;
 
   Preferences prefs;
   if (!prefs.begin(cfg::kNvsNamespace, true)) return;  // 只读方式打开
+  // 区分「NVS 无任何 WiFi 配置键」（首次启动）与「有键但为空/解析失败」（可能用户清空）。
+  // 仅首次启动才触发编译期默认账号回填（P3），避免覆盖用户主动清空后的意图（进 AP 配网）。
+  if (!prefs.isKey(cfg::kNvsKeyWifi)) {
+    prefs.end();
+    return;
+  }
+  _nvsHadKey = true;
   String json = prefs.getString(cfg::kNvsKeyWifi, "");
   prefs.end();
   if (!json.length()) return;
@@ -147,6 +155,23 @@ void WifiManager::begin() {
 
   lock();
   loadFromNvs();
+  // P3：首次启动（NVS 中完全没有 WiFi 配置键）且编译期内置了默认账号时，把该默认
+  // 账号作为一条保存项写入 NVS（入库），使其持久化、在网页可见并可编辑，而非每次
+  // 启动仅临时拼进候选。已写过的设备（NVS 有键）不再回填，尊重用户后续清空/修改。
+  if (!_nvsHadKey && cfg::kWifiSsidDefault[0] && _entryCount == 0) {
+    if (_entryCount < kMaxEntries) {
+      _entries[_entryCount].ssid = cfg::kWifiSsidDefault;
+      _entries[_entryCount].pass = cfg::kWifiPassDefault;
+      _entryCount++;
+      if (persistToNvs())
+        _log.addf(LogLevel::kInfo, "wifi",
+                  "NVS 无 WiFi 配置，已将编译期默认账号 '%s' 入库",
+                  cfg::kWifiSsidDefault);
+      else
+        _log.addf(LogLevel::kWarn, "wifi",
+                  "编译期默认账号入库失败（写入 NVS 失败）");
+    }
+  }
   rebuildCandidates();
   if (_candCount == 0) {
     // 无任何配置（编译期为空且 NVS 为空）-> 直接 AP 配网

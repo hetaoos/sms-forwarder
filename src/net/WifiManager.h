@@ -25,8 +25,10 @@ struct WifiEntry {
 };
 
 // WiFi 管理器：
-// 1. 启动时按顺序尝试「编译期默认账号 + NVS 中保存的配置」，失败
-//    kWifiAttemptRounds 轮后切换 AP 配网模式（网页用 admin/admin123 保护）；
+// 1. 首次启动（NVS 中完全没有 WiFi 配置键）且编译期内置了默认账号时，先把该默认
+//    账号写入 NVS（入库），使其持久化、在网页可见并可编辑；之后启动统一按
+//    「编译期默认账号 + NVS 中保存的配置」依次尝试，失败 kWifiAttemptRounds 轮后
+//    切换 AP 配网模式（网页用 admin/admin123 保护）；
 // 2. NVS 中以 JSON 对象按功能保存 WiFi 配置，最多 kWifiMaxNetworks 组；
 // 3. 提供扫描 / 增删改排序 / 立即试连能力，全部走非阻塞状态机；
 // 4. 公开方法可能被 Web 任务调用，内部用互斥量与 loop 任务的 tick() 互斥。
@@ -145,6 +147,8 @@ class WifiManager {
 
   WifiEntry _entries[kMaxEntries];    // NVS 保存的配置（有序，启动按序尝试）
   uint8_t _entryCount = 0;            // 有效配置条数
+  bool _nvsHadKey = false;            // loadFromNvs 标记 NVS 是否曾写过 WiFi 配置键
+                                      // （区分「首次启动无配置」与「用户主动清空」）
 
   WifiEntry _cand[kMaxCandidates];    // 候选连接列表（默认账号 + NVS 配置）
   uint8_t _candCount = 0;             // 候选条数
