@@ -30,6 +30,7 @@ enum class UiAction : uint8_t {
   kOtaUpgrade,     // 工具箱：升级到检查到的新版本（用户确认入口，仅发现新版本后出现）
   kRestart,        // 工具箱：重启设备
   kReset,          // 工具箱：恢复出厂设置（需连按 OK kToolResetConfirm 次确认）
+  kAccountReset,   // 工具箱：重置 Web 登录密码为随机密码（连按确认）并屏上展示
 };
 
 // 动态页标识：静态页为 kNone（内容编译期确定）；
@@ -161,6 +162,14 @@ class UIMenu {
   void setOtaUpgradeFn(OtaUpgradeFn f) { _otaUpgradeFn = std::move(f); }
   void setRestartFn(SysFn f) { _restartFn = std::move(f); }
   void setResetFn(SysFn f) { _resetFn = std::move(f); }
+
+  // ============ Web 账号（App 注入，避免 UI 直接依赖 WebPanel / AdminStore）============
+  // accountUser：返回当前 Web 登录用户名（只读展示，不回传密码）；
+  // accountReset：生成随机密码、写 NVS、作废全部会话，返回新密码（失败返回空串）。
+  using AccUserFn = std::function<String()>;
+  using AccResetFn = std::function<String()>;
+  void setAccountUserFn(AccUserFn f) { _accUserFn = std::move(f); }
+  void setAccountResetFn(AccResetFn f) { _accResetFn = std::move(f); }
 
   // ============ 新短信弹窗 ============
   // 由 App 在主循环（loop 任务）检测到新短信时调用：立刻弹到屏上并点亮屏幕。
@@ -344,4 +353,12 @@ class UIMenu {
   OtaUpgradeFn _otaUpgradeFn;     // 未注入时检查到新版本也无法升级
   SysFn _restartFn;               // 未注入时重启项无响应
   SysFn _resetFn;                 // 未注入时重置项无响应
+  // Web 账号：查看用户名 / 重置登录密码（与上面重置共用连按确认范式）
+  uint8_t _accResetCount = 0;     // 重置 Web 密码连按计数（满 kToolResetConfirm 次执行）
+  uint32_t _accResetMs = 0;       // 上次按重置 Web 密码的时刻（超时未续按则清零）
+  bool _accResetPending = false;  // 已按满次数、倒计时等待执行（BACK 可取消）
+  uint32_t _accResetActMs = 0;    // 按满次数的时刻（倒计时起点）
+  String _accNewPass;             // 重置后生成的随机密码（用于屏上展示）
+  AccUserFn _accUserFn;           // 未注入时用户名显示「-」
+  AccResetFn _accResetFn;         // 未注入时重置项无响应
 };

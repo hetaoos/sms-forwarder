@@ -474,6 +474,17 @@ void UIMenu::activate(KeyEvent ev) {
       }
       break;
     }
+    case UiAction::kAccountReset: {
+      // 只认短按：长按连发不计入，必须实打实按满 kToolResetConfirm 次
+      if (ev != KeyEvent::kClick || _accResetPending || !_accResetFn) break;
+      _accResetCount++;
+      _accResetMs = millis();
+      if (_accResetCount >= cfg::kToolResetConfirm) {
+        _accResetPending = true;
+        _accResetActMs = millis();
+      }
+      break;
+    }
     default:
       break;
   }
@@ -490,6 +501,12 @@ void UIMenu::back() {
     _resetPending = false;
     _resetCount = 0;
     _toolMsg = "已取消重置";
+    return;
+  }
+  if (_accResetPending) {
+    _accResetPending = false;
+    _accResetCount = 0;
+    _toolMsg = "已取消重置Web密码";
     return;
   }
   if (_depth > 0) {  // 弹出上一级页面，并恢复到离开时选中的那一项
@@ -896,6 +913,17 @@ void UIMenu::fillToolbox(MenuPage &pg) {
   else snprintf(buf, sizeof(buf), "重置");
   addItem(pg, UI_ICON_INFO, buf, nullptr, UiAction::kReset);
 
+  // Web 账号：查看当前用户名（只读）+ 重置登录密码为随机密码（连按确认）
+  const String accUser = _accUserFn ? _accUserFn() : String("-");
+  addInfo(pg, "Web账号: %s", accUser.c_str());
+  char abuf[32];
+  if (_accResetCount > 0)
+    snprintf(abuf, sizeof(abuf), "重置Web密码 (%u/%u)", (unsigned)_accResetCount,
+             (unsigned)cfg::kToolResetConfirm);
+  else
+    snprintf(abuf, sizeof(abuf), "重置Web密码");
+  addItem(pg, UI_ICON_MAC, abuf, nullptr, UiAction::kAccountReset);
+
   // 倒计时提示（确认后的宽限，BACK 可取消；执行动作由 tick() 到点发起）
   if (_restartPending) addInfo(pg, "设备即将重启，BACK 取消");
   if (_resetPending) addInfo(pg, "正在恢复出厂设置...");
@@ -1028,6 +1056,31 @@ void UIMenu::tick() {
     if (now - _resetMs >= cfg::kToolResetTimeoutMs || _current != &kPageToolbox) {
       _resetCount = 0;
       _dirty = true;   // 标签从「重置 (n/5)」收回「重置」
+    }
+  }
+
+  // Web 密码重置：确认后延迟 kToolActDelayMs 执行，给屏幕留出提示时间，
+  // 期间按 BACK 可取消（见 back()）。执行时生成随机密码、写 NVS、作废会话，
+  // 并以可滚动文本页展示新密码（旧密码与所有会话已失效）。
+  if (_accResetPending && now - _accResetActMs >= cfg::kToolActDelayMs) {
+    _accResetPending = false;
+    if (_accResetFn) {
+      _accNewPass = _accResetFn();
+      String u = _accUserFn ? _accUserFn() : String("-");
+      if (_accNewPass.length()) {
+        String t = "用户名: " + u + "\n新密码: " + _accNewPass +
+                   "\n\n请立即用新密码登录网页，旧密码与所有会话已失效。";
+        openView("Web 登录信息", t);
+      } else {
+        openView("Web 登录信息", "重置失败，请重试或重启设备");
+      }
+    }
+  }
+  // 重置 Web 密码连按计数：停手超时未续按、或已离开工具箱页 -> 清零，重新计
+  if (_accResetCount > 0 && !_accResetPending) {
+    if (now - _accResetMs >= cfg::kToolResetTimeoutMs || _current != &kPageToolbox) {
+      _accResetCount = 0;
+      _dirty = true;   // 标签从「重置Web密码 (n/5)」收回「重置Web密码」
     }
   }
 

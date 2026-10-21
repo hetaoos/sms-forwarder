@@ -17,6 +17,7 @@
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
 #include <esp_system.h>            // esp_restart()
+#include <esp_random.h>             // esp_random()：随机 Web 密码生成
 #include <freertos/FreeRTOS.h>    // xTaskCreate / vTaskDelay
 #include <freertos/task.h>
 #include <time.h>                 // localtime_r / time()
@@ -39,6 +40,15 @@ int paramInt(AsyncWebServerRequest *req, const char *name, int def) {
 String stringParam(AsyncWebServerRequest *req, const char *name) {
   if (!req->hasParam(name)) return String();
   return req->getParam(name)->value();
+}
+
+// 生成随机可读密码（去掉易混字符 0/O/1/l/I），默认 16 位
+String genRandomPassword(size_t len = 16) {
+  static const char k[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  String s;
+  s.reserve(len);
+  for (size_t i = 0; i < len; i++) s += k[esp_random() % (sizeof(k) - 1)];
+  return s;
 }
 
 // 从 LittleFS 发送页面资源：优先同名 .gz（省 flash，浏览器自动解压），
@@ -215,6 +225,22 @@ void WebPanel::invalidateAllSessions() {
   _sessionCount = 0;
   _tokenCount = 0;
   _log.addf(LogLevel::kInfo, "http", "已注销全部会话与访问令牌");
+}
+
+// 当前 Web 登录用户名（供 LCD 展示，不回传密码）
+String WebPanel::webUser() const { return _auth.user(); }
+
+// 重置 Web 登录密码为随机密码：写 NVS + 作废全部会话，返回新密码（失败返回空串）
+String WebPanel::resetWebPassword() {
+  String np = genRandomPassword();
+  String err;
+  if (!_auth.update(_auth.user(), np, &err)) {
+    _log.addf(LogLevel::kWarn, "auth", "LCD 重置 Web 密码失败：%s", err.c_str());
+    return String();
+  }
+  invalidateAllSessions();  // 旧密码与所有会话立即失效
+  _log.addf(LogLevel::kInfo, "auth", "LCD 重置 Web 登录密码为随机密码");
+  return np;
 }
 
 // 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于

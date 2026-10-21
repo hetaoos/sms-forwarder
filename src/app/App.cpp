@@ -84,6 +84,9 @@ bool App::begin() {
         },
         "ui_fac", 2048, nullptr, 5, nullptr);
   });
+  // Web 账号：LCD 查看用户名 / 重置登录密码为随机密码
+  _ui.setAccountUserFn([this]() { return _panel.webUser(); });
+  _ui.setAccountResetFn([this]() { return _panel.resetWebPassword(); });
   _bridge.begin();                     // 启动串口抽数任务
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等通信模组自发数据前交给短信服务
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {

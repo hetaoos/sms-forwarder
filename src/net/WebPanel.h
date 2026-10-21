@@ -58,6 +58,11 @@ class WebPanel {
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
 
+  // 当前 Web 登录用户名（供 LCD 展示，不回传密码）
+  String webUser() const;
+  // 重置 Web 登录密码为随机密码：写 NVS + 作废全部会话，返回新密码（失败返回空串）
+  String resetWebPassword();
+
  private:
   // 注册全部 URL 路由与处理器。
   //
