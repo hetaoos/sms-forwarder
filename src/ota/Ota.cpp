@@ -36,10 +36,11 @@ static const esp_partition_t*   g_lfsPart        = nullptr;
 static size_t                  g_lfsWriteOffset = 0;
 static size_t                  g_lfsTotalSize   = 0;
 
-// ── TLS 轮次锁 ─────────────────────────────────────────────────────
-// g_tlsMutex / TlsTurn 已抽到 utils/TlsTurn.{h,cpp}，由 OTA 检查/升级、
-// 所有推送通道、SMTP 邮件共用，确保任意时刻最多一个 mbedTLS 上下文在建/在用，
-// 避免两个 ~35KB 上下文并存撑爆堆（-32512）。本文件只使用 TlsTurn。
+// ── TLS 通道（计数信号量）──────────────────────────────────────────
+// g_tlsSem / TlsTurn 已抽到 utils/TlsTurn.{h,cpp}，由 OTA 检查/升级、
+// 所有推送通道、SMTP 邮件、MQTT-TLS 共用，最多 kMaxTlsChannels 个 mbedTLS
+// 上下文并发（大块缓冲已重定向 PSRAM），避免多个 ~35KB 上下文并存撑爆堆（-32512）。
+// 本文件只使用 TlsTurn。
 
 // 版本检查里 TLS 相关失败的短时退避。给 mbedTLS 释放内存、堆整理留出时间窗口。
 //
@@ -552,8 +553,8 @@ static void checkVersionTask(void* /*param*/) {
 // ── otaTaskAbort — 失败后延时清理并终止任务（仅限 FreeRTOS 任务内调用）──
 // ⚠️ 本函数以 vTaskDelete 收尾，**不做 C++ 栈展开**：调用点作用域内的
 // TlsTurn / HttpSession 等 RAII 对象析构不会执行 —— TLS 上下文（~35KB）与
-// g_tlsMutex 轮次锁会一起泄漏，且锁泄漏会让后续所有 HTTPS 流量（版本检查、
-// 推送、邮件）永远拿不到轮次，直到重启才恢复。
+// g_tlsSem 通道锁会一起泄漏，且锁泄漏会让后续所有 HTTPS 流量（版本检查、
+// 推送、邮件）永远拿不到通道，直到重启才恢复。
 // 在持有 TLS 对象的块内调用前，必须先显式 reset()/release() 再进入本函数，
 // 参见 onlineUpgradeTask 下载阶段的 dlAbort 助手。
 [[noreturn]] static void otaTaskAbort(const String& userMsg) {
@@ -615,8 +616,8 @@ static void onlineUpgradeTask(void* param) {
         //
         // ⚠️ 块内的失败一律走 dlAbort，不要直接调 otaTaskAbort：后者以
         // vTaskDelete 收尾且不做 C++ 栈展开，dlSession（mbedTLS 上下文 ~35KB）
-        // 与 dlTurn（g_tlsMutex 轮次锁）都会泄漏 —— 锁泄漏会让后续所有 HTTPS
-        // 流量永远拿不到轮次，直到重启。下载循环内的失败是例外：只置
+        // 与 dlTurn（g_tlsSem 通道锁）都会泄漏 —— 锁泄漏会让后续所有 HTTPS
+        // 流量永远拿不到通道，直到重启。下载循环内的失败是例外：只置
         // dlFailed 后 break，到本 block 末尾正常出作用域，析构照常执行。
         TlsTurn dlTurn("OTA-下载固件", OTA_HTTP_TIMEOUT_MS * 2);
         if (!dlTurn.held()) {
@@ -632,7 +633,7 @@ static void onlineUpgradeTask(void* param) {
         auto dlAbort = [&](const String& msg) {
             esp_ota_abort(g_otaHandle);
             dlSession.reset();   // ~HttpSession：http.end() + 释放 mbedTLS 上下文
-            dlTurn.release();    // 归还 g_tlsMutex，避免后续 HTTPS 全部拿不到锁
+            dlTurn.release();    // 归还 g_tlsSem，避免后续 HTTPS 全部拿不到通道
             otaTaskAbort(msg);
         };
         if (!dlSession) {

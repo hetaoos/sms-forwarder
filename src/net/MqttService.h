@@ -7,6 +7,7 @@
 #include <mqtt_client.h>
 
 #include "app/Config.h"
+#include "utils/TlsTurn.h"   // MQTT-TLS 复用 4 通道计数信号量（按值成员 _tlsGuard）
 
 class WifiManager;
 class SmsService;
@@ -153,6 +154,12 @@ class MqttService {
   static String s_uri, s_cid, s_will, s_willMsg, s_user, s_pass;
   static esp_mqtt_client_handle_t s_client;
   static bool s_connected;       // 当前连接状态
+
+  // TLS 轮次守卫：仅当 _useTls 时，建连前取、断连/销毁前还（从末尾槽分配）。
+  // 与 OTA/推送/邮件共用 4 通道计数信号量；release() 幂等，明文连接不占通道。
+  // 与此类其余状态一致，均声明为 static（buildClient/destroyClient 为静态函数）。
+  static TlsTurn _tlsGuard;
+  static unsigned long _mqttTlsNextTryMs;  // TLS 通道满时的重试退避时刻（避免主循环刷日志）
   static String s_lastError;     // 最近一次连接错误描述（CONNECTED 时清空，空串=无错误）
   static bool s_wasConnected;    // 上一 tick 连接状态（检测刚连上的跳变）
   static bool s_bootNotified;    // 本次开机是否已发启动通知

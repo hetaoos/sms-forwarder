@@ -11,6 +11,7 @@
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
+#include "utils/tls_mem.h"   // TLS 内存重定向到 PSRAM（须在任何 mbedTLS 分配前生效）
 
 #include <Preferences.h>
 #include <esp_system.h>          // esp_restart()
@@ -20,6 +21,10 @@
 // 初始化调试串口与所有子通信模组；返回 true 表示装配完成
 bool App::begin() {
   Serial.begin(115200);
+
+  // TLS 内存重定向到 PSRAM（大块缓冲）必须在任何 mbedTLS 分配之前生效，
+  // 以支撑「最多 4 个并发 TLS 上下文」而不撑爆内部 DRAM。无 PSRAM 时内部自动跳过。
+  tlsMemInit();
 
   // 挂载用户数据分区；formatOnFail=true，首次或文件系统损坏时自动格式化。
   // 该分区刷固件后仍保留，短信等业务数据持久化在这里（路径以 /data 开头）

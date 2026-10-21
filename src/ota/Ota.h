@@ -71,7 +71,7 @@ struct OtaStatusPayload {
 // 两者不同源：Releases 在仓库 /-/releases 子路径下，徽章挂在仓库根上
 // （/-/badge/release），拼不出来，所以各注入一个。
 //
-// ── 版本检查与其它网络功能共用一把 TLS 锁 ─────────────────────────────
+// ── 版本检查与其它网络功能共用 TLS 通道（计数信号量）───────────────────
 //
 // 设备侧内存最紧的地方不是堆总量，而是「同一时刻能存在几个 mbedTLS 上下文」：
 // 每个 WiFiClientSecure 握手时要一次拿到约 16KB **连续** 堆，两三个并存就会
@@ -83,8 +83,8 @@ struct OtaStatusPayload {
 // 反复重启。任何两条 HTTPS 路径并行，就有一半概率握手失败。
 //
 // 因此 Ota 内部所有出网的 TLS 阶段（检查、固件下载、LittleFS 下载）都先取一次
-// TLS 轮次（utils/TlsTurn.{h,cpp} 里的 g_tlsMutex / TlsTurn，OTA、推送、SMTP 邮件共用），
-// 拿到才建 HttpSession。
+// TLS 通道（utils/TlsTurn.{h,cpp} 里的 g_tlsSem 计数信号量 / TlsTurn，最多
+// kMaxTlsChannels 个并发，OTA、推送、SMTP 邮件、MQTT-TLS 共用），拿到才建 HttpSession。
 // 检查阶段一旦失败还会重试（见 OTA_PROBE_RETRY_PER_CHANNEL）；真正的下载阶段是
 // 用户主动触发的长任务，不重试，只排队等锁 —— 排队既保证不并发，也不会对外网
 // 的失败重试成风暴。

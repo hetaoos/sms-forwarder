@@ -17,6 +17,7 @@
 #include "log/LogStore.h"
 #include "net/WifiManager.h"
 #include "ota/Ota.h"            // Ota::version()：与前端 /api/ota/version 同源
+#include "utils/TlsTurn.h"      // MQTT-TLS 复用 4 通道计数信号量（从末尾槽分配）
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
@@ -40,6 +41,10 @@ bool   MqttService::s_wasConnected    = false;
 bool   MqttService::s_bootNotified    = false;
 bool   MqttService::s_pendingBoot     = false;
 QueueHandle_t MqttService::s_cmdQueue = nullptr;
+
+// TLS 通道守卫（仅 _useTls 时占用 4 通道之一；release 幂等，明文连接不占）
+TlsTurn MqttService::_tlsGuard;
+unsigned long MqttService::_mqttTlsNextTryMs = 0;
 
 // 配置（NVS: appcfg/mqtt）
 bool     MqttService::_enabled          = false;
@@ -449,6 +454,20 @@ void MqttService::buildClient() {
   if (!_enabled || s_client != nullptr) return;
   if (_server.length() == 0) return;
 
+  // 启用 TLS 时：从末尾槽申请一个 TLS 通道（长连接，避免占用临时通道的前部槽）。
+  // 拿不到（4 通道全忙）则延后建连，下个 tick 重试（非阻塞，避免卡住主循环）。
+  if (_useTls) {
+    unsigned long now = millis();
+    if (now < _mqttTlsNextTryMs) return;
+    _tlsGuard = TlsTurn("MQTT-TLS", 0, /*preferBack=*/true);
+    if (!_tlsGuard.held()) {
+      _mqttTlsNextTryMs = now + 5000;
+      if (_log) _log->addf(LogLevel::kWarn, "mqtt",
+                           "TLS 通道已满，MQTT 延后建连（5s 后重试）");
+      return;
+    }
+  }
+
   // 规范 server：去除可能误带的协议前缀(mqtt://、mqtts://)、多余的 "//" 与行首 ":"
   String host = _server;
   host.trim();
@@ -511,11 +530,15 @@ void MqttService::buildClient() {
 }
 
 void MqttService::destroyClient() {
-  if (s_client == nullptr) return;
+  if (s_client == nullptr) {
+    _tlsGuard.release();  // 释放 TLS 通道（_useTls 时才占着，release 幂等）
+    return;
+  }
   esp_mqtt_client_stop(s_client);
   esp_mqtt_client_destroy(s_client);
   s_client = nullptr;
   s_connected = false;
+  _tlsGuard.release();    // 释放 TLS 通道（_useTls 时才占着，release 幂等）
 }
 
 // ── 对外接口 ───────────────────────────────────────────────

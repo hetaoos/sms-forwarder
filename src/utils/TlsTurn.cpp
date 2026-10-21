@@ -1,56 +1,116 @@
 #include "TlsTurn.h"
 
-#include <Arduino.h>  // millis()
+#include <Arduino.h>  // millis() / String
 #include "log/LogStore.h"
 
 namespace { LogStore& _log = devLog(); }
 
-SemaphoreHandle_t g_tlsMutex = xSemaphoreCreateMutex();
-volatile const char* g_tlsHolder   = nullptr;
-volatile uint32_t    g_tlsHolderMs = 0;
+// 静态创建计数信号量与登记表锁；创建失败则退化为不互斥（g_tlsSem==nullptr）。
+SemaphoreHandle_t g_tlsSem =
+    xSemaphoreCreateCounting((UBaseType_t)kMaxTlsChannels, (UBaseType_t)kMaxTlsChannels);
+SemaphoreHandle_t g_tlsRegMux = xSemaphoreCreateMutex();
+TlsSlot g_tlsSlots[kMaxTlsChannels] = {};
 
 const char* tlsHolderNow() {
-    return const_cast<const char*>(g_tlsHolder);
+  if (g_tlsRegMux == nullptr) return nullptr;
+  const char* r = nullptr;
+  if (xSemaphoreTake(g_tlsRegMux, pdMS_TO_TICKS(20)) == pdTRUE) {
+    for (int i = 0; i < kMaxTlsChannels; ++i) {
+      if (g_tlsSlots[i].used && g_tlsSlots[i].owner) { r = g_tlsSlots[i].owner; break; }
+    }
+    xSemaphoreGive(g_tlsRegMux);
+  }
+  return r;
 }
 
-TlsTurn::TlsTurn(const char* owner, uint32_t waitMs) {
-    const char* who = (owner && *owner) ? owner : "(anonymous)";
-    // 极端情况：创建失败则退化为不互斥，避免把整条链路卡死
-    held_ = (g_tlsMutex != nullptr) &&
-            (xSemaphoreTake(g_tlsMutex, pdMS_TO_TICKS(waitMs)) == pdTRUE);
-    if (held_) {
-        // 登记申请者与占用时刻：后续拿不到锁的任务靠它诊断「谁在占用」
-        g_tlsHolder   = who;
-        g_tlsHolderMs = millis();
-        return;
+// 拿不到通道：扫描登记表，列出当前 kMaxTlsChannels 个通道的占用者与时长。
+static void logBusy(const char* who) {
+  if (g_tlsRegMux == nullptr) {
+    _log.addf(LogLevel::kWarn, "tls", "申请不到 TLS 通道（%s）：登记表不可用", who);
+    return;
+  }
+  if (xSemaphoreTake(g_tlsRegMux, pdMS_TO_TICKS(50)) != pdTRUE) {
+    _log.addf(LogLevel::kWarn, "tls", "申请不到 TLS 通道（%s）：登记表忙，无法诊断", who);
+    return;
+  }
+  String list;
+  int n = 0;
+  for (int i = 0; i < kMaxTlsChannels; ++i) {
+    if (g_tlsSlots[i].used && g_tlsSlots[i].owner) {
+      if (n) list += "; ";
+      list += String(i) + ":[";
+      list += g_tlsSlots[i].owner;
+      list += String("]约") + String((unsigned)(millis() - g_tlsSlots[i].ms)) + "ms";
+      ++n;
     }
-    if (g_tlsMutex == nullptr) return;  // 锁都没建成（退化不互斥），无从诊断
+  }
+  xSemaphoreGive(g_tlsRegMux);
+  if (n == 0) {
+    _log.addf(LogLevel::kWarn, "tls",
+              "申请不到 TLS 通道（%s）：通道已满但无登记占用者（可能刚释放）", who);
+  } else {
+    _log.addf(LogLevel::kWarn, "tls",
+              "申请不到 TLS 通道（%s）：已满 %d/%d -> %s", who, n, kMaxTlsChannels,
+              list.c_str());
+  }
+}
 
-    // 没拿到锁：打印是谁在申请、等了多久、以及当前谁正占用着（占用多久）。
-    // 持锁失败路径不持锁，此处记日志不存在与 g_tlsMutex 的死锁风险。
-    const char* holder = tlsHolderNow();
-    if (holder) {
-        _log.addf(LogLevel::kWarn, "tls",
-                  "申请不到 TLS 轮次：申请者[%s] 等待 %ums 超时；"
-                  "当前占用者[%s]，已占用约 %ums",
-                  who, (unsigned)waitMs, holder,
-                  (unsigned)(millis() - g_tlsHolderMs));
-    } else {
-        _log.addf(LogLevel::kWarn, "tls",
-                  "申请不到 TLS 轮次：申请者[%s] 等待 %ums 超时；"
-                  "当前无登记占用者（可能刚释放）",
-                  who, (unsigned)waitMs);
+// 在登记表里按方向找一个空闲槽并登记（owner/ms 一并写入）；无空闲返回 -1。
+// 调用方须已持 g_tlsRegMux。
+static int reserveSlot(const char* who, bool preferBack) {
+  for (int i = 0; i < kMaxTlsChannels; ++i) {
+    int idx = preferBack ? (kMaxTlsChannels - 1 - i) : i;
+    if (!g_tlsSlots[idx].used) {
+      g_tlsSlots[idx].used = true;
+      g_tlsSlots[idx].owner = who;
+      g_tlsSlots[idx].ms = millis();
+      return idx;
     }
+  }
+  return -1;
+}
+
+TlsTurn::TlsTurn(const char* owner, uint32_t waitMs, bool preferBack)
+    : held_(false), slot_(-1) {
+  const char* who = (owner && *owner) ? owner : "(anonymous)";
+  // 极端情况：信号量没建成则退化为不互斥，避免把整条链路卡死
+  if (g_tlsSem == nullptr) return;
+
+  if (xSemaphoreTake(g_tlsSem, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
+    logBusy(who);
+    return;
+  }
+  // 已拿到计数许可：登记到槽位表（持登记表锁，按方向找空闲槽）
+  if (g_tlsRegMux != nullptr &&
+      xSemaphoreTake(g_tlsRegMux, portMAX_DELAY) == pdTRUE) {
+    int idx = reserveSlot(who, preferBack);
+    if (idx >= 0) {
+      slot_ = idx;
+      held_ = true;
+    } else {
+      // 许可已拿到却无空闲槽（理论不会发生，计数与槽数一致）：归还许可
+      xSemaphoreGive(g_tlsSem);
+    }
+    xSemaphoreGive(g_tlsRegMux);
+  } else {
+    // 拿不到登记表锁：退化为不登记（仍持许可，功能正常，仅诊断缺失）
+    held_ = true;
+  }
 }
 
 void TlsTurn::release() {
-    if (held_) {
-        // 先清登记再放锁：避免放锁后下一任已写入新占用者、却被这里抹掉
-        g_tlsHolder   = nullptr;
-        g_tlsHolderMs = 0;
-        if (g_tlsMutex != nullptr) xSemaphoreGive(g_tlsMutex);
+  if (held_) {
+    if (slot_ >= 0 && g_tlsRegMux != nullptr &&
+        xSemaphoreTake(g_tlsRegMux, portMAX_DELAY) == pdTRUE) {
+      g_tlsSlots[slot_].used = false;
+      g_tlsSlots[slot_].owner = nullptr;
+      g_tlsSlots[slot_].ms = 0;
+      xSemaphoreGive(g_tlsRegMux);
     }
-    held_ = false;
+    if (g_tlsSem != nullptr) xSemaphoreGive(g_tlsSem);
+  }
+  held_ = false;
+  slot_ = -1;
 }
 
 TlsTurn::~TlsTurn() { release(); }
