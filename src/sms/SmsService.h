@@ -193,6 +193,14 @@ class SmsService {
   bool adminEnabled() const { return _adminEnabled; }
   bool setAdminEnabled(bool on);
 
+  // 经通信模组执行一次 ICMP ping（AT+CGPING，覆盖 SIMCOM/UNISOC 等常见 Cat.1 模组）：
+  // 先尽力激活 PDP 上下文，再发 CGPING；所有 AT 经 sendAt 发出，发完自动还原短信模式
+  // （CMGF/CNMI），不影响短信收发。host 空时回退 8.8.8.8。成功返回 true（至少收到
+  // 一个回包），report 写回人类可读结果；失败返回 false（含原因与原始模块响应片段）。
+  bool pingHost(uint8_t port, const String &host, String &report);
+  // 系统状态文本（PING 回复附带，复用 App 注入的 _statusFn；未注入返回空串）
+  String systemStatusText() const;
+
   // 最新短信记录 ID（SSE diff 用）
   uint32_t lastSmsId() const { return _lastSmsId; }
 

@@ -745,7 +745,7 @@ static String adminHelpText() {
   s += "管理员命令清单：\n";
   s += "SMS:<号码>:<内容>  从本卡代发短信（内容可含任意字符，含冒号）\n";
   s += "RESET  设备重启（先回复确认，2秒后执行）\n";
-  s += "PING  查询当前系统状态\n";
+  s += "PING [主机]  经通信模组做网络连通性测试（默认 8.8.8.8），并回附系统状态\n";
   s += "HELP  显示本帮助\n";
   s += "注：命令在收到它的卡上执行并回复；号码匹配忽略+86；黑名单优先。";
   return s;
@@ -827,7 +827,132 @@ bool SmsService::setAdminEnabled(bool on) {
   return true;
 }
 
-// 命令入队（抽数任务上下文）：只解析与置状态，不执行。
+// 系统状态文本（PING 回复附带）；复用 App 注入的 _statusFn
+String SmsService::systemStatusText() const {
+  return _statusFn ? _statusFn() : String();
+}
+
+// PING 任务上下文（独立 FreeRTOS 任务，避免阻塞主循环/看门狗）
+struct PingTaskCtx {
+  SmsService *self;
+  uint8_t    port;
+  String     host;
+  String     from;
+  String     status;  // 主循环上下文预先抓好的系统状态（避免任务内再调 collectStatus 与主循环竞争）
+};
+
+// 经通信模组执行一次 ICMP ping（AT+CGPING，覆盖 SIMCOM/UNISOC 等常见 Cat.1 模组）。
+// 先尽力激活 PDP 上下文（AT+CGACT=1,1），再发 AT+CGPING；所有 AT 经 sendAt 发出，
+// 发完自动还原短信模式（CMGF/CNMI），不影响短信收发。host 空时回退 8.8.8.8。
+bool SmsService::pingHost(uint8_t port, const String &hostIn, String &report) {
+  if (port < 1 || port > cfg::kSmsMaxModems) {
+    report = "PING 失败：通信模组不存在";
+    return false;
+  }
+  ModemState &m = _modems[port];
+  if (m.initState != ModemInitState::kReady) {
+    report = "PING 失败：通信模组未就绪（" + String(initStateName(m.initState)) + "）";
+    return false;
+  }
+  String host = hostIn;
+  host.trim();
+  host.replace("\"", "");          // 去除可能混入的引号，避免 AT 注入
+  if (!host.length()) host = "8.8.8.8";
+
+  String err;
+  // 1) 尽力激活 PDP 上下文（已激活则很快返回 OK）；失败不阻断，交给 CGPING 自行报错
+  static constexpr uint32_t kCgactTimeoutMs = 15000;
+  sendAt(port, cfg::kUartBaud, "AT+CGACT=1,1", SerialBridge::kCrlf,
+         kCgactTimeoutMs, err);
+  // 2) 发起 ping（默认 4 次，超时取较长值）
+  SerialBridge::Result r = sendAt(port, cfg::kUartBaud, "AT+CGPING=\"" + host + "\"",
+                                  SerialBridge::kCrlf, cfg::kSmsSendTimeoutMs, err);
+  const String &resp = r.resp;
+
+  // 无回显：可能模块不支持 / 数据未开通 / 上下文失败
+  if (resp.indexOf("+CGPING:") < 0) {
+    String reason;
+    if (resp.indexOf("ERROR") >= 0) reason = "模块返回 ERROR";
+    else if (resp.indexOf("NO CARRIER") >= 0) reason = "NO CARRIER";
+    else if (resp.indexOf("OK") >= 0) reason = "模块无 CGPING 回显（可能不支持）";
+    else reason = "无响应";
+    report = "PING " + host + " 失败：" + reason;
+    String raw = resp;
+    raw.replace("\r", " ");
+    raw.replace("\n", " ");
+    if (raw.length() > 80) raw = raw.substring(0, 80) + "…";
+    if (raw.length()) report += "（原始：" + raw + "）";
+    return false;
+  }
+
+  // 容错解析 +CGPING:（不同模组格式略有差异）：
+  //  - 汇总行（UNISOC/部分模组）：<sent>,<recv>,<lost>,<min>,<avg>,<max>
+  //  - 逐跳行（SIMCOM）：<idx>,<result>,<rtt>，result==0 视为成功
+  int sent = 0, recv = 0, lost = 0;
+  long rttMin = -1, rttAvg = 0, rttMax = -1;
+  bool haveSummary = false;
+
+  int pos = 0;
+  while (true) {
+    int idx = resp.indexOf("+CGPING:", pos);
+    if (idx < 0) break;
+    int eol = resp.indexOf('\n', idx);
+    if (eol < 0) eol = resp.length();
+    String line = resp.substring(idx + 9, eol);  // 跳过 "+CGPING:"
+    line.trim();
+    int commas = 0;
+    for (size_t i = 0; i < line.length(); i++) if (line[i] == ',') commas++;
+    if (commas >= 5 && !haveSummary) {
+      long v[6] = {0, 0, 0, 0, 0, 0};
+      int f = 0, s = 0;
+      for (int i = 0; i <= commas && f < 6; i++) {
+        int c = line.indexOf(',', s);
+        String tok = (c < 0) ? line.substring(s) : line.substring(s, c);
+        tok.trim();
+        v[f++] = tok.toInt();
+        s = (c < 0) ? (int)line.length() + 1 : c + 1;
+      }
+      sent = (int)v[0]; recv = (int)v[1]; lost = (int)v[2];
+      rttMin = v[3]; rttAvg = v[4]; rttMax = v[5];
+      haveSummary = true;
+    } else {
+      int c1 = line.indexOf(',');
+      int c2 = (c1 >= 0) ? line.indexOf(',', c1 + 1) : -1;
+      if (c1 >= 0) {
+        long res = (c2 >= 0) ? line.substring(c1 + 1, c2).toInt() : 0;
+        long rtt = (c2 >= 0) ? line.substring(c2 + 1).toInt() : 0;
+        sent++;
+        if (res == 0 && rtt > 0) {
+          recv++;
+          rttAvg += rtt;  // 复用为累计和，下方求平均
+          if (rttMin < 0 || rtt < rttMin) rttMin = rtt;
+          if (rttMax < 0 || rtt > rttMax) rttMax = rtt;
+        }
+      }
+    }
+    pos = eol + 1;
+  }
+
+  if (recv > 0) {
+    if (haveSummary) {
+      report = "PING " + host + " 成功：发送 " + String(sent) + " 接收 " + String(recv) +
+               " 丢失 " + String(lost) + "，平均 RTT " + String(rttAvg) + " ms";
+    } else {
+      long avg = recv ? rttAvg / recv : 0;
+      report = "PING " + host + " 成功：接收 " + String(recv) + " / " + String(sent) +
+               "，平均 RTT " + String(avg) + " ms";
+    }
+    if (rttMin >= 0) report += "（最小 " + String(rttMin) + " / 最大 " + String(rttMax) + "）";
+    return true;
+  }
+  report = "PING " + host + " 失败：未收到回包";
+  String raw = resp;
+  raw.replace("\r", " ");
+  raw.replace("\n", " ");
+  if (raw.length() > 80) raw = raw.substring(0, 80) + "…";
+  if (raw.length()) report += "（原始：" + raw + "）";
+  return false;
+}
 // 返回 false = 不是有效命令（SMS: 格式错误），调用方按普通短信继续处理；
 // 队列被占用（上一条尚未执行）时丢弃新的并记日志，但仍算已消费（返回 true）。
 bool SmsService::enqueueAdminCmd(uint8_t port, const String &sender,
@@ -861,6 +986,15 @@ bool SmsService::enqueueAdminCmd(uint8_t port, const String &sender,
     job.kind = AdminCmd::kReset;
   } else if (key == "PING") {
     job.kind = AdminCmd::kPing;
+    // 可选目标主机：PING / PING 8.8.8.8 / PING:8.8.8.8（空 = 8.8.8.8）
+    if (cmd.length() > 4) {
+      char d = cmd[4];
+      if (d == ' ' || d == ':') {
+        String h = cmd.substring(5);
+        h.trim();
+        if (h.length()) job.content = h;
+      }
+    }
   } else if (key == "HELP") {
     job.kind = AdminCmd::kHelp;
   } else {  // 兜底（handleCmt 已过滤，正常不会到此）
@@ -918,10 +1052,33 @@ void SmsService::pollAdminCmd() {
   }
 
   if (job.kind == AdminCmd::kPing) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：PING",
-              (unsigned)job.port, job.from.c_str());
-    String st = _statusFn ? _statusFn() : "状态获取未配置";
-    replyToAdmin(job.port, job.from, st);
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：PING %s",
+              (unsigned)job.port, job.from.c_str(),
+              job.content.length() ? job.content.c_str() : "8.8.8.8");
+    // ping 可能阻塞较久（CGACT + CGPING 各数十秒），放独立任务跑，避免阻塞主循环/
+    // 看门狗；完成后从同一模组回复（含系统状态），sendAt 已自动还原短信模式。
+    uint8_t port = job.port;
+    String host = job.content;
+    String from = job.from;
+    // 系统状态在主循环上下文抓取（collectStatus 与主循环 LCD 渲染共享，勿在任务内调用）
+    String status = systemStatusText();
+    PingTaskCtx *ctx = new PingTaskCtx{this, port, host, from, status};
+    if (!ctx) {
+      replyToAdmin(port, from, "PING 失败：内存不足");
+      return;
+    }
+    xTaskCreate(
+        [](void *arg) {
+          PingTaskCtx *c = static_cast<PingTaskCtx *>(arg);
+          String report;
+          c->self->pingHost(c->port, c->host, report);
+          String reply = report;
+          if (c->status.length()) reply += "\n---\n" + c->status;
+          c->self->replyToAdmin(c->port, c->from, reply);
+          delete c;
+          vTaskDelete(nullptr);
+        },
+        "sms_ping", 5120, ctx, 5, nullptr);
     return;
   }
 
