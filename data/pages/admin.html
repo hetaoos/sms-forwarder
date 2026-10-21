@@ -1,0 +1,67 @@
+<div x-data="pageAdmin()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>管理员远程控制</h2>
+      <p class="page-desc">授权手机号经短信下发命令，远程控制设备（代发 / 重启 / PING 等）</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="bar" style="margin-bottom:10px">
+      <h3 style="margin:0">管理员远程控制</h3>
+      <span class="badge" :class="(!adminEnabled ? 'info' : (admins.filter(v=>v).length ? 'ok' : 'warn'))"
+            x-text="!adminEnabled ? '已关闭' : (admins.filter(v=>v).length ? ('已开启（'+admins.filter(v=>v).length+' 个）') : '已开启（未设号码）')"></span>
+    </div>
+    <div class="bar" style="margin-bottom:4px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text)">
+        <input type="checkbox" x-model="adminEnabled" @change="saveAdmin()">
+        <b>启用短信远程控制</b>
+      </label>
+    </div>
+    <div class="hint" x-show="!adminEnabled" style="margin:0 0 8px">
+      已关闭：所有短信按普通短信处理（入库 + 转发），命令短信不会被执行。
+    </div>
+    <div class="adm-list">
+      <template x-for="(p, i) in admins" :key="i">
+        <div class="adm-row">
+          <input class="inp" style="flex:1;min-width:160px" placeholder="管理员手机号，如 13800138000"
+                 x-model="admins[i]" maxlength="20" autocomplete="off">
+          <button class="btn ghost sm" @click="admins.splice(i,1)" aria-label="删除">删除</button>
+        </div>
+      </template>
+    </div>
+    <div class="bar" style="margin-top:8px">
+      <button class="btn ghost sm" @click="admins.push('')"
+              :disabled="admins.length >= 5">+ 添加号码</button>
+      <button class="btn" :disabled="adminSaving" @click="saveAdmin()"
+              x-text="adminSaving ? '保存中…' : '保存（上限 5 个）'"></button>
+    </div>
+    <div class="form-err" x-show="adminErr" x-text="adminHint"></div>
+    <div class="hint" style="margin-top:8px">
+      任一号码发来的命令短信会被执行而<b>不会入库、也不会转发</b>；其余短信照常处理。
+      命令在收到它的那个通信模组上执行，结果也从同一模组回复到<b>发命令的那个号码</b>（管理员看到的是熟悉号码）。
+    </div>
+    <div class="form" style="margin-top:10px">
+      <div class="row">
+        <span class="k">SMS:&lt;号码&gt;:&lt;内容&gt;</span>
+        <span class="v" style="font-family:inherit;text-align:left;white-space:normal;flex:1;margin-left:12px">代发一条短信到指定号码，执行结果（成功 / 失败原因）回复给发命令的管理员</span>
+      </div>
+      <div class="row">
+        <span class="k">RESET</span>
+        <span class="v" style="font-family:inherit;text-align:left;white-space:normal;flex:1;margin-left:12px">2 秒后重启设备（重启前先回复确认短信）</span>
+      </div>
+      <div class="row">
+        <span class="k">PING [主机]</span>
+        <span class="v" style="font-family:inherit;text-align:left;white-space:normal;flex:1;margin-left:12px">经通信模组做网络连通性测试（默认 8.8.8.8，可指定如 PING 1.1.1.1），并回附系统状态；测完自动还原短信模式</span>
+      </div>
+      <div class="row">
+        <span class="k">HELP</span>
+        <span class="v" style="font-family:inherit;text-align:left;white-space:normal;flex:1;margin-left:12px">回复本命令清单与参数说明</span>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      号码匹配忽略「+86」前缀；黑名单优先级更高——若某管理员号码命中黑名单，其命令不生效。
+      命令格式错误时按普通短信处理（入库并转发）。
+    </div>
+  </div>
+</div>

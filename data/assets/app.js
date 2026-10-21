@@ -428,6 +428,7 @@ const MENU = [
   ]},
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
+    { id: 'admin', title: '管理员远程控制', icon: 'admin' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
     { id: 'modem', title: '通信模组', icon: 'modem' },
   ]},
@@ -462,6 +463,7 @@ const ICONS = {
   sms: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3.5V5z"/></svg>',
   modem: '<svg viewBox="0 0 24 24"><rect x="3" y="14" width="3" height="7" rx="1"/><rect x="8.5" y="10" width="3" height="11" rx="1"/><rect x="14" y="6" width="3" height="15" rx="1"/><rect x="19.5" y="3" width="3" height="18" rx="1"/></svg>',
   blacklist: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  admin: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
   logs: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><polyline points="14 3 14 7 18 7"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><line x1="4" y1="7" x2="20" y2="7"/><circle cx="9" cy="7" r="2"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="15" cy="17" r="2"/></svg>',
   tools: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 12l-2-2 2.7-3.7z"/></svg>',
@@ -1301,7 +1303,6 @@ function pageSms() {
     total: 0, messages: [], stats: {}, loading: false,
     storeErr: '',
     detail: null,
-    admins: [], adminEnabled: false, adminSaving: false, adminHint: '', adminErr: false,
 
     init() {
       // SSE 驱动：新短信 -> 刷新列表（无筛选时）；通信模组配置 -> 同步开关
@@ -1312,7 +1313,6 @@ function pageSms() {
       else this.loadPorts();
       this.reload();
       this.loadStats();
-      this.loadAdmin();
     },
 
     /* ---- 通信模组 ---- */
@@ -1455,7 +1455,35 @@ function pageSms() {
     },
     showDetail(m) { this.detail = m; },
 
-    /* ---- 管理员短信远程控制（支持多个号码）---- */
+    fmtTs(ts) {
+      return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
+                              : '开机 ' + fmtUptime(ts);
+    },
+    // 列表用短时间：MM-DD HH:mm（跨年也看不出，详情里有完整时间）
+    fmtShort(ts) {
+      if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
+      const d = new Date(ts * 1000);
+      const p = n => (n < 10 ? '0' : '') + n;
+      return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    },
+    preview(s) { return s.length > 80 ? s.slice(0, 80) + '…' : s; },
+    // 按通信模组号取显示名（含别名）：记录 / 详情里通信模组号字段为 modem，需回查别名
+    modemLabelOf(port) {
+      const m = this.modems.find(x => x.port === port);
+      return modemLabel(m || { port: port });
+    },
+  };
+}
+
+/* ---------- 管理员短信远程控制（独立页面，支持多个号码）----------
+ * 配置经 /api/sms/admin 读写：GET 读 {enabled,phones}，POST {enabled,phones} 写。
+ * 与短信页解耦后独立成页，菜单置于「黑名单」之前。 */
+function pageAdmin() {
+  return {
+    admins: [], adminEnabled: false, adminSaving: false, adminHint: '', adminErr: false,
+
+    init() { this.loadAdmin(); },
+
     async loadAdmin() {
       try {
         const r = await apiFetch('/api/sms/admin');
@@ -1487,23 +1515,6 @@ function pageSms() {
         this.adminErr = true;
         this.adminHint = '保存失败（号码格式错误或超出上限）';
       }
-    },
-    fmtTs(ts) {
-      return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
-                              : '开机 ' + fmtUptime(ts);
-    },
-    // 列表用短时间：MM-DD HH:mm（跨年也看不出，详情里有完整时间）
-    fmtShort(ts) {
-      if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
-      const d = new Date(ts * 1000);
-      const p = n => (n < 10 ? '0' : '') + n;
-      return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-    },
-    preview(s) { return s.length > 80 ? s.slice(0, 80) + '…' : s; },
-    // 按通信模组号取显示名（含别名）：记录 / 详情里通信模组号字段为 modem，需回查别名
-    modemLabelOf(port) {
-      const m = this.modems.find(x => x.port === port);
-      return modemLabel(m || { port: port });
     },
   };
 }
