@@ -615,6 +615,11 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/admin", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsAdminPost(req, json); });
 
+  // 经通信模组 PING：POST 启动（{"port":1,"host"?:"8.8.8.8}），GET 轮询结果（{busy,ok,report}）
+  _server.on("/api/sms/ping", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPingPost(req, json); });
+  _server.on("/api/sms/ping", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPingGet(req); });
+
   // ---- 以下是父路径 /api/sms，必须排在上述子路径之后 ----
   // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
   // "pageSize":ps,"messages":[{id,dir,phone,content,ts,modem}],...}
@@ -1577,6 +1582,81 @@ void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json)
   JsonDocument src;
   deserializeJson(src, _sms.adminPhonesJson());
   for (auto v : src.as<JsonArray>()) arr.add(v);
+  sendJsonDoc(req, doc);
+}
+
+// 经通信模组 ICMP 连通性测试（PING）：POST 启动。
+// 复用 SmsService::pingHost（AT+CGPING），独立 FreeRTOS 任务异步执行，
+// 不阻塞 HTTP（async_tcp）任务；结果经 _pingBusy/_pingOk/_pingResult 暴露，
+// 前端轮询 GET /api/sms/ping 取回。host 缺省 8.8.8.8。
+void WebPanel::handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  int port;
+  if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
+      port < 1 || port > cfg::kSmsMaxModems) {
+    sendErr(req, 400, "invalid port");
+    return;
+  }
+  String host = json["host"].is<const char *>()
+                    ? json["host"].as<String>() : String();
+
+  // 防止并发 PING：读忙标志需与 ping 任务写同临界区，避免读到半更新态
+  bool busy = false;
+  portENTER_CRITICAL(&_pingMux);
+  busy = _pingBusy;
+  portEXIT_CRITICAL(&_pingMux);
+  if (busy) {
+    sendErr(req, 409, "PING 进行中，请稍后再试");
+    return;
+  }
+
+  // 任务参数（host 按值拷贝，任务内独立持有，不受请求 JSON 生命周期影响）
+  struct PingArgs {
+    WebPanel *self;
+    uint8_t   port;
+    String    host;
+  };
+  PingArgs *a = new PingArgs{this, (uint8_t)port, host};
+
+  portENTER_CRITICAL(&_pingMux);
+  _pingBusy = true;
+  _pingOk = false;
+  _pingResult = "";
+  portEXIT_CRITICAL(&_pingMux);
+
+  xTaskCreate(
+      [](void *arg) {
+        PingArgs *a = static_cast<PingArgs *>(arg);
+        String report;
+        bool ok = a->self->_sms.pingHost(a->port, a->host, report);
+        portENTER_CRITICAL(&a->self->_pingMux);
+        a->self->_pingOk = ok;
+        a->self->_pingResult = report;
+        a->self->_pingBusy = false;
+        portEXIT_CRITICAL(&a->self->_pingMux);
+        delete a;
+        vTaskDelete(nullptr);
+      },
+      "web_ping", 5120, a, 5, nullptr);
+
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["started"] = true;
+  sendJsonDoc(req, doc);
+}
+
+// PING 结果轮询：返回当前 busy / 最近一次 ok / report。
+void WebPanel::handleSmsPingGet(AsyncWebServerRequest *req) {
+  bool busy = false, ok = false;
+  String result;
+  portENTER_CRITICAL(&_pingMux);
+  busy = _pingBusy;
+  ok = _pingOk;
+  result = _pingResult;   // 短字符串拷贝，临界区内完成
+  portEXIT_CRITICAL(&_pingMux);
+  JsonDocument doc;
+  doc["busy"] = busy;
+  doc["ok"] = ok;
+  doc["report"] = result;
   sendJsonDoc(req, doc);
 }
 

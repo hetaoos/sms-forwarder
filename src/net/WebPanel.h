@@ -200,6 +200,12 @@ class WebPanel {
   void handleSmsAdminGet(AsyncWebServerRequest *req);
   void handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+  // 经通信模组 ICMP 连通性测试（PING）：POST 启动（{"port":1,"host"?:"8.8.8.8}，
+  // 走 SmsService::pingHost，独立 FreeRTOS 任务异步执行，不阻塞 Web 任务）；
+  // GET 轮询结果 {"busy":bool,"ok":bool,"report":".."}（host 缺省 8.8.8.8）。
+  void handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleSmsPingGet(AsyncWebServerRequest *req);
+
   // 邮件：配置读取 / 总开关 / 测试发送 / 配置保存
   void handleEmailGet(AsyncWebServerRequest *req);
   void handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json);
@@ -268,4 +274,10 @@ class WebPanel {
   PushService &_push;      // 统一 webhook 推送通道引用
   BlackList &_blacklist;   // 号码黑名单引用
   LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
+
+  // PING 任务共享结果：ping 任务写、GET 轮询读，portMUX 临界区保护
+  mutable portMUX_TYPE _pingMux = portMUX_INITIALIZER_UNLOCKED;
+  bool    _pingBusy = false;   // 有 PING 任务进行中
+  bool    _pingOk   = false;   // 最近一次结果是否成功
+  String  _pingResult;         // 最近一次结果文本（人类可读）
 };

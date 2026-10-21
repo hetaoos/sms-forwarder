@@ -1526,6 +1526,7 @@ function pageModem() {
       this.modems.forEach(m => {
         if (this.aliasDraft[m.port] === undefined) this.aliasDraft[m.port] = m.alias || '';
       });
+      this.syncPingPort();
     },
     async loadPorts() {
       try {
@@ -1551,6 +1552,59 @@ function pageModem() {
       if (r) this.applyPorts((await r.json()).modems || []);
     },
     enabledPorts() { return this.modems.filter(m => m.enabled); },
+
+    // ---- 网络连通性测试（PING）----
+    pingBusy: false,
+    pingResult: '',
+    pingOk: false,
+    pingPort: 0,
+    pingHost: '',
+    _pollTimer: null,
+    // 默认选中第一个已启用模组；端口列表刷新后若当前选择失效则回落
+    syncPingPort() {
+      const valid = this.modems.some(m => m.port === this.pingPort && m.enabled);
+      if (!valid) {
+        const e = this.enabledPorts()[0];
+        this.pingPort = e ? e.port : 0;
+      }
+    },
+    async startPing() {
+      if (!this.pingPort) { toast('请选择通信模组', 'err'); return; }
+      if (this.pingBusy) return;
+      const r = await postOp('/api/sms/ping',
+                             { port: this.pingPort, host: this.pingHost || '' }, null);
+      if (!r) return;
+      this.pingBusy = true;
+      this.pingResult = '';
+      this.pollPing();
+    },
+    // 轮询 /api/sms/ping 直到 busy=false（超时上限 ~60s）
+    pollPing() {
+      clearTimeout(this._pollTimer);
+      let count = 0;
+      const tick = async () => {
+        try {
+          const r = await apiFetch('/api/sms/ping', { cache: 'no-store' });
+          if (r.ok) {
+            const j = await r.json();
+            if (!j.busy) {
+              this.pingBusy = false;
+              this.pingOk = !!j.ok;
+              this.pingResult = j.report || '';
+              return;
+            }
+          }
+        } catch (e) {}
+        if (++count > 60) {   // 安全上限：约 60s
+          this.pingBusy = false;
+          this.pingOk = false;
+          this.pingResult = 'PING 超时（后端未返回结果）';
+          return;
+        }
+        this._pollTimer = setTimeout(tick, 1000);
+      };
+      tick();
+    },
   };
 }
 

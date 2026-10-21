@@ -51,6 +51,38 @@
     </template>
   </div>
 
+  <!-- 网络连通性测试（PING） -->
+  <div class="card" style="margin-top:16px">
+    <h3>网络连通性测试（PING）</h3>
+    <p class="hint">经所选通信模组发起 ICMP 探测（AT+CGPING），用于验证 4G 数据通道是否通畅。
+      默认目标 8.8.8.8；模组未插卡 / 无信号 / 未开通数据业务时可能失败。</p>
+
+    <div class="bar" style="margin-top:10px">
+      <div class="field" style="min-width:160px"><label>通信模组</label>
+        <select class="inp" x-model.number="pingPort">
+          <option value="0" :disabled="enabledPorts().length===0">请选择</option>
+          <template x-for="m in modems" :key="'p'+m.port">
+            <option :value="m.port" x-text="modemLabel(m) + (m.ready ? '' : '（未就绪）')"
+                    :disabled="!m.enabled"></option>
+          </template>
+        </select>
+      </div>
+      <div class="field" style="flex:1;min-width:180px"><label>目标主机（可留空）</label>
+        <input class="inp" x-model="pingHost" placeholder="8.8.8.8">
+      </div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" @click="startPing()" :disabled="pingBusy || !pingPort"
+                x-text="pingBusy ? '测试中…' : '开始 PING'"></button>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:10px" x-show="pingBusy" x-cloak>正在测试，请稍候…</div>
+    <div class="bar" style="margin-top:10px;align-items:flex-start" x-show="!pingBusy && pingResult" x-cloak>
+      <span class="badge" :class="pingOk ? 'ok' : 'err'" x-text="pingOk ? '成功' : '失败'"></span>
+      <pre class="ping-out" x-text="pingResult"></pre>
+    </div>
+  </div>
+
   <div class="card" style="margin-top:16px">
     <h3>说明</h3>
     <p class="page-desc" style="margin:0">
