@@ -524,6 +524,14 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/send", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsSend(req, json); });
 
+  // 管理员短信远程控制：GET -> {"ok":true,"enabled":bool,"phones":[".."]}；
+  // POST {"enabled":bool,"phones":["138...","139..."]}（字段均可选；空 phones = 关闭；
+  // enabled 缺省表示不改开关）。开关与号码任一校验失败返回 400。
+  _server.on("/api/sms/admin", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleSmsAdminGet(req); });
+  _server.on("/api/sms/admin", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsAdminPost(req, json); });
+
   // ---- 以下是父路径 /api/sms，必须排在上述子路径之后 ----
   // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
   // "pageSize":ps,"messages":[{id,dir,phone,content,ts,modem}],...}
@@ -1379,6 +1387,65 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
     return;
   }
   sendOk(req, String(",\"id\":") + id);
+}
+
+// 管理员短信远程控制：读取当前总开关与管理员号码列表
+void WebPanel::handleSmsAdminGet(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["enabled"] = _sms.adminEnabled();
+  JsonArray arr = doc["phones"].to<JsonArray>();
+  // adminPhonesJson() 返回 ["..."] 已是合法 JSON；直接反序列化进响应最简洁
+  JsonDocument src;
+  deserializeJson(src, _sms.adminPhonesJson());
+  for (auto v : src.as<JsonArray>()) arr.add(v);
+  String out;
+  serializeJson(doc, out);
+  sendJson(req, out);
+}
+
+// 设置管理员：JSON {"enabled":bool,"phones":["138...","139..."]}（字段均可选）。
+// 任一条号码格式不合法返回 400（号码规则与发送短信一致）；上限 kAdminPhoneMax 条。
+// 号码校验优先于开关，避免号码非法却改了开关状态。
+void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  bool hasEnabled = json["enabled"].is<bool>();
+  bool hasPhones = json["phones"].is<JsonArray>();
+  if (!hasEnabled && !hasPhones) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (hasPhones) {
+    std::vector<String> phones;
+    for (JsonVariantConst v : json["phones"].as<JsonArray>()) {
+      if (!v.is<const char *>()) {
+        sendErr(req, 400, "invalid phone");
+        return;
+      }
+      phones.push_back(v.as<String>());
+    }
+    if (!_sms.setAdminPhones(phones)) {
+      sendErr(req, 400, "invalid phone");
+      return;
+    }
+  }
+  if (hasEnabled && !_sms.setAdminEnabled(json["enabled"].as<bool>())) {
+    sendErr(req, 500, "save failed");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["enabled"] = _sms.adminEnabled();
+  JsonArray arr = doc["phones"].to<JsonArray>();
+  JsonDocument src;
+  deserializeJson(src, _sms.adminPhonesJson());
+  for (auto v : src.as<JsonArray>()) arr.add(v);
+  String out;
+  serializeJson(doc, out);
+  sendJson(req, out);
 }
 
 // ---- 邮件通知 ----

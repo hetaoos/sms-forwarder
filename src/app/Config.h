@@ -62,6 +62,7 @@ constexpr const char *kNvsKeyPush = "push";      // 推送通道配置键（{"ve
 constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{"ver":1,"enabled":bool,"action":n,"list":[...]}）
 constexpr const char *kNvsKeyDisp = "disp";        // 屏幕设置键（{"ver":1,"bright":n,"autoOffSec":n,"idleSec":n}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
+constexpr uint8_t kAdminPhoneMax = 5;            // 管理员号码个数上限（短信远程控制）
 
 // ---------------- 崩溃转储（coredump）信息 ----------------
 // 崩溃元信息独立命名空间，不随出厂复位清除（appcfg 会被 handleSystemReset

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <functional>
+#include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <ArduinoJson.h>
@@ -93,6 +94,10 @@ class SmsService {
   uint32_t nowTs() const {
     return _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
   }
+  // 系统状态供给（PING 命令回复用）：返回一段纯文本运行状态摘要。
+  // 运行于 tick 主循环（pollAdminCmd），由 App 注入（可安全访问各子系统）。
+  using SystemStatusFn = std::function<String()>;
+  void setSystemStatusFn(SystemStatusFn fn) { _statusFn = fn; }
   // 通信模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
   String modemsJson() const;
 
@@ -112,7 +117,7 @@ class SmsService {
   static String operCn(const String &code);
 
   // 导出通信模组配置（启用/别名，供备份用）到给定 JSON 对象：
-  // o["max"]=n, o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]
+  // o["max"]=n, o["adminPhones"]=["..",".."], o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]
   void exportTo(JsonObject &o) const;
 
   // 从给定 JSON 对象导入通信模组配置并落盘；json 同 exportTo；成功返回 true
@@ -148,6 +153,45 @@ class SmsService {
   static constexpr uint32_t kCallClccDelayMs = 3000;
   // 主动 AT+CLCC 查询的响应收集超时（ms）
   static constexpr uint32_t kCallClccTimeoutMs = 2000;
+
+  // ---------------- 管理员短信远程控制（移植自 esp32-sms-forwarding）----------------
+  // 总开关 _adminEnabled（默认 false = 禁用，须显式开启）。仅当总开关开启且配置了
+  // 管理员号码（_adminPhoneCount > 0）时，命令短信才会被拦截执行；任一条件不满足则
+  // 所有短信按普通短信处理。这样默认出厂/升级后功能处于关闭态，避免误触发。
+  // 管理员号码列表（空 = 功能关闭），上限 cfg::kAdminPhoneMax 条。
+  // 匹配时任一条命中即为管理员（双方剥 +86 前缀后精确相等）。
+  // 命令在 handleCmt 内、黑名单之后、落盘/转发之前判定（与旧实现同序）：
+  //   SMS:<号码>:<内容>   从收到命令的那个模组代发一条短信，并向【发命令的管理员】回复执行结果
+  //   RESET              2 秒后重启设备（重启前先回复确认短信）
+  //   PING               回复当前系统运行状态（在线/WiFi/IP/运行时间/内存/模组/MQTT…）
+  //   HELP               回复命令清单与参数说明
+  // 关键字（RESET/PING/HELP 与 SMS: 前缀）大小写不敏感。
+  // 命中的命令本身不落盘、不转发；其余内容按普通短信处理（入库 + 转发）。
+  // 代发与回复都走「收到命令的那个模组」——管理员发过去的是哪张卡的号码，
+  // 回来就应是同一张卡，否则会被当垃圾短信。
+  // 执行放在 tick 主循环：发送是阻塞式 AT 交互、重启要起延时任务，
+  // 都禁止在抽数任务上下文（handleCmt）里跑。
+  struct AdminCmd {
+    enum Kind : uint8_t { kSms, kReset, kPing, kHelp };
+    Kind     kind;
+    uint8_t  port;    // 收到命令的通信模组串口号
+    String   from;    // 发命令的管理员号码（执行结果回复给它）
+    String   phone;   // kSms：代发目标号码
+    String   content; // kSms：代发内容
+  };
+
+  // 当前管理员号码列表的 JSON 数组字符串（Web 读取用）：["138...","139..."]
+  String adminPhonesJson() const;
+
+  // 以给定列表整体替换：逐条校验格式（同发送号码规则）、归一化去重、
+  // 超上限拒绝；空列表 = 关闭。校验失败返回 false 且运行态保持不变；
+  // 成功后持久化到 NVS（写盘失败也返回 false，但内存已更新——与别名保存同策略）。
+  bool setAdminPhones(const std::vector<String> &phones);
+
+  // 管理员短信远程控制总开关（默认 false = 禁用）。仅当开启且配置了号码时生效。
+  // 置位后持久化到 NVS；写盘失败返回 false（内存已更新——与别名保存同策略）。
+  bool adminEnabled() const { return _adminEnabled; }
+  bool setAdminEnabled(bool on);
 
   // 最新短信记录 ID（SSE diff 用）
   uint32_t lastSmsId() const { return _lastSmsId; }
@@ -262,6 +306,20 @@ class SmsService {
   // 从 +CLCC: 行/响应中提取主叫号码（第 4 个字段后的首个引号对），失败返回空串
   static String parseClccNumber(const String &text);
 
+  // ---- 管理员短信远程控制 ----
+  // 号码归一化后精确相等（剥 +86 前缀、去空白）；任一为空返回 false
+  static bool phonesEqual(const String &a, const String &b);
+  // sender 是否命中管理员列表（持锁遍历；抽数任务上下文调用）
+  bool isAdmin(const String &sender);
+  // 解析并把管理员命令入队（抽数任务上下文调用，只置状态不执行）。
+  // 返回 false = 不是有效命令（SMS: 格式错误），调用方应按普通短信继续处理；
+  // 队列被占用（上一条尚未执行）时丢弃新的并记日志，但仍算已消费（返回 true）。
+  bool enqueueAdminCmd(uint8_t port, const String &sender, const String &cmd);
+  // 执行队首管理员命令（tick 主循环上下文：代发/回复/重启都在这里做）
+  void pollAdminCmd();
+  // 向发命令的管理员回复一条执行结果短信（从同一模组发出）；失败仅记日志
+  void replyToAdmin(uint8_t port, const String &to, const String &text);
+
   // 载入 / 保存 NVS 配置；返回是否有有效记录
   bool loadConfig();
   bool saveConfig();
@@ -284,5 +342,12 @@ class SmsService {
   SimChangeFn _onSim;       // SIM 就绪状态变更回调（抽数任务上下文触发）
   CallReceivedFn _onCall;   // 来电视题回调（tick 主循环上下文触发）
   TimeProviderFn _timeFn;   // 时间戳供给（App 注入；为空则开机秒数）
+  SystemStatusFn _statusFn; // 系统状态供给（App 注入；PING 命令回复用）
+
+  String   _adminPhones[cfg::kAdminPhoneMax];  // 管理员号码列表
+  uint8_t  _adminPhoneCount = 0;               // 有效条数（与 _adminPhones 同步更新）
+  bool     _adminEnabled = false;              // 总开关（默认禁用，须显式开启）
+  AdminCmd _adminCmd;          // 待执行的管理员命令（_adminCmdPending 为真时有效）
+  bool     _adminCmdPending = false;  // 有管理员命令待 tick 执行
   BlackList *_blacklist = nullptr;  // 黑名单过滤器（App 注入；空表示不拦截）
 };

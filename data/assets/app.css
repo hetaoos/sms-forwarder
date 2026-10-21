@@ -345,6 +345,12 @@ input.mono{font-family:var(--mono)}
 .bl-rules{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
 .bl-row{display:flex;align-items:center;gap:10px;background:var(--bg-soft);border:1px solid var(--border);
   border-radius:10px;padding:10px 12px}
+
+/* 管理员号码列表（短信页远程控制） */
+.adm-list{display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
+.adm-row{display:flex;align-items:center;gap:10px;background:var(--bg-soft);border:1px solid var(--border);
+  border-radius:8px;padding:8px 10px}
+[data-theme="dark"] .adm-row{background:rgba(255,255,255,.03)}
 .bl-idx{width:22px;text-align:center;color:var(--faint);font-size:12px;flex:none}
 .bl-pattern{flex:2 1 200px;min-width:140px}
 .bl-mode{flex:0 0 92px}

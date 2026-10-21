@@ -6,6 +6,9 @@
 #include <Preferences.h>
 
 #include <Arduino.h>
+#include <esp_system.h>              // esp_restart()：管理员 RESET 命令
+#include <freertos/FreeRTOS.h>       // xTaskCreate / vTaskDelay
+#include <freertos/task.h>
 
 namespace {
 
@@ -98,6 +101,7 @@ void SmsService::begin() {
 void SmsService::tick() {
   _codec.pruneTimeouts(_concat);
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) pollCall(p);
+  pollAdminCmd();  // 管理员短信命令（入队于抽数任务，执行于主循环）
 }
 
 // 判断一行是否为 PDU 十六进制串（偶数长度、全为 hex 字符）
@@ -322,6 +326,9 @@ bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
 // 导出通信模组配置（启用/别名，供备份用）到给定 JSON 对象
 void SmsService::exportTo(JsonObject &o) const {
   o["max"] = _max;
+  o["adminEnabled"] = _adminEnabled;
+  JsonArray ap = o["adminPhones"].to<JsonArray>();
+  for (uint8_t i = 0; i < _adminPhoneCount; i++) ap.add(_adminPhones[i]);
   JsonArray arr = o["modems"].to<JsonArray>();
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     JsonObject m = arr.add<JsonObject>();
@@ -686,6 +693,266 @@ void SmsService::dispatchCall(uint8_t port) {
   _log.addf(LogLevel::kInfo, "call", "通信模组 %u 来电通知：%s", (unsigned)port,
             num.c_str());
   if (_onCall) _onCall(num, nowTs(), (int8_t)port);
+}
+
+// ---------------- 管理员短信远程控制（移植自 esp32-sms-forwarding）----------------
+
+// 号码归一化后精确相等（剥 +86 前缀、去空白）；任一为空返回 false
+bool SmsService::phonesEqual(const String &a, const String &b) {
+  if (!a.length() || !b.length()) return false;
+  String x = a, y = b;
+  x.trim(); y.trim();
+  if (x.startsWith("+86")) x = x.substring(3);
+  if (y.startsWith("+86")) y = y.substring(3);
+  return x.length() > 0 && x == y;
+}
+
+// sender 是否命中管理员列表。持锁遍历：列表很小（<=kAdminPhoneMax 条短串），
+// 临界区极短；与 setAdminPhones（HTTP 任务）的写互斥，避免读到半替换状态。
+bool SmsService::isAdmin(const String &sender) {
+  if (!_adminPhoneCount) return false;
+  bool hit = false;
+  lock();
+  for (uint8_t i = 0; i < _adminPhoneCount; i++) {
+    if (phonesEqual(sender, _adminPhones[i])) {
+      hit = true;
+      break;
+    }
+  }
+  unlock();
+  return hit;
+}
+
+// 校验单条管理员号码格式（与发送号码同一套规则：数字 + 可选前导 +，
+// 可含空格与常见分隔符，3-20 位）；空串视为「未填写」，由调用方决定去留
+static bool adminPhoneValid(const String &p) {
+  if (p.length() > 20) return false;
+  size_t digits = (p.length() && p[0] == '+') ? 1 : 0;
+  if (p.length() - digits < 3) return false;
+  for (size_t i = 0; i < p.length(); i++) {
+    char c = p[i];
+    if (i >= digits && !(c >= '0' && c <= '9') && c != ' ' && c != '-' &&
+        c != '(' && c != ')' && c != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+// HELP 命令回复：命令清单与参数说明（纯文本，长短信自动拆分）
+static String adminHelpText() {
+  String s;
+  s += "管理员命令清单：\n";
+  s += "SMS:<号码>:<内容>  从本卡代发短信（内容可含任意字符，含冒号）\n";
+  s += "RESET  设备重启（先回复确认，2秒后执行）\n";
+  s += "PING  查询当前系统状态\n";
+  s += "HELP  显示本帮助\n";
+  s += "注：命令在收到它的卡上执行并回复；号码匹配忽略+86；黑名单优先。";
+  return s;
+}
+
+String SmsService::adminPhonesJson() const {
+  String js = "[";
+  lock();
+  for (uint8_t i = 0; i < _adminPhoneCount; i++) {
+    if (i) js += ",";
+    js += "\"" + jsonStr(_adminPhones[i]) + "\"";
+  }
+  unlock();
+  js += "]";
+  return js;
+}
+
+bool SmsService::setAdminPhones(const std::vector<String> &phones) {
+  // 先全部校验 + 归一化去重（不动运行态），任一条不合法整体拒绝
+  String norm[cfg::kAdminPhoneMax];
+  uint8_t n = 0;
+  for (const String &raw : phones) {
+    String p = raw;
+    p.trim();
+    if (!p.length()) continue;  // 空条目忽略（前端允许留空行）
+    if (!adminPhoneValid(p)) {
+      _log.addf(LogLevel::kWarn, "sms", "管理员号码格式不合法：%s", p.c_str());
+      return false;
+    }
+    bool dup = false;
+    for (uint8_t i = 0; i < n; i++) {
+      if (phonesEqual(p, norm[i])) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+    if (n >= cfg::kAdminPhoneMax) {
+      _log.addf(LogLevel::kWarn, "sms", "管理员号码超出上限（%u 条）",
+                (unsigned)cfg::kAdminPhoneMax);
+      return false;
+    }
+    norm[n++] = p;
+  }
+
+  lock();
+  for (uint8_t i = 0; i < n; i++) _adminPhones[i] = norm[i];
+  _adminPhoneCount = n;
+  unlock();
+
+  if (!saveConfig()) {
+    _log.addf(LogLevel::kError, "sms", "管理员号码保存失败");
+    return false;
+  }
+  if (n) {
+    String all;
+    for (uint8_t i = 0; i < n; i++) {
+      if (i) all += ", ";
+      all += _adminPhones[i];
+    }
+    _log.addf(LogLevel::kInfo, "sms", "管理员号码已设置（%u 条）：%s", (unsigned)n,
+              all.c_str());
+  } else {
+    _log.addf(LogLevel::kInfo, "sms", "管理员号码已清空，短信远程控制已关闭");
+  }
+  return true;
+}
+
+// 总开关置位并持久化。开启后还需配置了管理员号码才会真正生效
+//（_adminPhoneCount > 0）；仅置开关不改变号码列表。写盘失败返回 false。
+bool SmsService::setAdminEnabled(bool on) {
+  _adminEnabled = on;
+  if (!saveConfig()) {
+    _log.addf(LogLevel::kError, "sms", "管理员总开关保存失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "sms", "管理员短信远程控制总开关已%s",
+            on ? "开启" : "关闭");
+  return true;
+}
+
+// 命令入队（抽数任务上下文）：只解析与置状态，不执行。
+// 返回 false = 不是有效命令（SMS: 格式错误），调用方按普通短信继续处理；
+// 队列被占用（上一条尚未执行）时丢弃新的并记日志，但仍算已消费（返回 true）。
+bool SmsService::enqueueAdminCmd(uint8_t port, const String &sender,
+                                 const String &cmd) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+
+  AdminCmd job;
+  job.port = port;
+  job.from = sender;  // 结果回复给发命令的那个管理员
+  // 关键字大小写不敏感（短信常被自动大写），仅用于分支判定；
+  // SMS 的内容原样取自 cmd，保持大小写
+  String key = cmd;
+  key.toUpperCase();
+  if (key.startsWith("SMS:")) {
+    // SMS:<号码>:<内容> —— 冒号分隔，内容可含任意字符（含后续冒号）
+    int fc = cmd.indexOf(':');
+    int sc = cmd.indexOf(':', fc + 1);
+    if (sc <= fc + 1) {
+      // 格式错误：不当命令消费，由调用方按普通短信处理（入库 + 转发），
+      // 便于管理员在记录里发现自己笔误
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员 SMS 命令格式错误，按普通短信处理：%s",
+                (unsigned)port, cmd.c_str());
+      return false;
+    }
+    job.kind = AdminCmd::kSms;
+    job.phone = cmd.substring(fc + 1, sc);
+    job.content = cmd.substring(sc + 1);
+    job.phone.trim();
+    job.content.trim();
+  } else if (key == "RESET") {
+    job.kind = AdminCmd::kReset;
+  } else if (key == "PING") {
+    job.kind = AdminCmd::kPing;
+  } else if (key == "HELP") {
+    job.kind = AdminCmd::kHelp;
+  } else {  // 兜底（handleCmt 已过滤，正常不会到此）
+    job.kind = AdminCmd::kReset;
+  }
+
+  lock();
+  bool ok = !_adminCmdPending;
+  if (ok) {
+    _adminCmd = job;
+    _adminCmdPending = true;
+  }
+  unlock();
+  if (!ok) {
+    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员命令被丢弃（上一条尚未执行）",
+              (unsigned)port);
+  }
+  return true;
+}
+
+// 执行队首命令（tick 主循环）。取出即清位，执行失败也有回复兜底。
+void SmsService::pollAdminCmd() {
+  AdminCmd job;
+  {
+    lock();
+    if (!_adminCmdPending) {
+      unlock();
+      return;
+    }
+    job = _adminCmd;
+    _adminCmdPending = false;
+    unlock();
+  }
+
+  if (job.kind == AdminCmd::kReset) {
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：设备重启",
+              (unsigned)job.port, job.from.c_str());
+    replyToAdmin(job.port, job.from, "远程命令完成：设备正在重启");
+    // 与 Web 重启同款：起低优先级任务延时 2 秒重启，留时间把回复发出去
+    xTaskCreate(
+        [](void *) {
+          vTaskDelay(pdMS_TO_TICKS(2000));
+          esp_restart();
+          vTaskDelete(nullptr);
+        },
+        "sms_rst", 2048, nullptr, 5, nullptr);
+    return;
+  }
+
+  if (job.kind == AdminCmd::kHelp) {
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：HELP",
+              (unsigned)job.port, job.from.c_str());
+    replyToAdmin(job.port, job.from, adminHelpText());
+    return;
+  }
+
+  if (job.kind == AdminCmd::kPing) {
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：PING",
+              (unsigned)job.port, job.from.c_str());
+    String st = _statusFn ? _statusFn() : "状态获取未配置";
+    replyToAdmin(job.port, job.from, st);
+    return;
+  }
+
+  String err;
+  uint32_t id = send(job.port, job.phone, job.content, err);
+  if (id != 0) {
+    _log.addf(LogLevel::kInfo, "sms",
+              "通信模组 %u 管理员代发成功：%s -> %s（#%u）", (unsigned)job.port,
+              job.from.c_str(), job.phone.c_str(), (unsigned)id);
+    replyToAdmin(job.port, job.from, "远程命令完成：已向 " + job.phone + " 发出短信");
+  } else {
+    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员代发失败：%s -> %s：%s",
+              (unsigned)job.port, job.from.c_str(), job.phone.c_str(),
+              err.c_str());
+    replyToAdmin(job.port, job.from, "远程命令失败：" + err);
+  }
+}
+
+// 执行结果回复（从收到命令的同一模组发出，管理员看到的是熟悉号码）。
+// 回复失败只记日志——命令本身的结果已由日志与短信记录体现。
+void SmsService::replyToAdmin(uint8_t port, const String &to, const String &text) {
+  if (!to.length()) return;
+  String err;
+  uint32_t id = send(port, to, text, err);
+  if (id != 0) {
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 管理员命令结果已回复至 %s（#%u）",
+              (unsigned)port, to.c_str(), (unsigned)id);
+  } else {
+    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员命令结果回复失败（%s）：%s",
+              (unsigned)port, to.c_str(), err.c_str());
+  }
 }
 
 // 从 +CLCC: 行 / AT+CLCC 响应中提取主叫号：
@@ -1206,6 +1473,23 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
     if (_blacklist->action() == BlackList::kDrop) return;  // 不入库、不推送
   }
 
+  // 管理员短信远程控制：命中命令则转 tick 执行，不落盘、不转发。
+  // 顺序与旧实现一致：总开关 + 黑名单优先于管理员判定（管理员把自己拉黑则命令失效，
+  // 这是用户的显式选择）；总开关关闭或号码列表为空时，所有短信按普通短信处理。
+  if (_adminEnabled && _adminPhoneCount > 0 && isAdmin(sender)) {
+    String cmd = text;
+    cmd.trim();
+    String key = cmd;
+    key.toUpperCase();
+    if (key.startsWith("SMS:") || key == "RESET" || key == "PING" || key == "HELP") {
+      _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 收到管理员命令（来自 %s）：%s",
+                (unsigned)port, sender.c_str(), cmd.c_str());
+      // 有效命令（含队列忙被丢弃）一律消费，不再入库/转发；
+      // 仅 SMS: 格式错误时返回 false，按普通短信继续处理（便于发现笔误）
+      if (enqueueAdminCmd(port, sender, cmd)) return;
+    }
+  }
+
   SmsMessage msg;
   msg.incoming = true;
   msg.phone = sender;
@@ -1261,6 +1545,18 @@ bool SmsService::loadConfig() {
   if (doc["max"].is<int>()) {
     _max = (uint16_t)constrain(doc["max"].as<int>(), 10, 1000);
   }
+  // 管理员号码列表（adminPhones 数组）
+  _adminPhoneCount = 0;
+  if (doc["adminPhones"].is<JsonArray>()) {
+    for (JsonVariantConst v : doc["adminPhones"].as<JsonArray>()) {
+      if (_adminPhoneCount >= cfg::kAdminPhoneMax) break;
+      String p = v.as<String>();
+      p.trim();
+      if (p.length()) _adminPhones[_adminPhoneCount++] = p;
+    }
+  }
+  // 总开关：缺省（旧配置/未写入）一律视为禁用，符合「默认关」约定
+  _adminEnabled = doc["adminEnabled"] | false;
   for (JsonObject o : doc["modems"].as<JsonArray>()) {
     int port = o["port"] | 0;
     if (port >= 1 && port <= cfg::kSmsMaxModems) {
@@ -1268,8 +1564,9 @@ bool SmsService::loadConfig() {
       _modems[port].alias = o["alias"] | "";
     }
   }
-  _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，通信模组=[%d,%d]",
-            (unsigned)_max, (int)_modems[1].enabled, (int)_modems[2].enabled);
+  _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，通信模组=[%d,%d]，管理员=%u 条（总开关%s）",
+            (unsigned)_max, (int)_modems[1].enabled, (int)_modems[2].enabled,
+            (unsigned)_adminPhoneCount, _adminEnabled ? "开" : "关");
   return true;
 }
 
@@ -1278,6 +1575,17 @@ bool SmsService::importFrom(const JsonObject &o) {
   if (o["max"].is<int>()) {
     _max = (uint16_t)constrain(o["max"].as<int>(), 10, 1000);
   }
+  // 管理员号码列表（adminPhones 数组）
+  if (o["adminPhones"].is<JsonArray>()) {
+    _adminPhoneCount = 0;
+    for (JsonVariantConst v : o["adminPhones"].as<JsonArray>()) {
+      if (_adminPhoneCount >= cfg::kAdminPhoneMax) break;
+      String p = v.as<String>();
+      p.trim();
+      if (p.length()) _adminPhones[_adminPhoneCount++] = p;
+    }
+  }
+  if (o["adminEnabled"].is<bool>()) _adminEnabled = o["adminEnabled"].as<bool>();
   for (JsonObject m : o["modems"].as<JsonArray>()) {
     int port = m["port"] | 0;
     if (port >= 1 && port <= cfg::kSmsMaxModems) {
@@ -1298,6 +1606,11 @@ bool SmsService::saveConfig() {
   JsonDocument doc;
   doc["ver"] = 1;
   doc["max"] = _max;
+  doc["adminEnabled"] = _adminEnabled;
+  {
+    JsonArray ap = doc["adminPhones"].to<JsonArray>();
+    for (uint8_t i = 0; i < _adminPhoneCount; i++) ap.add(_adminPhones[i]);
+  }
   JsonArray arr = doc["modems"].to<JsonArray>();
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     JsonObject o = arr.add<JsonObject>();

@@ -146,6 +146,24 @@ bool App::begin() {
     _push.notifyCall(number, ts, modem);
   });
   _push.setSms(&_sms);  // SMS 备份推送通道的发送入口（无注入时该通道判失败）
+  // 管理员 PING 命令的系统状态摘要：复用 collectStatus（与 LCD/Web 同源），
+  // 运行于 tick 主循环（pollAdminCmd），与状态页刷新同上下文，安全。
+  _sms.setSystemStatusFn([this]() -> String {
+    StatusInfo s;
+    collectStatus(s);
+    String out;
+    out += s.wifiUp ? "在线(STA)" : (s.apMode ? "AP配网模式" : "WiFi未连接");
+    out += " RSSI " + String(s.rssi) + "dBm\n";
+    out += "IP: " + String(s.ip) + "\n";
+    out += "运行: " + String(s.uptime) + "  内存: " + String(s.mem) + "\n";
+    out += "模组1: " + String(s.modem[0]) + "\n";
+    out += "模组2: " + String(s.modem[1]) + "\n";
+    out += "MQTT: " + String(s.mqtt) + "  邮件: " + String(s.mail) +
+           "  推送: " + String(s.push) + "\n";
+    out += "时间: " + String(s.time) + " (" + String(s.timeSrc) + ")\n";
+    out += "固件: " + Ota::version();
+    return out;
+  });
   // OTA 升级状态初始化（需在 HTTP 路由注册前完成，确保 /api/ota/status 立即可用）
   Ota::init();
   _panel.begin();                      // 启动 HTTP 服务

@@ -188,6 +188,9 @@ class WebPanel {
   void handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json);
+  // 管理员短信远程控制配置：GET 读号码 / POST {"adminPhone":".."} 设置（空串=关闭）
+  void handleSmsAdminGet(AsyncWebServerRequest *req);
+  void handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json);
 
   // 邮件：配置读取 / 总开关 / 测试发送 / 配置保存
   void handleEmailGet(AsyncWebServerRequest *req);

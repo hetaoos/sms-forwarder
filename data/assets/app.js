@@ -1274,6 +1274,7 @@ function pageSms() {
     total: 0, messages: [], stats: {}, loading: false,
     storeErr: '',
     detail: null,
+    admins: [], adminEnabled: false, adminSaving: false, adminHint: '', adminErr: false,
 
     init() {
       // SSE 驱动：新短信 -> 刷新列表（无筛选时）；通信模组配置 -> 同步开关
@@ -1284,6 +1285,7 @@ function pageSms() {
       else this.loadPorts();
       this.reload();
       this.loadStats();
+      this.loadAdmin();
     },
 
     /* ---- 通信模组 ---- */
@@ -1425,6 +1427,40 @@ function pageSms() {
       if (r) { this.page = 1; this.reload(); this.loadStats(); }
     },
     showDetail(m) { this.detail = m; },
+
+    /* ---- 管理员短信远程控制（支持多个号码）---- */
+    async loadAdmin() {
+      try {
+        const r = await apiFetch('/api/sms/admin');
+        if (r.ok) {
+          const data = await r.json();
+          this.admins = (data.phones || []).map(p => (p || '').toString());
+          this.adminEnabled = !!data.enabled;
+        }
+      } catch (e) {}
+    },
+    async saveAdmin() {
+      this.adminSaving = true;
+      this.adminErr = false;
+      this.adminHint = '';
+      // 丢弃空条目、去重（前端体验），后端再严格校验格式与上限
+      const phones = [...new Set(this.admins.map(p => (p || '').trim()).filter(Boolean))];
+      const r = await apiOp('/api/sms/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: this.adminEnabled, phones }),
+      }, this.adminEnabled
+          ? (phones.length ? '管理员远程控制已开启' : '已开启（未设置号码，暂不会生效）')
+          : '已关闭短信远程控制');
+      this.adminSaving = false;
+      if (r && r.phones) {
+        this.admins = r.phones.map(p => (p || '').toString());
+        this.adminEnabled = !!r.enabled;
+      } else if (!r) {
+        this.adminErr = true;
+        this.adminHint = '保存失败（号码格式错误或超出上限）';
+      }
+    },
     fmtTs(ts) {
       return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
                               : '开机 ' + fmtUptime(ts);
