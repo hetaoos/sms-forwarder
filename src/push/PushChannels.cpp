@@ -516,13 +516,19 @@ bool PushChannels::sendSmsBackup(const PushChannel& ch, const String& sender,
     return false;
   }
 
-  // SmsService::send 内部自动处理长短信拆分，无需手动截断
-  _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送到 %s（通信模组 %d）",
-            ch.url.c_str(), (int)port);
-  String err;
-  uint32_t id = sms->send((uint8_t)port, ch.url, content, err);
-  if (id == 0) {
-    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：%s", err.c_str());
+  // 经统一发送队列异步发送（不阻塞推送任务/主循环）；结果在 done 回调里记录，
+  // 因此这里只代表“是否成功入队”
+  _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送已入队（通信模组 %d）", (int)port);
+  bool queued = sms->enqueueSend((uint8_t)port, ch.url, content,
+      [](uint32_t id, bool stored, const String &err) {
+        if (id != 0) {
+          _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送已发出（记录 #%u）", (unsigned)id);
+        } else {
+          _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：%s", err.c_str());
+        }
+      });
+  if (!queued) {
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：发送队列已满");
     return false;
   }
   return true;

@@ -4,6 +4,7 @@
 #include <functional>
 #include <vector>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <ArduinoJson.h>
 
@@ -139,6 +140,16 @@ class SmsService {
   static constexpr uint32_t kIdSentUnstored = 0xFFFFFFFEu;
   uint32_t send(uint8_t port, const String &phone, const String &text, String &err,
                 bool *stored = nullptr);
+
+  // ---------------- 发送（异步队列）----------------
+  // 统一发送入口：Web / 推送 / MQTT / 管理员命令都只入队，由专职 worker 任务串行
+  // 执行阻塞式 CMGS 握手——没有任何调用方任务因等端口锁而被长时间阻塞（消除任务
+  // 看门狗风险），同端口也不会字节交错。完成回调 done 在 tick 主循环上下文触发，
+  // 可安全访问 Web/MQTT 等共享资源；done 可为空（仅发送不关心结果）。
+  // 返回 true 表示已入队；队列满（默认 8）返回 false，调用方自行决定重试/拒绝。
+  using SendDoneFn = std::function<void(uint32_t id, bool stored, const String &err)>;
+  bool enqueueSend(uint8_t port, const String &phone, const String &content,
+                   SendDoneFn done = nullptr);
 
   // ---------------- 存储 ----------------
   SmsStore &store() { return _store; }
@@ -335,6 +346,29 @@ class SmsService {
   // 取/放互斥锁（保护 _lastSmsId 与配置读写）
   void lock() const { xSemaphoreTake(_mutex, portMAX_DELAY); }
   void unlock() const { xSemaphoreGive(_mutex); }
+
+  // ---- 统一发送队列（见 enqueueSend）----
+  static constexpr uint8_t kSendQueueLen = 8;    // 待发送任务容量
+  static constexpr uint8_t kDoneQueueLen = 16;   // 完成事件容量（tick 每轮清空）
+  QueueHandle_t _sendQ = nullptr;   // 元素为 SendJob*（入队用 xQueueSend(...,0) 不阻塞）
+  QueueHandle_t _doneQ = nullptr;   // 元素为 DoneEvent*（worker 完成 -> tick 消费）
+  TaskHandle_t  _sendTask = nullptr;
+  // 待发送任务（堆分配，指针经队列传递，避免 std::function 直接跨队列拷贝）
+  struct SendJob {
+    uint8_t    port;
+    String     phone;
+    String     content;
+    SendDoneFn done;
+  };
+  // 完成事件：worker 执行完 SendJob 后投递，由 tick 主循环取出并触发 done 回调
+  struct DoneEvent {
+    SendDoneFn done;
+    uint32_t   id;
+    bool       stored;
+    String     err;
+  };
+  static void sendTaskEntry(void *arg);
+  void sendTask();
 
   SerialBridge &_bridge;    // AT 串口桥（send 通道）
   SmsStore _store;          // 文件存储

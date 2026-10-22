@@ -196,6 +196,8 @@ class WebPanel {
   void handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json);
+  // 短信发送结果轮询（与 handleSmsSendPost 配对）：GET 返回当前 busy / 最近一次结果
+  void handleSmsSendGet(AsyncWebServerRequest *req);
   // 管理员短信远程控制配置：GET 读号码 / POST {"adminPhone":".."} 设置（空串=关闭）
   void handleSmsAdminGet(AsyncWebServerRequest *req);
   void handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json);
@@ -280,4 +282,15 @@ class WebPanel {
   bool    _pingBusy = false;   // 有 PING 任务进行中
   bool    _pingOk   = false;   // 最近一次结果是否成功
   String  _pingResult;         // 最近一次结果文本（人类可读）
+
+  // 短信发送（异步）共享结果：发送任务写、GET 轮询读，portMUX 临界区保护。
+  // 发送经独立 FreeRTOS 任务执行阻塞式 CMGS 握手，不阻塞 HTTP（async_tcp）
+  // 任务——否则会饿死任务看门狗导致整机复位（见崩溃分析）。
+  mutable portMUX_TYPE _sendMux = portMUX_INITIALIZER_UNLOCKED;
+  bool    _sendBusy = false;   // 有发送任务进行中
+  bool    _sendOk   = false;   // 最近一次结果是否成功（id != 0）
+  uint32_t _sendId  = 0;       // 最近一次记录 ID（成功时 >0 或 kIdSentUnstored）
+  bool    _sendStored = false; // 是否成功入库（与 id 共同判定未入库告警）
+  String  _sendWarn;           // 成功但非致命提示（如记录存储失败）
+  String  _sendErr;            // 失败原因
 };

@@ -316,12 +316,16 @@ void MqttService::handleCommand(const String &json) {
       return;
     }
     if (!_sms) { respond(doc, false, "短信服务不可用"); return; }
-    String err;
-    bool stored = true;
-    uint32_t id = _sms->send((uint8_t)port, phone, content, err, &stored);
-    if (!id) { respond(doc, false, err.length() ? err : "短信发送失败"); return; }
-    respond(doc, true, "短信发送成功（记录 #" + String((unsigned)id) + "）");
-
+    // 入队统一发送队列；完成回调（tick 主循环上下文）负责最终响应，
+    // 不再直接阻塞 MQTT 命令分发线程（避免饿死任务看门狗）。
+    // 仅捕获请求副本（含 reqId）供响应回显——JsonDocument 深拷贝，生命周期独立。
+    bool queued = _sms->enqueueSend((uint8_t)port, phone, content,
+        [doc](uint32_t id, bool stored, const String &err) {
+          if (!id) { respond(doc, false, err.length() ? err : "短信发送失败"); return; }
+          respond(doc, true, "短信发送成功（记录 #" + String((unsigned)id) + "）");
+        });
+    if (!queued) { respond(doc, false, "发送队列已满，请稍后再试"); return; }
+    return;   // 已入队：等待完成回调响应，不立即回“已受理”以免与结果响应冲突
   } else if (strcmp(action, "send_at") == 0) {
     String cmd = doc["cmd"] | "";
     int8_t port = doc["modem"] | 1;

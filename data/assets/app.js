@@ -1299,6 +1299,7 @@ function pageSms() {
     modems: [],               // [{port,enabled}]
     sendPort: 1, phone: '', content: '', sending: false,
     sendHint: '', sendErr: false, sendOpen: false,
+    _sendTimer: null,
     q: '', portFilter: -1, page: 1, pageSize: 10,
     total: 0, messages: [], stats: {}, loading: false,
     storeErr: '',
@@ -1357,44 +1358,66 @@ function pageSms() {
       this.sending = true;
       this.sendHint = '正在发送…';
       this.sendErr = false;
+      // 启动异步发送：后端立即返回 started，实际阻塞式 CMGS 握手在独立任务执行，
+      // 不阻塞 Web 任务（否则会饿死任务看门狗触发整机复位）。随后轮询结果。
       let r;
       try {
-        // 带 120s 超时（单段握手最坏 5s 等 > + 30s 等响应，长短信多段累加；
-        // 参考项目无此前端超时——掐断请求时服务端仍在发送，通信模组已把短信发出，
-        // 会造成「界面报失败但其实发送成功」的误判）
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 120000);
-        try {
-          r = await apiFetch('/api/sms/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ port: this.sendPort, phone: phone, content: this.content }),
-            signal: ctrl.signal,
-          });
-        } finally { clearTimeout(timer); }
+        r = await apiFetch('/api/sms/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port: this.sendPort, phone: phone, content: this.content }),
+        });
       } catch (e) {
         this.sending = false;
-        this.sendFail('请求失败 / 超时：' + (e && e.message ? e.message : e));
+        this.sendFail('请求失败：' + (e && e.message ? e.message : e));
         return;
       }
-      this.sending = false;
-      if (r.ok) {
-        // 记住本次使用的通信模组，下次打开对话框默认选中
-        try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
-        this.phone = '';
-        this.content = '';
-        this.sendOpen = false;
-        this.reload();
-        this.loadStats();
-        // 通信模组已发出但记录未入库：后端返回 warn，提示但不判失败
-        let warn = '';
-        try { warn = (await r.json()).warn || ''; } catch (e) {}
-        if (warn) toast('发送成功，但' + warn, 'warn');
-      } else {
-        // 精确回显：HTTP 状态码 + 后端错误原因（如「通信模组尚未就绪」「号码格式不正确」）
+      if (!r.ok) {
+        // 校验类错误（invalid json / 号码格式等）即时返回，随请求回显
         const msg = await errText(r);
+        this.sending = false;
         this.sendFail('发送失败（HTTP ' + r.status + '）：' + msg);
+        return;
       }
+      this.pollSend();
+    },
+    // 轮询 GET /api/sms/send 直到 busy=false（安全上限 ~120s，长短信多段最坏数十秒）
+    pollSend() {
+      clearTimeout(this._sendTimer);
+      let count = 0;
+      const tick = async () => {
+        try {
+          const r = await apiFetch('/api/sms/send', { cache: 'no-store' });
+          if (r.ok) {
+            const j = await r.json();
+            if (!j.busy) {
+              this.sending = false;
+              if (j.ok) {
+                // 记住本次使用的通信模组，下次打开对话框默认选中
+                try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
+                this.phone = '';
+                this.content = '';
+                this.sendOpen = false;
+                this.reload();
+                this.loadStats();
+                // 通信模组已发出但记录未入库：后端返回 warn，提示但不判失败
+                if (j.warn) toast('发送成功，但' + j.warn, 'warn');
+              } else {
+                // 精确回显后端失败原因（如「通信模组尚未就绪」「发送超时」）
+                this.sendFail('发送失败：' + (j.err || '未知错误'));
+              }
+              return;
+            }
+          }
+        } catch (e) {}
+        if (++count > 120) {   // 安全上限：约 120s
+          this.sending = false;
+          this.sendFail('发送超时（后端未返回结果）');
+          return;
+        }
+        this._sendTimer = setTimeout(tick, 1000);
+      };
+      tick();
     },
     sendFail(msg) { this.sendHint = msg; this.sendErr = true; this.sending = false; },
 

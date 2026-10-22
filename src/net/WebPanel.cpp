@@ -601,11 +601,13 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/reinit", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsReinit(req, json); });
 
-  // 发送短信：JSON {"port":1,"phone":"..","content":".."}
-  // 成功返回 {"ok":true,"id":记录ID}；失败 {"ok":false,"error":"原因"}。
-  // 通信模组已发出但记录未入库（userdata 异常）时仍算成功，附带 warn 提示。
+  // 发送短信：POST 启动（{"port":1,"phone":"..","content":".."}）后立即返回
+  // {"ok":true,"started":true}；实际阻塞式 CMGS 握手在独立任务执行，结果经
+  // GET /api/sms/send 轮询（{busy,ok,id,stored,warn,err}）。如此 Web（async_tcp）
+  // 任务不被长时间阻塞，避免饿死任务看门狗导致整机复位。
   _server.on("/api/sms/send", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsSend(req, json); });
+  _server.on("/api/sms/send", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsSendGet(req); });
 
   // 管理员短信远程控制：GET -> {"ok":true,"enabled":bool,"phones":[".."]}；
   // POST {"enabled":bool,"phones":["138...","139..."]}（字段均可选；空 phones = 关闭；
@@ -1498,6 +1500,11 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
   sendJsonDoc(req, doc);
 }
 
+// 经通信模组发送短信（异步）：POST 启动。
+// 入队统一发送队列（SmsService::enqueueSend），由专职 worker 任务串行执行阻塞式
+// CMGS 握手，不阻塞 HTTP（async_tcp）任务——否则会饿死任务看门狗触发整机复位
+// （见崩溃分析）。完成后经 done 回调（tick 主循环上下文）写回 _sendBusy/_sendOk/...，
+// 前端轮询 GET /api/sms/send 取回。单飞：UI 一次只允许一个在途发送，避免轮询状态被覆盖。
 void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
@@ -1508,26 +1515,85 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   }
   String phone = json["phone"].as<String>();
   String content = json["content"].as<String>();
-  String err;
-  bool stored = true;
-  uint32_t id = _sms.send((uint8_t)port, phone, content, err, &stored);
-  if (!id) {
-    _log.addf(LogLevel::kWarn, "sms", "发送失败（通信模组 %d -> %s）：%s",
-              port, phone.c_str(), err.c_str());
-    sendErr(req, 400, err.c_str());
+
+  // 单飞：UI 一次只允许一个在途发送（底层队列可缓冲多个），避免轮询状态被覆盖
+  bool busy = false;
+  portENTER_CRITICAL(&_sendMux);
+  busy = _sendBusy;
+  portEXIT_CRITICAL(&_sendMux);
+  if (busy) {
+    sendErr(req, 409, "短信发送进行中，请稍后再试");
     return;
   }
-  _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %d，记录 #%u）",
-            phone.c_str(), port, (unsigned)id);
-  if (!stored) {
-    JsonDocument doc;
-    doc["ok"] = true;
-    doc["stored"] = false;
-    doc["warn"] = "记录存储失败（userdata 分区异常），本条不会出现在列表中";
-    sendJsonDoc(req, doc);
+
+  // 先置“在途”态，保证单飞；完成后由 done 回调清位
+  portENTER_CRITICAL(&_sendMux);
+  _sendBusy = true;
+  _sendOk = false;
+  _sendId = 0;
+  _sendStored = false;
+  _sendWarn = "";
+  _sendErr = "";
+  portEXIT_CRITICAL(&_sendMux);
+
+  // 入队统一发送队列；完成时（tick 主循环上下文）回填轮询状态并记日志
+  bool queued = _sms.enqueueSend((uint8_t)port, phone, content,
+      [this, port, phone](uint32_t id, bool stored, const String &err) {
+        if (id != 0) {
+          _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %u，记录 #%u）",
+                    phone.c_str(), (unsigned)port, (unsigned)id);
+        } else {
+          _log.addf(LogLevel::kWarn, "sms",
+              "发送失败（通信模组 %u -> %s）：%s", (unsigned)port,
+              phone.c_str(), err.c_str());
+        }
+        portENTER_CRITICAL(&_sendMux);
+        _sendOk = (id != 0);
+        _sendId = id;
+        _sendStored = stored;
+        if (id && !stored) {
+          _sendWarn = "记录存储失败（userdata 分区异常），本条不会出现在列表中";
+        }
+        _sendErr = err;
+        _sendBusy = false;
+        portEXIT_CRITICAL(&_sendMux);
+      });
+  if (!queued) {
+    // 队列满：回退在途态，告知客户端稍后重试
+    portENTER_CRITICAL(&_sendMux);
+    _sendBusy = false;
+    portEXIT_CRITICAL(&_sendMux);
+    sendErr(req, 503, "发送队列已满，请稍后再试");
     return;
   }
-  sendOkInt(req, "id", (int)id);
+
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["started"] = true;
+  sendJsonDoc(req, doc);
+}
+
+// 短信发送结果轮询：返回当前 busy / 最近一次 ok / id / stored / warn / err。
+void WebPanel::handleSmsSendGet(AsyncWebServerRequest *req) {
+  bool busy = false, ok = false, stored = false;
+  uint32_t id = 0;
+  String warn, err;
+  portENTER_CRITICAL(&_sendMux);
+  busy = _sendBusy;
+  ok = _sendOk;
+  id = _sendId;
+  stored = _sendStored;
+  warn = _sendWarn;   // 短字符串拷贝，临界区内完成
+  err = _sendErr;
+  portEXIT_CRITICAL(&_sendMux);
+  JsonDocument doc;
+  doc["busy"] = busy;
+  doc["ok"] = ok;
+  doc["id"] = id;
+  doc["stored"] = stored;
+  doc["warn"] = warn;
+  doc["err"] = err;
+  sendJsonDoc(req, doc);
 }
 
 // 管理员短信远程控制：读取当前总开关与管理员号码列表

@@ -79,15 +79,73 @@ void SmsService::begin() {
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     if (_modems[p].enabled) configureModem(p, true);
   }
+
+  // 统一发送队列 + 专职 worker：所有发送入口只入队，worker 串行执行阻塞式 CMGS
+  // 握手，完成事件在 tick 主循环上下文回调。worker 自创建即运行，不入任务看门狗。
+  _sendQ = xQueueCreate(kSendQueueLen, sizeof(SendJob *));
+  _doneQ = xQueueCreate(kDoneQueueLen, sizeof(DoneEvent *));
+  if (_sendQ && _doneQ) {
+    xTaskCreate(&SmsService::sendTaskEntry, "sms_send", 8192, this, 4, &_sendTask);
+  } else {
+    if (_sendQ) vQueueDelete(_sendQ);
+    if (_doneQ) vQueueDelete(_doneQ);
+    _sendQ = _doneQ = nullptr;
+    _log.addf(LogLevel::kWarn, "sms", "发送队列创建失败，统一发送不可用");
+  }
+
   _lastSmsId = _store.maxId();
 }
 
 // 周期调用（主循环）：长短信重组超时清理 + 来电检测派发；
-// 通信模组初始化由抽数任务轮询驱动
+// 通信模组初始化由抽数任务轮询驱动。先消费发送完成事件（在 loop 上下文触发
+// done 回调，保证可安全访问 Web/MQTT 等共享资源），再跑常规 tick 逻辑。
 void SmsService::tick() {
+  if (_doneQ) {
+    DoneEvent *e = nullptr;
+    while (xQueueReceive(_doneQ, &e, 0) == pdTRUE) {
+      if (e->done) e->done(e->id, e->stored, e->err);
+      delete e;
+    }
+  }
   _codec.pruneTimeouts(_concat);
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) pollCall(p);
   pollAdminCmd();  // 管理员短信命令（入队于抽数任务，执行于主循环）
+}
+
+// 统一发送入口：入队一个 SendJob（不阻塞）。队列满返回 false。
+bool SmsService::enqueueSend(uint8_t port, const String &phone, const String &content,
+                             SendDoneFn done) {
+  if (!_sendQ) return false;   // 队列未创建（极端内存不足）：退化，调用方须自行拒绝
+  SendJob *j = new SendJob{port, phone, content, std::move(done)};
+  if (xQueueSend(_sendQ, &j, 0) != pdTRUE) {
+    delete j;
+    return false;   // 队列满
+  }
+  return true;
+}
+
+// worker 任务入口
+void SmsService::sendTaskEntry(void *arg) {
+  static_cast<SmsService *>(arg)->sendTask();
+}
+
+// 专职发送任务：串行取出 SendJob，执行阻塞式 CMGS 握手（send 内部持端口锁），
+// 完成后把结果打包成 DoneEvent 投到 _doneQ 由 tick 主循环回调。本任务不入看门狗，
+// 单条发送最坏可达数十秒也不会触发整机复位。
+void SmsService::sendTask() {
+  SendJob *j = nullptr;
+  while (true) {
+    if (xQueueReceive(_sendQ, &j, portMAX_DELAY) != pdTRUE) continue;
+    String err;
+    bool stored = true;
+    uint32_t id = send(j->port, j->phone, j->content, err, &stored);
+    if (j->done) {
+      DoneEvent *e = new DoneEvent{std::move(j->done), id, stored, err};
+      if (xQueueSend(_doneQ, &e, 0) != pdTRUE) delete e;  // 完成队列满：丢弃事件（极少）
+    }
+    delete j;
+    j = nullptr;
+  }
 }
 
 // 判断一行是否为 PDU 十六进制串（偶数长度、全为 hex 字符）
@@ -1071,34 +1129,38 @@ void SmsService::pollAdminCmd() {
     return;
   }
 
-  String err;
-  uint32_t id = send(job.port, job.phone, job.content, err);
-  if (id != 0) {
-    _log.addf(LogLevel::kInfo, "sms",
-              "通信模组 %u 管理员代发成功：%s -> %s（#%u）", (unsigned)job.port,
-              job.from.c_str(), job.phone.c_str(), (unsigned)id);
-    replyToAdmin(job.port, job.from, "远程命令完成：已向 " + job.phone + " 发出短信");
-  } else {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员代发失败：%s -> %s：%s",
-              (unsigned)job.port, job.from.c_str(), job.phone.c_str(),
-              err.c_str());
-    replyToAdmin(job.port, job.from, "远程命令失败：" + err);
-  }
+  // 管理员代发：入队统一发送队列（不阻塞主循环），完成后回复执行结果
+  uint8_t aport = job.port;
+  String afrom = job.from, aphone = job.phone, acontent = job.content;
+  enqueueSend(aport, aphone, acontent,
+      [this, aport, afrom, aphone](uint32_t id, bool stored, const String &err) {
+        if (id != 0) {
+          _log.addf(LogLevel::kInfo, "sms",
+              "通信模组 %u 管理员代发成功：%s -> %s（#%u）", (unsigned)aport,
+              afrom.c_str(), aphone.c_str(), (unsigned)id);
+          replyToAdmin(aport, afrom, "远程命令完成：已向 " + aphone + " 发出短信");
+        } else {
+          _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员代发失败：%s -> %s：%s",
+              (unsigned)aport, afrom.c_str(), aphone.c_str(), err.c_str());
+          replyToAdmin(aport, afrom, "远程命令失败：" + err);
+        }
+      });
 }
 
 // 执行结果回复（从收到命令的同一模组发出，管理员看到的是熟悉号码）。
 // 回复失败只记日志——命令本身的结果已由日志与短信记录体现。
+// 经统一发送队列（不阻塞调用方任务：主循环或 PING 任务）。
 void SmsService::replyToAdmin(uint8_t port, const String &to, const String &text) {
   if (!to.length()) return;
-  String err;
-  uint32_t id = send(port, to, text, err);
-  if (id != 0) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 管理员命令结果已回复至 %s（#%u）",
-              (unsigned)port, to.c_str(), (unsigned)id);
-  } else {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员命令结果回复失败（%s）：%s",
-              (unsigned)port, to.c_str(), err.c_str());
-  }
+  enqueueSend(port, to, text,
+      [this](uint32_t id, bool stored, const String &err) {
+        if (id != 0) {
+          _log.addf(LogLevel::kInfo, "sms", "管理员命令结果已回复（记录 #%u）",
+                    (unsigned)id);
+        } else {
+          _log.addf(LogLevel::kWarn, "sms", "管理员命令结果回复失败：%s", err.c_str());
+        }
+      });
 }
 
 // 从 +CLCC: 行 / AT+CLCC 响应中提取主叫号：
