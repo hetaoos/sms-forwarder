@@ -1,6 +1,7 @@
 #include "Ota.h"
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>   // heap_caps_malloc / heap_caps_free：把 LittleFS 镜像缓存进 PSRAM
 #include <LittleFS.h>
 #include <memory>   // std::unique_ptr（HttpSession 生命周期管理）
 // Arduino 3.x 中 HTTPClient::getStreamPtr() 返回 NetworkClient*，
@@ -722,7 +723,14 @@ static void onlineUpgradeTask(void* param) {
         otaTaskAbort("固件校验失败: " + String(esp_err_to_name(err)));
     }
 
-    // --- 阶段3: 下载并写入 LittleFS 分区 ---
+    // --- 阶段3: 下载并写入 LittleFS 分区（Web UI 资源）---
+    // ⚠️ 关键修复：必须先「完整下载并校验镜像」成功，才允许「卸载 + 擦除 +
+    // 写入」资源分区。旧逻辑先 esp_partition_erase_range 清空整个 spiffs 资源
+    // 分区再开始下载：一旦下载因网络抖动/超时中断不完整（fsFailed），分区已被
+    // 清空却没写回有效镜像，重启后 WebPanel 的 LittleFS.begin(true, ...) 挂载
+    // 失败会 formatOnFail 把分区永久格式化 → Web UI 丢失，只能 pio run -t uploadfs
+    // 恢复。短信在 userdata 分区、OTA 不触碰，故保留。新逻辑下任一环节失败都
+    // 保留原资源分区不动，Web UI 不丢（最多这次没更新到最新版）。
     String fsUrl = String(OTA_RELEASES_BASE_URL)
                    + "/download/" + releaseTag + "/"
                    + otaAssetName(releaseTag, "littlefs");
@@ -736,93 +744,117 @@ static void onlineUpgradeTask(void* param) {
         LOG("OTA", "找不到 LittleFS 分区，跳过 Web UI 升级");
         // 不中止升级，仅写入固件
     } else {
-        bool fsFailed      = false;
-        int  fsTotalWritten = 0;
+        bool fsFailed = false;
         // 同上：LittleFS 是可选阶段。拿不到轮次（别的 HTTPS 任务正占着）就跳过，
         // 只升固件 —— 让整条升级链不必为一个可选步骤卡住。
         TlsTurn fsTurn("OTA-下载WebUI", OTA_HTTP_TIMEOUT_MS * 2);
         if (!fsTurn.held()) {
             const char* holder = tlsHolderNow();
-            LOG("OTA", "LittleFS：网络通道繁忙（%s 占用中），跳过 Web UI 升级",
+            LOG("OTA", "LittleFS：网络通道繁忙（%s 占用中），跳过 Web UI 升级（保留原 Web UI）",
                 holder ? holder : "其它任务");
-            fsFailed = true;
+            // 未擦除分区，原 Web UI 保留
         } else {
             auto fsSession = std::unique_ptr<HttpSession>(HttpSession::request(fsUrl));
             if (!fsSession) {
-                LOG("OTA", "LittleFS：无法建立 HTTP 连接，跳过 Web UI 升级");
-                fsFailed = true;
+                LOG("OTA", "LittleFS：无法建立 HTTP 连接，跳过 Web UI 升级（保留原 Web UI）");
             } else {
                 fsSession->http()->setTimeout(OTA_HTTP_TIMEOUT_MS);
                 fsSession->http()->setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
                 fsSession->http()->setRedirectLimit(10);
                 int fsCode = fsSession->http()->GET();
                 if (fsCode != 200) {
-                    LOG("OTA", "LittleFS 下载 HTTP 响应码: %d，跳过 Web UI 升级", fsCode);
-                    // 不中止，仅升级固件
+                    LOG("OTA", "LittleFS 下载 HTTP 响应码: %d，跳过 Web UI 升级（保留原 Web UI）", fsCode);
+                    // 不中止，仅升级固件；未擦除分区，原 Web UI 保留
                 } else {
                     int fsContentLen = fsSession->http()->getSize();
                     LOG("OTA", "LittleFS 大小: %d 字节", fsContentLen);
                     if (fsContentLen <= 0) {
-                        LOG("OTA", "LittleFS 响应未返回有效大小，跳过 Web UI 升级");
-                        fsFailed = true;
+                        LOG("OTA", "LittleFS 响应未返回有效大小，跳过 Web UI 升级（保留原 Web UI）");
                     } else if ((size_t)fsContentLen > fsPart->size) {
-                        LOG("OTA", "LittleFS 镜像超过分区大小: %d > %u", fsContentLen, (unsigned)fsPart->size);
-                        fsFailed = true;
+                        LOG("OTA", "LittleFS 镜像超过分区大小: %d > %u，跳过（保留原 Web UI）",
+                            fsContentLen, (unsigned)fsPart->size);
                     } else {
-                        g_message = "正在写入 Web UI...";
+                        // 1) 先把整个镜像下载到 PSRAM 缓冲，确认长度完整后再落盘。
+                        //    镜像约 1.3MB（含原样中文字库），DRAM 放不下，必须走 PSRAM。
+                        g_message = "正在接收 Web UI 镜像...";
+                        uint8_t* fsBuf = (uint8_t*)heap_caps_malloc(fsContentLen, MALLOC_CAP_SPIRAM);
+                        if (!fsBuf) {
+                            LOG("OTA", "LittleFS：PSRAM 不足（%d 字节），跳过 Web UI 升级（保留原 Web UI）",
+                                fsContentLen);
+                        } else {
+                            WiFiClient* fsStream = fsSession->http()->getStreamPtr();
+                            int  fsReceived   = 0;
+                            int  fsRemaining  = fsContentLen;
+                            unsigned long fsLastDataMs = millis();
+                            bool dlOk = true;
 
-                        LittleFS.end();
-                        esp_err_t eraseErr = esp_partition_erase_range(fsPart, 0, fsPart->size);
-                        if (eraseErr != ESP_OK) {
-                            LOG("OTA", "LittleFS 分区擦除失败: %s", esp_err_to_name(eraseErr));
-                            // 同固件下载阶段：块内直接 abort 会因 vTaskDelete 不栈展开
-                            // 而泄漏 fsSession/fsTurn，先显式释放再终止任务
-                            fsSession.reset();
-                            fsTurn.release();
-                            otaTaskAbort("Web UI 分区擦除失败: " + String(esp_err_to_name(eraseErr)));
-                        }
-
-                        WiFiClient* fsStream = fsSession->http()->getStreamPtr();
-                        uint8_t fsBuf[512];
-                        int fsRemaining        = fsContentLen;
-                        unsigned long fsLastDataMs = millis();
-
-                        while (fsSession->http()->connected() && (fsRemaining > 0 || fsRemaining == -1)) {
-                            int fsAvailable = fsStream->available();
-                            if (fsAvailable > 0) {
-                                fsLastDataMs = millis();
-                                int fsToRead  = min(fsAvailable, (int)sizeof(fsBuf));
-                                int fsReadLen = fsStream->readBytes(fsBuf, fsToRead);
-                                if (fsReadLen > 0) {
-                                    if ((size_t)fsTotalWritten + (size_t)fsReadLen > fsPart->size) {
-                                        LOG("OTA", "LittleFS 写入超过分区边界");
-                                        fsFailed = true;
+                            while (fsSession->http()->connected() && (fsRemaining > 0 || fsRemaining == -1)) {
+                                int fsAvailable = fsStream->available();
+                                if (fsAvailable > 0) {
+                                    fsLastDataMs = millis();
+                                    int fsWant = min(fsAvailable, 512);
+                                    if (fsRemaining > 0 && fsWant > fsRemaining) fsWant = fsRemaining;
+                                    int fsReadLen = fsStream->readBytes(fsBuf + fsReceived, fsWant);
+                                    if (fsReadLen > 0) {
+                                        fsReceived += fsReadLen;
+                                        if (fsRemaining > 0) fsRemaining -= fsReadLen;
+                                        if (fsContentLen > 0) {
+                                            g_progress = (uint8_t)((fsReceived * 100) / fsContentLen);
+                                        }
+                                    }
+                                } else {
+                                    if (millis() - fsLastDataMs > (unsigned long)OTA_HTTP_TIMEOUT_MS) {
+                                        LOG("OTA", "LittleFS 下载超时，已接收 %d/%d 字节", fsReceived, fsContentLen);
+                                        dlOk = false;
                                         break;
                                     }
-                                    esp_err_t wErr = esp_partition_write(fsPart, fsTotalWritten, fsBuf, fsReadLen);
+                                    vTaskDelay(pdMS_TO_TICKS(10));
+                                }
+                            }
+
+                            if (!dlOk || fsReceived < fsContentLen) {
+                                // 下载不完整：释放缓冲，保留原资源分区（Web UI 不丢）
+                                LOG("OTA", "LittleFS 下载不完整（%d/%d），保留原 Web UI", fsReceived, fsContentLen);
+                                heap_caps_free(fsBuf);
+                            } else {
+                                // 2) 镜像完整：卸载 -> 擦除 -> 分块写入。esp_partition_write 的
+                                //    src 必须在 DRAM，故从 PSRAM 缓冲经 512B 栈缓冲拷入后落盘。
+                                g_message = "正在写入 Web UI...";
+                                LittleFS.end();
+                                esp_err_t eraseErr = esp_partition_erase_range(fsPart, 0, fsPart->size);
+                                if (eraseErr != ESP_OK) {
+                                    LOG("OTA", "LittleFS 分区擦除失败: %s", esp_err_to_name(eraseErr));
+                                    heap_caps_free(fsBuf);
+                                    // 同固件下载阶段：块内直接 abort 会因 vTaskDelete 不栈展开
+                                    // 而泄漏 fsSession/fsTurn，先显式释放再终止任务
+                                    fsSession.reset();
+                                    fsTurn.release();
+                                    otaTaskAbort("Web UI 分区擦除失败: " + String(esp_err_to_name(eraseErr)));
+                                }
+                                uint8_t tmp[512];
+                                size_t  off  = 0;
+                                bool    wrOk = true;
+                                while (off < (size_t)fsContentLen) {
+                                    size_t n = ((size_t)fsContentLen - off) > sizeof(tmp)
+                                                   ? sizeof(tmp) : (size_t)((size_t)fsContentLen - off);
+                                    memcpy(tmp, fsBuf + off, n);
+                                    esp_err_t wErr = esp_partition_write(fsPart, off, tmp, n);
                                     if (wErr != ESP_OK) {
                                         LOG("OTA", "LittleFS esp_partition_write 失败: %s", esp_err_to_name(wErr));
-                                        fsFailed = true;
+                                        wrOk = false;
                                         break;
                                     }
-                                    fsTotalWritten += fsReadLen;
-                                    if (fsRemaining > 0) fsRemaining -= fsReadLen;
-                                    if (fsContentLen > 0) {
-                                        g_progress = (uint8_t)((fsTotalWritten * 100) / fsContentLen);
-                                    }
+                                    off += n;
+                                    g_progress = (uint8_t)((off * 100) / (size_t)fsContentLen);
                                 }
-                            } else {
-                                if (millis() - fsLastDataMs > (unsigned long)OTA_HTTP_TIMEOUT_MS) {
-                                    LOG("OTA", "LittleFS 下载超时，已写入 %d/%d 字节", fsTotalWritten, fsContentLen);
+                                heap_caps_free(fsBuf);
+                                if (!wrOk) {
+                                    LOG("OTA", "LittleFS 写入失败，原 Web UI 已丢失，请重新上传或下次 OTA 修复");
                                     fsFailed = true;
-                                    break;
+                                } else {
+                                    LOG("OTA", "LittleFS 写入完成，共 %d 字节", fsContentLen);
                                 }
-                                vTaskDelay(pdMS_TO_TICKS(10));
                             }
-                        }
-
-                        if (fsContentLen > 0 && fsTotalWritten < fsContentLen) {
-                            fsFailed = true;
                         }
                     }
                 }
@@ -830,9 +862,7 @@ static void onlineUpgradeTask(void* param) {
         }  // fsSession destructor 此处释放 HTTPClient 及 mbedtls TLS 上下文
 
         if (fsFailed) {
-            LOG("OTA", "LittleFS 写入不完整或失败，继续完成固件升级");
-        } else {
-            LOG("OTA", "LittleFS 写入完成，共 %d 字节", fsTotalWritten);
+            LOG("OTA", "LittleFS 升级失败，继续完成固件升级");
         }
     }
 

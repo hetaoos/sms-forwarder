@@ -229,8 +229,16 @@ void WebPanel::begin() {
   // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404。
   // 显式指定 label（与 ota/Ota.cpp 的 findFsPartition 同源宏），避免依赖
   // LittleFS 库默认 label；base_path "/littlefs" 为库默认值，保持现状。
-  if (!LittleFS.begin(true, "/littlefs", 10, cfg::kPartLabelSpiffs)) {
-    _log.addf(LogLevel::kError, "http", "LittleFS 挂载失败，网页不可用");
+  // 挂载资源分区：先以 formatOnFail=false 尝试，避免「分区本有效却因瞬时故障
+  // 挂载失败」时被自动格式化清空（OTA 写入不完整等情况会触发，清空后 Web UI
+  // 永久丢失）。仅当确实无有效文件系统（首次 / 损坏）时才 begin(true) 格式化一次。
+  if (!LittleFS.begin(false, "/littlefs", 10, cfg::kPartLabelSpiffs)) {
+    _log.addf(LogLevel::kWarn, "http", "LittleFS 初次挂载失败，尝试格式化重建");
+    if (!LittleFS.begin(true, "/littlefs", 10, cfg::kPartLabelSpiffs)) {
+      _log.addf(LogLevel::kError, "http", "LittleFS 挂载失败，网页不可用");
+    } else {
+      _log.addf(LogLevel::kInfo, "http", "LittleFS 已挂载（已重建）");
+    }
   } else {
     _log.addf(LogLevel::kInfo, "http", "LittleFS 已挂载");
   }
@@ -1654,7 +1662,7 @@ void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json)
 }
 
 // 经通信模组 ICMP 连通性测试（PING）：POST 启动。
-// 复用 SmsService::pingHost（AT+CGPING），独立 FreeRTOS 任务异步执行，
+// 复用 SmsService::pingHost（AT+MPING），独立 FreeRTOS 任务异步执行，
 // 不阻塞 HTTP（async_tcp）任务；结果经 _pingBusy/_pingOk/_pingResult 暴露，
 // 前端轮询 GET /api/sms/ping 取回。host 缺省 8.8.8.8。
 void WebPanel::handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json) {
