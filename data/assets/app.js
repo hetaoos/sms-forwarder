@@ -724,6 +724,7 @@ function pageSerial() {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
     cmd: '', localHist: [], localIdx: -1,
     filter: 'all',             // 类型过滤：all / 0(用户) / 1(后台) / 2(上报)
+    autoScroll: true,          // 自动滚动到最新（用户上移滚动条较多时自动取消，默认开启）
     atStats: {},               // GET /api/at/stats（存储位置/容量等）
     // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
     get entries() {
@@ -740,6 +741,9 @@ function pageSerial() {
       this.loadAtStats();
       // 仓库为空（SSE 尚未送达）时兜底拉一次历史
       if (!Alpine.store('live').at.length) restSnapshot();
+      // 监听滚动条：用户上移较多时自动取消「自动滚动」
+      const box = this.$refs.console;
+      if (box) box.addEventListener('scroll', () => this.onConsoleScroll());
     },
     // AT 历史存储统计（PSRAM 落点 / 容量），与日志页对称
     async loadAtStats() {
@@ -749,12 +753,36 @@ function pageSerial() {
       } catch (e) {}
     },
     scrollBottom() {
+      if (!this.autoScroll) return;   // 未开启（用户上移较多已自动取消）则不滚动
       this.$nextTick(() => {
         const box = this.$refs.console;
         if (!box) return;
-        const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-        if (atBottom) box.scrollTop = box.scrollHeight;
+        // 开启即强制滚到最新：不检查 atBottom，否则新增高条目（长 AT 响应）会把距底
+        // 撑过阈值而误判为「已离开底部」，导致不再滚动。取消逻辑交由 onConsoleScroll。
+        box.scrollTop = box.scrollHeight;
       });
+    },
+    // 列表变化（SSE 新记录 / 过滤切换）时，若开启自动滚动则滚到底部（由 x-effect 驱动）
+    onEntriesChanged() {
+      const arr = this.entries;
+      void arr.length;
+      const last = arr[arr.length - 1];
+      void (last ? last.id : 0);   // 依赖末条 id：缓冲满时替换旧记录也能触发
+      this.scrollBottom();
+    },
+    // 用户拖动滚动条：离底超过阈值即取消自动滚动；滚回底部则恢复
+    onConsoleScroll() {
+      const box = this.$refs.console;
+      if (!box) return;
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+      this.autoScroll = atBottom;
+    },
+    // 手动勾选「自动滚动」时立即滚到最新
+    onAutoScrollChange() {
+      if (this.autoScroll) {
+        const box = this.$refs.console;
+        if (box) box.scrollTop = box.scrollHeight;
+      }
     },
     async send() {
       const cmd = this.cmd;
