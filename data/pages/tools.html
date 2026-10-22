@@ -6,106 +6,111 @@
     </div>
   </div>
 
-  <!-- 固件升级 -->
-  <div class="card">
-    <h3>固件升级 <span class="sub" x-show="!otaAvailable" x-cloak>本设备不支持 OTA</span></h3>
-    <div class="row"><span class="k">当前版本</span><span class="v" x-text="curVer || '未知'"></span></div>
-    <div class="row"><span class="k">最新版本</span><span class="v" x-text="latestVer || '—'"></span></div>
+  <!-- 两列网格：同类工具左右并排；窄屏（≤760px）回落单列 -->
+  <div class="grid two">
 
-    <div class="bar" style="margin-top:14px">
-      <button class="btn" @click="checkUpdate()" :disabled="busy() || !otaAvailable">检查更新</button>
-      <button class="btn" @click="doUpgrade()" x-show="latestVer && latestVer !== curVer"
-              :disabled="busy() || !otaAvailable" x-cloak>
-        升级到 <span x-text="latestVer"></span>
-      </button>
-    </div>
+    <!-- 固件升级 -->
+    <div class="card">
+      <h3>固件升级 <span class="sub" x-show="!otaAvailable" x-cloak>本设备不支持 OTA</span></h3>
+      <div class="row"><span class="k">当前版本</span><span class="v" x-text="curVer || '未知'"></span></div>
+      <div class="row"><span class="k">最新版本</span><span class="v" x-text="latestVer || '—'"></span></div>
 
-    <!-- 进度条：进行中或终态时显示 -->
-    <div x-show="busy() || otaState===4 || otaState===5" x-cloak style="margin-top:14px">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;height:10px;background:var(--border);border-radius:6px;overflow:hidden">
-          <div :style="'width:' + otaProgress + '%;height:100%;background:' +
-                       (otaState===5 ? 'var(--danger)' : 'var(--primary)') + ';transition:width .25s'"></div>
+      <div class="bar" style="margin-top:14px">
+        <button class="btn" @click="checkUpdate()" :disabled="busy() || !otaAvailable">检查更新</button>
+        <button class="btn" @click="doUpgrade()" x-show="latestVer && latestVer !== curVer"
+                :disabled="busy() || !otaAvailable" x-cloak>
+          升级到 <span x-text="latestVer"></span>
+        </button>
+      </div>
+
+      <!-- 进度条：进行中或终态时显示 -->
+      <div x-show="busy() || otaState===4 || otaState===5" x-cloak style="margin-top:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="flex:1;height:10px;background:var(--border);border-radius:6px;overflow:hidden">
+            <div :style="'width:' + otaProgress + '%;height:100%;background:' +
+                         (otaState===5 ? 'var(--danger)' : 'var(--primary)') + ';transition:width .25s'"></div>
+          </div>
+          <span class="hint" style="margin:0;min-width:40px;text-align:right" x-text="otaProgress + '%'"></span>
         </div>
-        <span class="hint" style="margin:0;min-width:40px;text-align:right" x-text="otaProgress + '%'"></span>
+      </div>
+      <div class="hint" style="margin-top:10px" x-text="statusLine()"></div>
+    </div>
+
+    <!-- 本地刷写 -->
+    <div class="card">
+      <h3>本地刷写</h3>
+      <p class="hint">无网络或离线环境时，可直接上传编译好的固件 / Web UI 镜像（raw 二进制，无需打包）。
+        上传成功后设备会自动重启。</p>
+      <div class="bar" style="margin-top:8px">
+        <div class="field" style="flex:1;min-width:220px"><label>固件 (.bin)</label>
+          <input type="file" accept=".bin" @change="onFirmware($event)" :disabled="busy()">
+        </div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn" @click="uploadFirmware()" :disabled="!firmwareFile || busy() || !otaAvailable">上传固件</button>
+        </div>
+      </div>
+      <div class="bar" style="margin-top:8px">
+        <div class="field" style="flex:1;min-width:220px"><label>Web UI 镜像 (.bin)</label>
+          <input type="file" accept=".bin" @change="onLfs($event)" :disabled="busy()">
+        </div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn" @click="uploadLfs()" :disabled="!lfsFile || busy() || !otaAvailable">上传 Web UI</button>
+        </div>
       </div>
     </div>
-    <div class="hint" style="margin-top:10px" x-text="statusLine()"></div>
-  </div>
 
-  <!-- 本地刷写 -->
-  <div class="card">
-    <h3>本地刷写</h3>
-    <p class="hint">无网络或离线环境时，可直接上传编译好的固件 / Web UI 镜像（raw 二进制，无需打包）。
-      上传成功后设备会自动重启。</p>
-    <div class="bar" style="margin-top:8px">
-      <div class="field" style="flex:1;min-width:220px"><label>固件 (.bin)</label>
-        <input type="file" accept=".bin" @change="onFirmware($event)" :disabled="busy()">
+    <!-- 配置管理 -->
+    <div class="card">
+      <h3>配置管理</h3>
+      <p class="hint">导出当前全部配置（含 WiFi 密码、管理账号、邮件授权码等敏感信息）为 JSON 文件；
+        导入该文件可一键恢复配置。导入后设备会自动重启生效。</p>
+
+      <div class="bar" style="margin-top:8px">
+        <button class="btn" @click="exportConfig()">导出配置</button>
+        <span class="hint" style="margin:0">⚠️ 导出文件包含密码等敏感信息，请妥善保管</span>
       </div>
-      <div class="field"><label>&nbsp;</label>
-        <button class="btn" @click="uploadFirmware()" :disabled="!firmwareFile || busy() || !otaAvailable">上传固件</button>
+
+      <div class="bar" style="margin-top:14px">
+        <div class="field" style="flex:1;min-width:220px"><label>导入配置（选择 .json 文件）</label>
+          <input type="file" accept=".json" @change="onImportFile($event)">
+        </div>
+        <div class="field"><label>&nbsp;</label>
+          <button class="btn" @click="importConfig()" :disabled="!importFile || importing">导入配置</button>
+        </div>
+      </div>
+      <div class="hint" x-show="importing" x-cloak style="margin-top:8px">正在导入，设备即将重启…</div>
+    </div>
+
+    <!-- 崩溃记录（coredump） -->
+    <div class="card">
+      <h3>崩溃记录（coredump）</h3>
+      <p class="hint">设备异常重启（panic）时，ESP-IDF 会把内存快照写入 flash 的 coredump 分区。
+        导出该文件，并配合对应版本的调试符号（firmware.elf），即可离线解析崩溃现场。</p>
+
+      <div class="bar" style="margin-top:12px">
+        <button class="btn" @click="exportCoredump()">导出 coredump</button>
+        <button class="btn danger" @click="clearCoredump()" :disabled="!cdHas || cdBusy">清除记录</button>
+      </div>
+
+      <div class="hint" x-show="cdHas" x-cloak style="margin-top:10px">
+        崩溃时间：<span x-text="cdTimeText"></span>（近似） · 大小：<span x-text="cdSizeText"></span><template x-if="cdVersion"> · 固件版本：<span x-text="cdVersion"></span></template><template x-if="cdElfUrl"> · <a :href="cdElfUrl" target="_blank">下载调试符号（firmware.elf）</a></template>
+      </div>
+      <div class="hint" x-show="cdLoaded && !cdHas" x-cloak style="margin-top:10px">暂无崩溃记录</div>
+    </div>
+
+    <!-- 系统维护：危险操作，独占整行以便突出 -->
+    <div class="card span-all">
+      <h3>系统维护</h3>
+      <p class="hint">重启设备会中断当前服务约数秒；出厂复位将清除全部配置与用户数据（短信记录 / 日志 / AT 历史），设备回到首次启动状态（AP 配网模式）。</p>
+
+      <div class="bar" style="margin-top:12px">
+        <button class="btn" @click="restart()">重启设备</button>
+        <button class="btn danger" @click="reset()">复位设备（清空配置）</button>
+      </div>
+      <div class="form-err" x-show="resetWarn" x-cloak style="margin-top:10px">
+        <span class="ico">!</span><span>已发送出厂复位指令，设备将在 2 秒后重启并进入 AP 配网模式。</span>
       </div>
     </div>
-    <div class="bar" style="margin-top:8px">
-      <div class="field" style="flex:1;min-width:220px"><label>Web UI 镜像 (.bin)</label>
-        <input type="file" accept=".bin" @change="onLfs($event)" :disabled="busy()">
-      </div>
-      <div class="field"><label>&nbsp;</label>
-        <button class="btn" @click="uploadLfs()" :disabled="!lfsFile || busy() || !otaAvailable">上传 Web UI</button>
-      </div>
-    </div>
-  </div>
 
-  <!-- 配置管理 -->
-  <div class="card">
-    <h3>配置管理</h3>
-    <p class="hint">导出当前全部配置（含 WiFi 密码、管理账号、邮件授权码等敏感信息）为 JSON 文件；
-      导入该文件可一键恢复配置。导入后设备会自动重启生效。</p>
-
-    <div class="bar" style="margin-top:8px">
-      <button class="btn" @click="exportConfig()">导出配置</button>
-      <span class="hint" style="margin:0">⚠️ 导出文件包含密码等敏感信息，请妥善保管</span>
-    </div>
-
-    <div class="bar" style="margin-top:14px">
-      <div class="field" style="flex:1;min-width:220px"><label>导入配置（选择 .json 文件）</label>
-        <input type="file" accept=".json" @change="onImportFile($event)">
-      </div>
-      <div class="field"><label>&nbsp;</label>
-        <button class="btn" @click="importConfig()" :disabled="!importFile || importing">导入配置</button>
-      </div>
-    </div>
-    <div class="hint" x-show="importing" x-cloak style="margin-top:8px">正在导入，设备即将重启…</div>
-  </div>
-
-  <!-- 崩溃记录（coredump） -->
-  <div class="card">
-    <h3>崩溃记录（coredump）</h3>
-    <p class="hint">设备异常重启（panic）时，ESP-IDF 会把内存快照写入 flash 的 coredump 分区。
-      导出该文件，并配合对应版本的调试符号（firmware.elf），即可离线解析崩溃现场。</p>
-
-    <div class="bar" style="margin-top:12px">
-      <button class="btn" @click="exportCoredump()">导出 coredump</button>
-      <button class="btn danger" @click="clearCoredump()" :disabled="!cdHas || cdBusy">清除记录</button>
-    </div>
-
-    <div class="hint" x-show="cdHas" x-cloak style="margin-top:10px">
-      崩溃时间：<span x-text="cdTimeText"></span>（近似） · 大小：<span x-text="cdSizeText"></span><template x-if="cdVersion"> · 固件版本：<span x-text="cdVersion"></span></template><template x-if="cdElfUrl"> · <a :href="cdElfUrl" target="_blank">下载调试符号（firmware.elf）</a></template>
-    </div>
-    <div class="hint" x-show="cdLoaded && !cdHas" x-cloak style="margin-top:10px">暂无崩溃记录</div>
-  </div>
-
-  <!-- 系统维护 -->
-  <div class="card">
-    <h3>系统维护</h3>
-    <p class="hint">重启设备会中断当前服务约数秒；出厂复位将清除全部配置与用户数据（短信记录 / 日志 / AT 历史），设备回到首次启动状态（AP 配网模式）。</p>
-
-    <div class="bar" style="margin-top:12px">
-      <button class="btn" @click="restart()">重启设备</button>
-      <button class="btn danger" @click="reset()">复位设备（清空配置）</button>
-    </div>
-    <div class="form-err" x-show="resetWarn" x-cloak style="margin-top:10px">
-      <span class="ico">!</span><span>已发送出厂复位指令，设备将在 2 秒后重启并进入 AP 配网模式。</span>
-    </div>
   </div>
 </div>

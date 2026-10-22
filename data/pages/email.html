@@ -2,7 +2,7 @@
   <div class="page-head">
     <div>
       <h2>邮件通知</h2>
-      <p class="page-desc">通过 SMTP 发送通知邮件（统一 HTML 卡片模板，验证码高亮），配置保存到 NVS，重启后仍有效</p>
+      <p class="page-desc">通过 SMTP 发送通知邮件（统一 HTML 卡片模板，验证码高亮），保存后立即生效，重启后仍有效</p>
     </div>
     <button class="btn ghost sm" @click="load()">刷新</button>
   </div>
@@ -59,7 +59,7 @@
   <!-- 通知类型 -->
   <div class="card">
     <h3>通知类型</h3>
-    <p class="page-desc" style="margin:0 0 10px">
+    <p class="hint" style="margin:0 0 10px">
       勾选的事件会各自发送一封 HTML 邮件；关闭后不影响短信存储、SSE 与其它功能。
     </p>
     <div class="grid cols2">
@@ -83,7 +83,7 @@
     <div x-show="onlineOn()" x-cloak
          style="margin-top:16px;border-top:1px solid #eef1f4;padding-top:14px">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">定时在线通知排程</div>
-      <p class="page-desc" style="margin:0 0 12px">
+      <p class="hint" style="margin:0 0 12px">
         保存排程后会立即发送一封在线通知，便于确认配置生效。
       </p>
       <div class="grid cols2" style="margin-top:12px">
@@ -123,6 +123,6 @@
     <div class="row"><span class="k">验证码</span><span class="v">识别「验证码 / OTP / code」等关键词，标题与正文大字高亮</span></div>
     <div class="row"><span class="k">兜底</span><span class="v">客户端不支持 HTML 时自动附带纯文本正文</span></div>
     <div class="row"><span class="k">公共信息</span><span class="v">系统时间、各通信模组本机号码（或设备 IP）、运行时长</span></div>
-    <div class="row"><span class="k">发送方式</span><span class="v">主循环队列发送（不阻塞短信收发），失败退避重试 3 次</span></div>
+    <div class="row"><span class="k">发送方式</span><span class="v">后台队列发送，不阻塞短信收发；失败自动重试最多 3 次</span></div>
   </div>
 </div>

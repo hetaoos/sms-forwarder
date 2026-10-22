@@ -36,26 +36,21 @@
     <div class="stat"><div class="k">堆内存</div>
       <div class="v"><span x-text="fmtBytes(st.heap)"></span>
         <div class="sub" x-text="st.heapSize ? '共 ' + fmtBytes(st.heapSize) : ''"></div></div></div>
-    <div class="stat"><div class="k">剩余 PSRAM</div>
-      <div class="v"><span x-text="st.psramSize ? fmtBytes(st.psram) : '无'"></span>
-        <div class="sub" x-text="st.psramSize ? '共 ' + fmtBytes(st.psramSize) : ''"></div></div></div>
-    <div class="stat"><div class="k">ROM</div>
-      <div class="v" x-text="st.romSize ? fmtBytes(st.romSize) : '-'"></div></div>
   </div>
 
   <!-- 设备信息 + 时间同步 -->
   <div class="grid cols2">
     <div class="card">
       <h3>设备信息</h3>
-      <div class="row"><span class="k">CPU 使用率</span>
-        <span class="v" x-text="st.cpuAvail ? st.cpu.toFixed(1) + ' %' : '不可用'"></span></div>
-      <div class="row"><span class="k">芯片温度</span>
-        <span class="v" x-text="st.tempAvail ? st.temp.toFixed(1) + ' °C' : '不可用'"></span></div>
       <div class="row"><span class="k">硬件版本</span><span class="v" x-text="st.hwVer || '-'"></span></div>
       <div class="row"><span class="k">软件版本</span>
         <span class="v" style="font-size:12px;word-break:break-all" x-text="st.swVer || '-'"></span></div>
       <div class="row"><span class="k">MAC 地址</span>
         <span class="v" style="font-family:monospace" x-text="st.mac || '-'"></span></div>
+      <div class="row"><span class="k">Flash</span>
+        <span class="v" x-text="st.romSize ? fmtBytes(st.romSize) : '-'"></span></div>
+      <div class="row"><span class="k">外部 PSRAM</span>
+        <span class="v" x-text="st.psramSize ? fmtBytes(st.psramSize) : '无'"></span></div>
     </div>
 
     <!-- 时间同步 -->
@@ -66,7 +61,7 @@
       <div class="row"><span class="k">时间来源</span><span class="v" x-text="timeSrcText()"></span></div>
       <div class="row"><span class="k">校准方式</span>
         <span class="v" style="font-size:12px" x-text="calibText()"></span></div>
-      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由通信模组 AT+CCLK? 兜底。时间每 10 分钟写入 NVS，重启后恢复近似值。</div>
+      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由通信模组 AT+CCLK? 兜底。时间每 10 分钟保存一次，重启后以此恢复近似值。</div>
     </div>
   </div>
 

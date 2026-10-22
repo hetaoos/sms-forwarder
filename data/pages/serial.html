@@ -20,9 +20,9 @@
     <div class="stat"><div class="k">存储位置</div>
       <div class="v" style="font-size:15px" x-text="atStoreText()"></div></div>
   </div>
+  <!-- 未落在外部 PSRAM 时提示：容量较小，功能不受影响 -->
   <div class="hint" x-show="atStats.max && !atStats.psram" x-text="atStoreHint()"
        style="margin-top:-6px;margin-bottom:12px"></div>
-
   <!-- 日志 -->
   <div class="card">
     <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 ' + (atStats.max || '-') + ' 条）'"></span>

@@ -618,7 +618,7 @@ function pageDashboard() {
       return '开机 ' + fmtUptime(ts);
     },
     timeSrcText() {
-      return { ntp: 'NTP', sim: 'SIM NITZ', nvs: 'NVS 恢复', none: '未同步' }[this.st.timeSrc] || '未同步';
+      return { ntp: 'NTP', sim: 'SIM NITZ', nvs: '上次保存', none: '未同步' }[this.st.timeSrc] || '未同步';
     },
     timeSrcClass() {
       return { ntp: 'ok', sim: 'warn', nvs: 'info', none: 'err' }[this.st.timeSrc] || 'err';
@@ -843,18 +843,14 @@ function pageSerial() {
       if (t === 2) return 'urc';
       return 'cmd';
     },
-    // 存储位置文案：区分「PSRAM」/「无 PSRAM」/「有 PSRAM 但分配失败」
+    // 存储位置文案：外部 PSRAM / 回落到内部内存（容量较小，功能不受影响）
     atStoreText() {
       if (!this.atStats.max) return '-';
-      return this.atStats.psram ? 'PSRAM' : '内部堆';
+      return this.atStats.psram ? '外部 PSRAM' : '内部内存';
     },
     atStoreHint() {
       if (this.atStats.psram) return '';
-      const total = this.atStats.psramTotal || 0;
-      return total
-          ? ('设备有 PSRAM（剩余 ' + fmtBytes(this.atStats.psramFree) + ' / ' + fmtBytes(total) +
-             '），但 AT 历史缓冲分配失败，已退化到内部堆；功能不受影响')
-          : '设备未启用 PSRAM（或上电检测失败），AT 历史缓冲落在内部堆；功能不受影响';
+      return '未使用外部 PSRAM，AT 历史容量较小，功能不受影响';
     },
     fmt, fmtBytes,
   };
@@ -1302,6 +1298,33 @@ function pageApiToken() {
       if (!t.length) return '';
       if (this.tokenShown) return t;
       return t.slice(0, 6) + '••••••••••' + t.slice(-4);
+    },
+    // 示例命令：设备地址自动取当前页面访问地址；令牌仅在「显示完整」时为真实值
+    get curlCmd() {
+      const tok = (this.tokenShown && this.token) ? this.token : '<令牌>';
+      return 'curl -H "Authorization: Bearer ' + tok + '" ' +
+        (location.origin || 'http://设备IP') + '/api/status';
+    },
+    async copyCmd() {
+      const txt = this.curlCmd;
+      // 设备多为 http 明文来源，navigator.clipboard 不可用，回落到 execCommand
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(txt);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = txt;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          if (!document.execCommand('copy')) throw new Error('execCommand failed');
+          ta.remove();
+        }
+        toast('已复制示例命令', 'ok');
+      } catch (e) {
+        toast('✕ 复制失败，请手动选择文本', 'err');
+      }
     },
     async save() {
       if (this.saving || !this.loaded) return;
@@ -2184,18 +2207,14 @@ function pageLogs() {
       const r = await apiOp('/api/logs', { method: 'DELETE' }, '日志已清空');
       if (r) { this.page = 1; this.reload(); this.loadStats(); }
     },
-    // 存储位置文案：区分「PSRAM」/「无 PSRAM」/「有 PSRAM 但分配失败」
+    // 存储位置文案：外部 PSRAM / 回落到内部内存（容量较小，功能不受影响）
     storeText() {
       if (!this.stats.max) return '-';
-      return this.stats.psram ? 'PSRAM' : '内部堆';
+      return this.stats.psram ? '外部 PSRAM' : '内部内存';
     },
     storeHint() {
       if (this.stats.psram) return '';
-      const total = this.stats.psramTotal || 0;
-      return total
-          ? ('设备有 PSRAM（剩余 ' + fmtBytes(this.stats.psramFree) + ' / ' + fmtBytes(total) +
-             '），但日志缓冲分配失败，已退化到内部堆；功能不受影响')
-          : '设备未启用 PSRAM（或上电检测失败），日志缓冲落在内部堆；功能不受影响';
+      return '未使用外部 PSRAM，日志容量较小，功能不受影响';
     },
     levelText(l) { return LEVELS[l] || '信息'; },
     levelClass(l) { return l >= 3 ? 'err' : l === 2 ? 'warn' : l === 0 ? '' : 'info'; },

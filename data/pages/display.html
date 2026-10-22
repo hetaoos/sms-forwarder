@@ -48,7 +48,7 @@
                x-model.number="bright" @input="touched = true" @change="applyBright()">
         <span class="v" style="min-width:46px;text-align:right" x-text="bright + '%'"></span>
       </div>
-      <div class="hint">拖动滑块松开后生效并写入 NVS（重启后沿用）；0% 等效熄屏（背光关闭，
+      <div class="hint">拖动滑块松开后生效并保存（重启后沿用）；0% 等效熄屏（背光关闭，
         面板仍在后台刷新）。菜单里按亮度 +/- 调节同样会保存。</div>
     </div>
   </div>
@@ -77,7 +77,7 @@
     <div class="hint">
       两项都按「最后一次按键 / 远程按键」计时，先到点的先执行：无操作到达<b>返回状态页</b>时间，
       菜单与「屏幕显示」页自动退回实时状态页；到达<b>关屏</b>时间自动熄屏（内容保留，按任意键唤醒，
-      唤醒后仍停在当前页面）。拖到最左的「关闭」则不生效。设置写入 NVS，重启后保持。
+      唤醒后仍停在当前页面）。拖到最左的「关闭」则不生效。设置保存后重启仍保持。
     </div>
   </div>
 </div>

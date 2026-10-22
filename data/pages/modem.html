@@ -9,7 +9,7 @@
 
   <div class="grid cols2">
     <template x-for="m in modems" :key="m.port">
-      <div class="card" style="margin-bottom:0">
+      <div class="card">
         <div class="row" style="border-bottom:none">
           <span class="k">
             <span class="badge" :class="m.enabled ? 'ok' : 'err'"
@@ -39,7 +39,7 @@
           <button class="btn sm ghost" :disabled="!m.enabled"
                   @click="reinitPort(m.port)">重新初始化</button>
           <span class="hint" x-text="!m.enabled ? '停用后该串口不再收发短信'
-                : (m.ready ? 'CMGF=0 / CNMI=2,2 已配置' : '初始化中…（等待通信模组应答 / SIM / 注册）')"></span>
+                : (m.ready ? '已就绪，可收发短信' : '初始化中…（等待通信模组应答 / SIM / 注册）')"></span>
         </div>
         <div class="bar" style="margin-top:10px">
           <input class="inp sm" style="flex:1;min-width:120px"
@@ -85,7 +85,7 @@
 
   <div class="card" style="margin-top:16px">
     <h3>说明</h3>
-    <p class="page-desc" style="margin:0">
+    <p class="hint" style="margin:0">
       启用后设备自动将通信模组配置为 PDU 模式（CMGF=0）并开启新短信直投（CNMI=2,2）。<br>
       信号 / 运营商 / 注册 / 号码等遥测每数秒自动刷新；若通信模组停在「故障 / 未连接」，多为未插 SIM 或信号不足。
     </p>

@@ -1,7 +1,7 @@
 <div class="page-head">
   <div>
     <h2>系统设置</h2>
-    <p class="page-desc">管理登录账号；账号密码保存到 NVS，重启后仍有效</p>
+    <p class="page-desc">管理登录账号；修改后立即生效，重启后仍有效</p>
   </div>
 </div>
 
@@ -9,7 +9,6 @@
 <div class="card" x-data="pageAuth()" x-init="init()">
   <h3>管理账号</h3>
   <div class="row"><span class="k">当前用户名</span><span class="v" x-text="user || '-'"></span></div>
-  <div class="row"><span class="k">存储位置</span><span class="v">NVS · appcfg/auth（JSON）</span></div>
   <!-- form 提交：点击按钮与任意输入框回车都走 save()（submit 只触发一次）。
        字段顺序：先验证身份（当前密码），再填写变更项 -->
   <form @submit.prevent="save()">
@@ -33,13 +32,13 @@
   </div>
   <div class="hint" x-show="!isErr" x-text="hint"></div>
   <div class="hint">保存成功后全部登录会话与访问令牌立即作废，需使用新账号重新登录；
-    未认证的 API 调用将返回 401。请妥善保管新密码，忘记后需擦除 NVS 才能恢复默认账号。</div>
+    未认证的 API 调用将返回 401。请妥善保管新密码，忘记后只能通过复位设备（清空配置）恢复默认账号。</div>
 </div>
 
 <!-- API 访问令牌（系统设置内，默认关闭） -->
 <div class="card" x-data="pageApiToken()" x-init="init()" x-cloak>
   <h3>API 访问令牌 <span class="badge" :class="enabled ? 'ok' : 'err'" x-text="enabled ? '已启用' : '已禁用'"></span></h3>
-  <p class="hint">启用后生成长期有效的 Bearer 令牌（持久化于 NVS，重启不失效），供脚本 / 第三方客户端调用，无需登录 Cookie。默认关闭。</p>
+  <p class="hint">启用后生成长期有效的 Bearer 令牌（保存后重启不失效），供脚本 / 第三方客户端调用，无需登录 Cookie。默认关闭。</p>
   <form @submit.prevent="save()">
     <div class="bar" style="margin-top:12px;align-items:center">
       <label class="chk"><input type="checkbox" x-model="enabled"> <span>启用 API 访问令牌</span></label>
@@ -53,22 +52,18 @@
     <button class="btn ghost sm" @click="tokenShown = !tokenShown" x-text="tokenShown ? '隐藏' : '显示完整'" :disabled="!token"></button>
     <button class="btn ghost sm" @click="resetToken()" x-text="'重置令牌'" :disabled="!enabled"></button>
   </div>
-  <div class="hint">使用方式（无需 Cookie）：<br>
-    <code>curl -H "Authorization: Bearer &lt;令牌&gt;" http://设备IP/api/status</code><br>
-    点击「重置令牌」可使旧令牌立即作废并生成新令牌。
+  <!-- 示例命令：地址自动替换为当前访问地址；点击「显示完整」后令牌自动替换为真实值 -->
+  <div class="hint">使用方式（无需 Cookie）：</div>
+  <div class="cmd-box"><code id="tokenCurl" x-text="curlCmd"></code></div>
+  <div class="bar" style="margin-top:8px">
+    <button class="btn ghost sm" @click="copyCmd()">复制命令</button>
   </div>
+  <div class="hint" x-show="!tokenShown" x-cloak>上方令牌为占位符，点击「显示完整」后将自动替换为真实令牌。</div>
+  <div class="hint">点击「重置令牌」可使旧令牌立即作废并生成新令牌。</div>
 </div>
 
-<div class="grid cols2">
-  <div class="card">
-    <h3>当前信息</h3>
-    <div class="row"><span class="k">登录账号</span><span class="v">以 NVS 保存值为准</span></div>
-    <div class="row"><span class="k">WiFi 凭据</span><span class="v">NVS 命名空间 appcfg / 键 wifi</span></div>
-    <div class="row"><span class="k">会话有效期</span><span class="v">Cookie 7 天，重启后全部失效</span></div>
-  </div>
-
-  <!-- 定时重启（系统保活；默认禁用） -->
-  <div class="card" x-data="pageSched()" x-init="init()" x-cloak>
+<!-- 定时重启（系统保活；默认禁用） -->
+<div class="card" x-data="pageSched()" x-init="init()" x-cloak>
     <h3>定时重启 <span class="badge" :class="enabled ? 'ok' : 'err'" x-text="enabled ? '已启用' : '已禁用'"></span></h3>
     <p class="hint">系统保活：按计划自动重启设备（默认禁用）。支持固定间隔（基于开机时长）与每日定点（基于本地时间）。</p>
 
@@ -113,5 +108,4 @@
       </div>
     </form>
     <div class="hint" style="margin-top:8px">配置保存后立即生效，设备不会重启；定时重启将按新计划执行。</div>
-  </div>
 </div>

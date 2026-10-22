@@ -2,7 +2,7 @@
   <div class="page-head">
     <div>
       <h2>MQTT 推送</h2>
-      <p class="page-desc">连接标准 MQTT Broker（esp-mqtt 组件，无需额外库），事件以 JSON 发布，并支持订阅命令主题做远程控制。配置保存到 NVS，重启后仍有效</p>
+      <p class="page-desc">连接标准 MQTT Broker，事件以 JSON 发布，并支持订阅命令主题做远程控制。保存后立即生效，重启后仍有效</p>
     </div>
     <button class="btn ghost sm" @click="load()">刷新</button>
   </div>
@@ -79,7 +79,7 @@
   <!-- 通知类型 -->
   <div class="card">
     <h3>事件通知类型</h3>
-    <p class="page-desc" style="margin:0 0 10px">
+    <p class="hint" style="margin:0 0 10px">
       勾选的事件会各自发布一条 JSON 报文；关闭后不影响短信存储、SSE 与其它功能。
     </p>
     <div class="grid cols2">

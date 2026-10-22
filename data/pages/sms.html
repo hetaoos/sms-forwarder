@@ -4,7 +4,8 @@
       <h2>短信</h2>
       <p class="page-desc">收发记录与发送 · 新短信自动刷新</p>
     </div>
-    <button class="btn" @click="openSend()" x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用通信模组）'"></button>
+    <button class="btn" @click="openSend()" :disabled="!enabledPorts().length"
+            x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用通信模组）'"></button>
   </div>
 
   <!-- 存储不可用提示（userdata 分区异常时常驻） -->

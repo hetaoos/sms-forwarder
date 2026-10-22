@@ -8,7 +8,7 @@
 
   <div class="card">
     <div class="bar" style="margin-bottom:10px">
-      <h3 style="margin:0">管理员</h3>
+      <h3 style="margin:0">授权号码</h3>
       <span class="badge" :class="(!adminEnabled ? 'info' : (admins.filter(v=>v).length ? 'ok' : 'warn'))"
             x-text="!adminEnabled ? '已关闭' : (admins.filter(v=>v).length ? ('已开启（'+admins.filter(v=>v).length+' 个）') : '已开启（未设号码）')"></span>
     </div>

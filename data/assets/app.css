@@ -70,10 +70,18 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
   padding:18px 20px;box-shadow:var(--shadow);margin-bottom:16px}
 .card h3{font-size:15px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .card h3 .sub{font-size:12px;color:var(--muted);font-weight:400}
-.grid{display:grid;gap:16px}
+.grid{display:grid;gap:16px;margin-bottom:16px}   /* 补回容器自身的下边距（卡片的已被置 0） */
+.card .grid{margin-bottom:0}                      /* 卡片内的表单/选项网格不额外留白 */
+.grid>.card{margin-bottom:0}   /* 网格内由 gap 控制间距，避免叠加 card 的外边距 */
+.grid>.span-all{grid-column:1/-1}
+/* 固定两列：cols2 的 auto-fit 在子项 ≥3 时会溢出到三列，此处限定为 2 列 */
+.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (max-width:760px){.grid.two{grid-template-columns:1fr}}
 .grid.cols2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .grid.cols3{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+/* 190px 下限：常规宽度下每排 5 项，仪表盘 10 项正好两排对齐；
+   窄屏自动降为 3 列 / 2 列（日志、串口页的 4 项同样按此自适应） */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px}
 .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
   padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;
   align-items:center;min-height:72px}
@@ -148,6 +156,11 @@ input.mono{font-family:var(--mono)}
 .badge.warn{background:rgba(232,150,15,.13);color:var(--warn)}
 .badge.err{background:rgba(230,69,69,.1);color:var(--danger)}
 .badge.info{background:var(--primary-soft);color:var(--primary)}
+/* 命令行示例：深色代码块，长命令换行不溢出（复制按钮放在块外） */
+.cmd-box{margin-top:8px;padding:10px 12px;
+  background:var(--code-bg,#0f1115);border-radius:8px}
+.cmd-box code{font-family:var(--mono,ui-monospace,Menlo,Consolas,monospace);
+  font-size:12px;line-height:1.6;color:#c8f5c0;white-space:pre-wrap;word-break:break-all}
 /* PING 结果：等宽、可换行、限宽，便于阅读 AT 回显/统计行 */
 .ping-out{margin:0;flex:1;font-family:var(--mono,ui-monospace,Menlo,Consolas,monospace);
   font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;

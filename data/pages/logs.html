@@ -2,7 +2,7 @@
   <div class="page-head">
     <div>
       <h2>运行日志</h2>
-      <p class="page-desc">设备运行日志 · PSRAM 环形缓冲，写满自动淘汰最旧</p>
+      <p class="page-desc">设备运行日志 · 内存环形缓冲，写满覆盖最早记录，重启后清空</p>
     </div>
     <div class="bar">
       <button class="btn ghost sm" @click="reload()">刷新</button>
@@ -23,7 +23,7 @@
     <div class="stat"><div class="k">存储位置</div>
       <div class="v" style="font-size:15px" x-text="storeText()"></div></div>
   </div>
-  <!-- 未落在 PSRAM 时说明原因（环形缓冲功能不受影响，仅换了个内存区域） -->
+  <!-- 未落在外部 PSRAM 时提示：容量较小，功能不受影响 -->
   <div class="hint" x-show="stats.max && !stats.psram" x-text="storeHint()"
        style="margin-top:-6px;margin-bottom:12px"></div>
 
@@ -85,5 +85,5 @@
     </div>
   </div>
 
-  <div class="hint" style="margin-top:12px">日志仅存于内存（PSRAM 优先），重启后清空；时间戳在时钟同步前为开机时长。清空为逻辑清空，记录 ID 继续递增，便于区分清空前后的新旧日志。</div>
+  <div class="hint" style="margin-top:12px">日志仅存于设备内存，重启后清空；时间未同步前显示为开机时长。</div>
 </div>
