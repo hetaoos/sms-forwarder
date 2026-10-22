@@ -1,6 +1,8 @@
 # 短信转发器（SMS Forwarder）
 
-基于 ESP32-S3 的短信转发设备：外接两个 4G 通信模组，通过 ST7789 屏幕实时显示运行状态，并内置 Web 控制台进行远程管理。
+基于 ESP32-S3 的短信转发设备：外接两个 4G 通信模组（Cat.1），通过 LVGL 驱动的
+ST7789 屏幕与物理按键提供本地交互，并内置 Web 控制台做远程管理。短信、来电、
+SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 种 webhook 推送通道**。
 
 ## 目录
 
@@ -8,53 +10,75 @@
 - [硬件](#硬件)
 - [快速开始](#快速开始)
 - [编译期配置](#编译期配置)
+- [屏幕 UI 与按键](#屏幕-ui-与按键)
+- [MQTT 主题与命令](#mqtt-主题与命令)
+- [推送模板占位符](#推送模板占位符)
 - [Web API 参考](#web-api-参考)
 - [脚本示例](#脚本示例)
 - [项目结构](#项目结构)
 
 ## 功能特性
 
-- **双串口 AT 透传**（`serial/SerialBridge`）
-  - 独立 FreeRTOS 任务持续抽数，命令/响应同步模型，阻塞式发送 + 超时收集
-  - 连续 3 次无响应自动复位串口（自愈），支持手动复位
-  - 环形缓冲保存最近 30 条 AT 记录（含串口自发上报），Web 端增量拉取
-  - 收发字节数 / 错误 / 超时 / 复位次数统计
-- **ST7789 240x320 屏幕**（`hal/Display`）
-  - LovyanGFX 驱动，静态框架只画一次，数值行局部重绘（无整屏闪烁）
-  - 显示 WIFI / IP / RSSI / UPTIME / HEAP / RGB 与最近一条 AT 命令
-  - 支持 Web 远程开关屏与背光亮度调节（0-100%）
-- **板载 RGB 灯**（`hal/RgbLed`）：WS2812，5 组预设 + 任意 RGB 值 + 亮度调节（0-100%）
-- **WiFi 管理 + 配网**（`net/WifiManager`）
-  - 编译期内置默认账号密码（`-DWIFI_SSID_DEFAULT` / `-DWIFI_PASS_DEFAULT`，不设置则为空）：
-    首次启动且 NVS 中无 WiFi 配置时，自动把该默认账号**写入 NVS（入库）**，之后作为
-    普通保存项在网页可见并可编辑
-  - NVS 按功能存 JSON 配置，最多 5 组，启动时按顺序依次尝试
-  - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-Forwarder-Setup`，开放热点）
-  - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
-    两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
-    形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
-  - 出厂管理账号可编译期注入（`-DWEB_AUTH_USER_DEFAULT` / `-DWEB_AUTH_PASS_DEFAULT`），
-    两者必须同时有值才采用，任一为空/缺失则整体回落 `admin` / `admin123`
-  - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连
-  - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
-- **Web 控制台**（`net/WebPanel`，端口 80）：Alpine.js 多页应用，打包进
-  LittleFS 专有分区（`data/login.html` + `data/index.html` 外壳 +
-  `data/pages/*.html` 内容页 + `data/assets/` 资源，支持 gzip）。
-  左右布局：左侧分组菜单，右侧按 hash 路由懒加载内容页；
-  全部接口统一在 `/api/` 前缀下，页面与静态资源公开，接口需登录
-  （Cookie 会话或 Bearer 令牌），防止第三方盗用
-- **SSE 实时推送**（`net/StatusBus`，`/api/sse`）：状态变化时主动推送给
-  全部已连接浏览器（1 秒 diff 比对，只推变化），网页端不再轮询状态接口；
-  REST 接口原样保留供第三方客户端使用
-- **设备日志**（`log/LogStore`）：运行日志存入 PSRAM 定长记录环（默认 512 条，
-  写满 FIFO 淘汰最旧，约 70KB；板子无 PSRAM 时自动退化为内部堆），
-  支持按级别 / 关键字过滤的分页查询与一键清空
-- **SMTP 邮件通知**（`net/EmailService`，参考 esp32-sms-forwarding 实现）
+- **短信收发与存储**（`sms/SmsService`、`sms/SmsStore`、`sms/SmsCodec`）
+  - 双通信模组独立收发，PDU 编解码（UCS2 / GSM7 / 8bit）+ 长短信自动重组
+    （5 个并发重组槽位、单条最多 20 段、30 秒超时）
+  - 落盘 `userdata` 分区（`/data/sms/<id>.txt`，一条一文件），FIFO 上限 1000 条
+  - 列表分页 / 关键字搜索 / 按通信模组过滤 / 单条删除 / 清空，今日收发计数
+  - 发送走独立任务执行 CMGS 两段式握手（不阻塞 HTTP 与抽数任务），
+    POST 启动 + GET 轮询结果；长短信自动分段
+  - 新短信在屏幕上弹窗提示（30 秒自动收起，任意键立即收起）
+- **来电提醒**（`sms/SmsService`）
+  - `RING`/`+CRING` 起一轮来电，`+CLIP`/主动 `+CLCC` 带主叫号码，
+    3 秒后主动 `AT+CLCC` 兜底查询，10 秒窗口超时以「未知号码」派发；
+    通话结束（NO CARRIER 等）立即收口，10 秒同号去重
+  - 派发走邮件 / MQTT（`.../call` 主题）/ webhook 推送全链路，
+    命中黑名单（来电作用域）时不派发；号码可能为「未知号码」/「号码保密」
+- **管理员短信远程控制**（`sms/SmsService`）：
+  在「管理员」页有一个**总开关（默认禁用，须显式开启）**与**最多 5 个**管理员手机号；
+  仅当开关开启且配置了号码时，命令短信才会被执行（不落盘、不转发）。
+  开关关闭或号码清空时，所有短信按普通短信处理（入库 + 转发）：
+  - `SMS:<号码>:<内容>`：从收到命令的那个模组代发一条短信，
+    执行结果（成功 / 失败原因）从同一模组回复给**发命令的那个管理员**
+  - `RESET`：2 秒后重启设备（重启前先回复确认短信）
+  - `PING [主机]`：经通信模组做网络连通性测试（默认 `8.8.8.8`，可指定如 `PING 1.1.1.1`），
+    并回附系统运行状态（在线 / WiFi / IP / 运行时间 / 内存 / 模组 / MQTT 等）；测完自动还原短信模式
+  - `HELP`：回复命令清单与参数说明
+  - 关键字（RESET / PING / HELP 与 `SMS:` 前缀）大小写不敏感
+  - 号码匹配忽略 `+86` 前缀；黑名单优先级更高（某管理员把自己拉黑则其命令失效）；
+    命令格式错误时按普通短信处理（入库并转发）。命令入队于抽数任务、执行于主循环，
+    单命令队列（上一条未执行完时新的被丢弃并记日志）
+- **黑名单**（`sms/BlackList`）：最多 100 条规则，匹配模式 **精确 / 前缀 / 通配符**
+  （`*` 任意串、`?` 单字符），作用域按位覆盖 **短信 / 来电**，
+  命中动作 **仅记录不推送**（默认，照常入库但不转发）或 **静默丢弃**（不入库不转发）；
+  匹配前归一化号码（去空格与 `-()./` 等分隔符）；网页可输入号码做规则测试
+- **通信模组管理**（`sms/SmsService`、`sms/ModemSnapshot`）
+  - 每个串口可独立**启用 / 禁用**并设**别名**（落盘 NVS），支持网页触发**热重初始化**
+  - 非阻塞初始化状态机：等 AT（~20s）→ 等 SIM（~22s）→ 等注册（~90s）→ 下发配置 → 就绪，
+    任一阶段超时转故障态并 15 秒后重试；单个动作最多持端口锁 1.5s，
+    故障模组绝不阻塞另一个模组与 Web
+  - 就绪后心跳探活（30s，连续 3 次失败转重初始化）+ 动态遥测
+    （`AT+CSQ` 15s / `AT+COPS?` 5 分钟兜底）
+  - 快照含型号 / 固件版本 / 本机号码 / 运营商（中文化）/ 注册状态 / IMEI / 信号强度
+- **推送通道**（`push/PushService`）：13 种方式（Bark / 钉钉 / 飞书 /
+  Telegram / 企业微信 / Gotify / PushPlus / Server酱 / Mailgun /
+  通用 POST-JSON / GET / 自定义模板 / **SMS 短信备份**），最多 10 条通道，
+  **广播**或**故障转移**策略，可按通道开启失败重试；SMS 备份通道不走 HTTP——
+  网络不可用时经通信模组把消息以短信发到目标手机号（互联网全断的最后通知手段），
+  并对 SIM / 启动 / 在线类事件自动跳过。自定义模板支持占位符，见
+  [推送模板占位符](#推送模板占位符)
+- **MQTT 上报与远程命令**（`net/MqttService`，编译期 `ENABLE_MQTT=1` 开启）
+  - 基于 esp-idf 内置 esp-mqtt（无需额外库），支持 TLS、自定义 clientId / 保活 / LWT 遗嘱
+  - 事件类型位掩码（启动 / SIM / 短信 / 上线 / 来电，另含 **运行日志实时推送**位，
+    默认关闭以免日志风暴）
+  - 可订阅命令主题远程执行 `send_sms` / `send_at` / `restart` / `reinit` / `info` / `help`，
+    命令在主循环线程执行（不在 MQTT 网络任务里直接调用），结果回发响应主题，
+    详见 [MQTT 主题与命令](#mqtt-主题与命令)
+- **SMTP 邮件通知**（`net/EmailService`）
   - 统一 HTML 卡片模板（灰底白卡 + 渐变标题栏 + 状态徽标 + 公共信息块），
     自动识别短信验证码并在标题/正文大字高亮；客户端不支持 HTML 时附带纯文本兜底
-  - 通知类型位掩码（可分别开关）：**收到短信** / **SIM 状态变更** /
-    **设备启动完成** / **定时在线通知**（两种排程：固定间隔 N 小时 /
-    每日定点时:分，未勾选则不触发）/ **来电提醒**（+CLIP/+CLCC 检测）
+  - 通知类型位掩码（可分别开关）：**启动完成** / **SIM 状态变更** /
+    **收到短信** / **定时在线通知**（两种排程：固定间隔 N 小时 /
+    每日定点时:分）/ **来电提醒**，出厂五类全开
   - 运行期插拔卡检测：遥测周期查询 `AT+CPIN?`，掉卡/插卡成对通知
     （开机首次就绪与通信模组重启不误报）
   - 非阻塞入队 + 主循环发送：短信/SIM 回调（串口抽数任务）只做入队，
@@ -63,42 +87,87 @@
   - **总开关**：停用后一切邮件都不发（短信 / SIM / 启动 / 定时在线全部静默
     跳过，待发队列丢弃），已保存的服务器、账号与通知类型保留，重新开启立即恢复
   - 仅支持隐式 TLS 端口（465 等，握手即加密），不支持 587（STARTTLS）
-- **来电提醒**（`sms/SmsService`，移植自 esp32-sms-forwarding 的 Call）
-  - `RING`/`+CRING` 起一轮来电，`+CLIP`/主动 `+CLCC` 带主叫号码，
-    3 秒后主动 `AT+CLCC` 兜底查询，10 秒窗口超时以「未知号码」派发；
-    通话结束（NO CARRIER 等）立即收口，10 秒同号去重
-  - 派发走邮件 / MQTT（`.../call` 主题）/ webhook 推送全链路，
-    命中黑名单（来电作用域）时不派发；号码可能为「未知号码」/「号码保密」
-- **推送通道**（`push/PushService`）：13 种方式（Bark / 钉钉 / 飞书 /
-  Telegram / 企业微信 / Gotify / PushPlus / Server酱 / Mailgun /
-  通用 POST-JSON / GET / 自定义模板 / **SMS 短信备份**），
-  广播或故障转移策略，失败按通道重试；SMS 备份通道不走 HTTP——
-  网络不可用时经通信模组把消息以短信发到目标手机号（互联网全断的最后通知手段），
-  并对 SIM / 启动 / 在线类事件自动跳过
-- **管理员短信远程控制**（`sms/SmsService`，移植自 esp32-sms-forwarding）：
-  在「短信」页有一个**总开关（默认禁用，须显式开启）**与**最多 5 个**管理员手机号；
-  仅当开关开启且配置了号码时，命令短信才会被执行（不落盘、不转发）。
-  开关关闭或号码清空时，所有短信按普通短信处理（入库 + 转发）：
-  - `SMS:<号码>:<内容>`：从收到命令的那个模组代发一条短信，
-    执行结果（成功 / 失败原因）从同一模组回复给**发命令的那个管理员**
-  - `RESET`：2 秒后重启设备（重启前先回复确认短信）
-  - `PING [主机]`：经通信模组做网络连通性测试（默认 `8.8.8.8`，可指定如 `PING 1.1.1.1`），并回附系统运行状态（在线 / WiFi / IP / 运行时间 / 内存 / 模组 / MQTT 等）；测完自动还原短信模式
-  - `HELP`：回复命令清单与参数说明
-  - 关键字（RESET / PING / HELP 与 `SMS:` 前缀）大小写不敏感
-  - 号码匹配忽略 `+86` 前缀；黑名单优先级更高（某管理员把自己拉黑则其命令失效）；
-    命令格式错误时按普通短信处理（入库并转发）。命令入队于抽数任务、执行于主循环，
-    单命令队列（上一条未执行完时新的被丢弃并记日志）
-- **PSRAM 大块内存**（`app/Psram.h`）：ESP32-S3 片外 8MB PSRAM 用于承载瞬时大块
-  数据，内部 DRAM（327KB，还要与任务栈、LWIP 缓冲共用）只留短字符串：
-  - 邮件正文构造：CSS + 卡片 + 多通信模组表格直接拼进 PSRAM 缓冲区，
-    并以「静态内容」形式交给 ReadyMail（`body(const char*, size_t)`），全程不回拷 DRAM
-  - 短信列表分页：结果容器与响应 JSON 内存池均分配在 PSRAM（一页最多 100 条）
-  - 设备日志环（见上）
-  - 无 PSRAM 或空间不足时自动回退内部堆，功能不变（构造失败则丢弃本次通知并打日志）
+- **定时在线通知排程**（由通知类型位 bit3 总控）：
+  `schedMode=1` 固定间隔（`intervalH` 小时，1-720），基于 millis 开机起算；
+  `schedMode=0` 每日定点（`schedHour:schedMinute`），基于本地时间，依赖
+  NTP / SIM 时间同步，触发时刻落盘 NVS 故重启不会补发，10 分钟窗口内的
+  迟到触发仍有效。保存配置后会立即补发一封在线通知便于确认生效
+- **双串口 AT 透传**（`serial/SerialBridge`）
+  - 独立 FreeRTOS 任务持续抽数，命令/响应同步模型，阻塞式发送 + 超时收集
+  - 连续 3 次无响应自动复位串口（自愈），支持手动复位
+  - 环形缓冲保存最近 AT 记录（含串口自发上报 URC，分命令/后台/上报三类），
+    Web 端增量拉取；有 PSRAM 时 512 条（≈658KB），无 PSRAM 退化为 30 条
+  - 收发字节数 / 错误 / 超时 / 复位次数统计
+- **ST7789 240x320 屏幕**（`hal/Display` + `ui/Ui` + `app/UIMenu`）
+  - LovyanGFX 作面板驱动，**LVGL 9.6** 作 UI 框架；LVGL 全屏渲染缓冲落在 PSRAM，
+    该缓冲同时是 Web 实时预览（`GET /api/screen`，JPEG）的取帧源
+  - 五个页面一次建好（开机页 / 实时状态页 / 菜单页 / 可滚动文本页 / 新短信弹窗），
+    之后只更新文本，靠 LVGL 脏区计算局部刷新
+  - 中文字库由 TinyTTF 运行时从 `/ui_cn.ttf`（GB2312）渲染，图标/Logo 为编译进
+    flash 的位图字体；开机页不依赖字库，可在字库加载期间安全显示
+  - 支持 Web 远程开关屏、背光亮度调节（0-100%）、自动熄屏与自动返回状态页定时
+  - 4 个物理按键导航（详见 [屏幕 UI 与按键](#屏幕-ui-与按键)），
+    Web 端 `POST /api/key` 可远程注入按键事件（与物理键同路径）
+- **板载 RGB 灯**（`hal/RgbLed`）：WS2812（GPIO48），5 组预设 + 任意 RGB 值 +
+  亮度调节（0-100%）
+- **WiFi 管理 + 配网**（`net/WifiManager`）
+  - 编译期内置默认账号密码（`-DWIFI_SSID_DEFAULT` / `-DWIFI_PASS_DEFAULT`，不设置则为空）：
+    首次启动且 NVS 中无 WiFi 配置时，自动把该默认账号**写入 NVS（入库）**，之后作为
+    普通保存项在网页可见并可编辑
+  - NVS 按功能存 JSON 配置，最多 5 组，启动时按顺序依次尝试（每组等 8 秒），
+    掉线 5 秒后重连
+  - 全部候选失败 3 轮后自动切换 AP 配网模式（`SMS-Forwarder-Setup`）；
+    AP 热点密码可配置（编译期 `-DAP_PASS_DEFAULT` 或网页 `/api/wifi/appass`），
+    未设置时为开放热点
+  - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
+    两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
+    形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
+  - 出厂管理账号可编译期注入（`-DWEB_AUTH_USER_DEFAULT` / `-DWEB_AUTH_PASS_DEFAULT`），
+    两者必须同时有值才采用，任一为空/缺失则整体回落 `admin` / `admin123`
+  - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连；
+    AP 模式下仍每 30 秒后台静默重试 STA
+  - Web 支持扫描附近 WiFi、选中填密码、保存并连接、删除、上移/下移排序
+- **Web 控制台**（`net/WebPanel`，端口 80）：Alpine.js 多页应用，打包进
+  LittleFS 资源分区（`data/login.html` + `data/index.html` 外壳 +
+  `data/pages/*.html` 内容页 + `data/assets/` 资源，支持 gzip）。
+  左右布局：左侧分组菜单，右侧按 hash 路由懒加载内容页；
+  全部接口统一在 `/api/` 前缀下，页面与静态资源公开，接口需登录
+  （Cookie 会话或 Bearer 令牌），防止第三方盗用
+- **SSE 实时推送**（`net/StatusBus`，`/api/sse`）：状态变化时主动推送给
+  全部已连接浏览器（1 秒 diff 比对，只推变化，并发上限 8），网页端不再轮询状态接口；
+  REST 接口原样保留供第三方客户端使用
+- **OTA 在线升级**（`ota/Ota`，编译期 `ENABLE_FIRMWARE_UPGRADE=1` 开启）
+  - 版本标识即 Release tag（`<VERSION>-<提交时间>-<短 SHA>`），
+    由 `script/inject_app_version.py` 编译期注入
+  - 「检查更新」双渠道：Release 列表 JSON 为主，Release 徽章 SVG 兜底
+  - 在线下载固件写入 ota_0/ota_1 双槽，或本地上传固件 / LittleFS 镜像分片烧录；
+    全过程在独立任务执行，进度经 `/api/ota/status` 轮询
+  - 所有出网 TLS 阶段先取 TLS 通道（全局最多 4 个并发），避免握手内存不足
+- **设备日志**（`log/LogStore`）：运行日志存入 PSRAM 定长记录环（有 PSRAM 时
+  2048 条 ≈467KB，无 PSRAM 退化为 256 条），写满 FIFO 淘汰最旧；
+  支持按级别 / 关键字过滤的分页查询、增量拉取与一键清空
+- **时间同步**（`time/TimeSync`）：NTP 为主（UTC+8，24 小时周期校准）、
+  SIM NITZ（`AT+CCLK?`）兜底（30 秒重试），每 10 分钟落盘 NVS，重启可恢复；
+  未同步时短信/日志时间戳退化为开机秒数
+- **定时重启（系统保活）**（`app/SystemService`）：固定间隔（1-720 小时）或
+  每日定点 + 星期位掩码，配置存 NVS（`appcfg` / `sched`），默认禁用
+- **崩溃转储**（`app/Coredump`）：`coredump` 分区（128KB）由 ESP-IDF panic 处理器
+  自动写入；NVS 独立命名空间记录崩溃时间与固件版本（不随出厂复位清除）。
+  Web「系统工具」页可查询 / 导出 bin / 擦除分区
+- **用户数据分区**（`app/UserFs`）：5MB `userdata` 挂载 `/data`，存放短信记录等，
+  **重烧固件不丢失**；仅「出厂复位」会格式化
+- **配置导入导出**（`/api/config/export`、`/api/config/import`）：一键备份 / 恢复
+  WiFi、管理账号、邮件、短信、MQTT、推送、黑名单、屏幕与定时重启配置
+- **资源治理**（`app/Psram.h`、`utils/TlsTurn`、`utils/tls_mem`、`utils/HttpSession`）
+  - PSRAM（8MB）承载大块数据：邮件正文构造、短信列表分页与响应 JSON 内存池、
+    日志环、AT 历史环、LVGL 渲染缓冲；无 PSRAM 或空间不足时自动回退内部堆
+  - mbedTLS 大块分配重定向到 PSRAM；全局 TLS 并发通道计数信号量（最多 4 个），
+    OTA / 推送 / SMTP / MQTT-TLS 共用，避免 `MBEDTLS_ERR_SSL_ALLOC_FAILED`
+  - CPU 使用率（`hal/CpuMonitor`，基于 FreeRTOS 运行时间统计）与芯片温度遥测
 
 ## 硬件
 
-板型 `esp32s3_120_16_8-qio_opi`（Arduino 框架），引脚定义集中在
+板型 `esp32s3_120_16_8-qio_opi`（Arduino 框架，pioarduino 平台），引脚定义集中在
 `src/app/Config.h`：
 
 | 功能 | 引脚 | 说明 |
@@ -109,6 +178,7 @@
 | TFT MOSI / SCLK | GPIO13 / GPIO12 | SPI（SPI2，40MHz） |
 | TFT BLK | GPIO8 | PWM 背光，默认 80% |
 | RGB LED | GPIO48 | 板载 WS2812 |
+| 按键 OK / UP / DOWN / BACK | GPIO42 / GPIO47 / GPIO38 / GPIO2 | 低电平有效（接上拉，按键到 GND） |
 
 分区表 `partitions/esp32s3_16mb.csv`（16MB Flash）布局；app 分区起点与大小均
 64KB 对齐，`userdata` 刷固件后仍保留：
@@ -117,13 +187,22 @@
 |------|---------|------|------|
 | nvs | 0x009000~0x018FFF | 64KB | 配置存储（WiFi 等，按功能存 JSON） |
 | otadata | 0x019000~0x01AFFF | 8KB | OTA 启动槽位记录 |
+| （保留） | 0x01B000~0x01FFFF | 20KB | 64KB 对齐补白 |
 | app0 / app1 | 0x020000 / 0x420000 | 各 4MB | 双 OTA 固件槽位 |
 | userdata | 0x820000~0xD1FFFF | 5MB | 用户数据，刷固件保留（挂载 `/data`） |
 | spiffs | 0xD20000~0xFDFFFF | 2.75MB | 资源分区：Web 页面 / 字体 / 图标（挂载 `/`） |
 | coredump | 0xFE0000~0xFFFFFF | 128KB | 崩溃转储 |
 
-`pio run -t uploadfs` 的目标是表中最后一个 FS 分区（spiffs 资源分区），
-只影响 Web 资源；`userdata` 仅由设备运行期读写，重烧固件不会丢失。
+注意事项：
+
+- `pio run -t uploadfs` 的目标是表中最后一个 FS 分区（spiffs 资源分区），
+  只影响 Web 资源；`userdata` 仅由设备运行期读写，重烧固件不会丢失。
+- `userdata` 与 `spiffs` 两个分区 subtype 同为 `spiffs`，代码里一律按 **label**
+  查找分区（`cfg::kPartLabelSpiffs` / `kPartLabelUserdata` / `kPartLabelCoredump`），
+  严禁传 `nullptr`（会误命中地址更小的 `userdata`）。
+- `platformio.ini` 里 `board_upload.arduino.boot_app0 = 0x19000` 把框架默认写在
+  0xe000 的 boot_app0 重定向到真实 otadata 位置——否则每次 `upload` 都会抹掉
+  nvs 尾部导致配置丢失。
 
 ## 快速开始
 
@@ -131,12 +210,15 @@
 
 依赖 PlatformIO Core（>= 6），库版本以 `platformio.ini` 声明为准：
 
+- pioarduino platform-espressif32（Arduino 框架）
 - ESP32Async/ESPAsyncWebServer 3.12.1
 - ESP32Async/AsyncTCP 3.5.0
-- lovyan03/LovyanGFX 1.2.33
-- bblanchon/ArduinoJson 7.x
-- mobizt/ReadyMail 0.4.x（SMTP 邮件发送，需 C++17，见 `platformio.ini` 的
+- lovyan03/LovyanGFX 1.2.34
+- lvgl/lvgl 9.6.0（屏幕 UI 框架）
+- bblanchon/ArduinoJson 7.4.3
+- mobizt/ReadyMail 0.4.2（SMTP 邮件发送，需 C++17，见 `platformio.ini` 的
   `-std=gnu++17` 与 `build_unflags`）
+- 本地库：`lib/pdulib`（PDU 编解码）、`lib/jpge`（屏幕预览 JPEG 编码）
 
 ```bash
 # 编译
@@ -156,13 +238,20 @@ pio device monitor -e esp32s3
 自动 gzip 成 `<文件名>.gz` 后再写入镜像（构建前后自动切换目录，源文件始终
 保持可读；进程异常退出后下次运行会自动恢复现场）。设备端 `serveStatic`
 与 `WebPanel` 都会优先读取 `.gz` 并返回 `Content-Encoding: gzip`，浏览器
-自动解压。烧录固件（`pio run -t upload`）成功后也会自动上传一次 FS 镜像。
+自动解压。字库 `data/ui_cn.ttf` 在不压缩名单内。烧录固件（`pio run -t upload`）
+成功后也会自动上传一次 FS 镜像。
+
+**版本与 OTA 地址注入**：`script/inject_app_version.py` 在编译前把
+`OTA_RELEASE_TAG` / `OTA_RELEASES_BASE_URL` / `OTA_LATEST_VERSION_URL`
+编进固件（缺宏则直接编译失败）。CI 通过环境变量注入；本地编译按
+`<VERSION>-<HEAD 提交时间>-<短 SHA>` 自拼一份同格式 tag，保证能过编译。
 
 ### 首次配网
 
 1. 烧录后首次启动：若 NVS 中完全没有 WiFi 配置且固件内置了默认账号
   （`-DWIFI_SSID_DEFAULT` 非空），设备会先把该默认账号写入 NVS 并尝试连接；
-   未内置默认账号、或默认连接失败时，才开启热点 **`SMS-Forwarder-Setup`**（开放，无密码）
+   未内置默认账号、或默认连接失败时，才开启热点 **`SMS-Forwarder-Setup`**
+   （默认开放，若内置/设置过 AP 密码则需密码）
 2. 连接该热点，浏览器打开 **`http://192.168.4.1/login`**，在独立登录页输入
    `admin` / `admin123` 登录（登录响应同时返回 Bearer 令牌，见仪表盘页面）
 3. 进入「WiFi 设置」卡片：**扫描附近 WiFi** → 点击扫描结果填入 SSID →
@@ -185,10 +274,14 @@ pio device monitor -e esp32s3
 启动时按 `list` 顺序依次尝试，每组等待 8 秒，全部失败 3 轮后进入 AP 配网模式。
 Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调整顺序，上限 5 组。
 
+其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
+管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
+`disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）。
+崩溃信息另存于独立命名空间 `coredump`（不随出厂复位清除）。
+
 ## 编译期配置
 
-以下两项均为可选，在 `platformio.ini` 的 `build_flags` 中注入；不设置时
-依赖 NVS 配置（首次无配置自动进入 AP 配网，账号回落 `admin` / `admin123`）。
+以下宏在 `platformio.ini` 的 `build_flags` 中注入，均为可选（有默认值）。
 
 ### 默认 WiFi 账号
 
@@ -217,6 +310,90 @@ build_flags =
     -DWEB_AUTH_PASS_DEFAULT=\"admin123\"
 ```
 
+### AP 配网热点密码
+
+8~63 字符（WPA2 要求），留空表示**开放热点**（默认）。非法长度会回落开放并告警
+（避免 softAP 静默失败）。首次启动（NVS 无记录）采用编译期值并落盘，之后以 NVS
+为准，可在网页或用 `/api/wifi/appass` 修改：
+
+```ini
+build_flags =
+    -DAP_PASS_DEFAULT=\"setup1234\"
+```
+
+### 功能开关
+
+| 宏 | 默认 | 说明 |
+|----|------|------|
+| `ENABLE_FIRMWARE_UPGRADE` | `1` | OTA 在线升级 / 本地上传（分区表需具备 ota 双槽） |
+| `ENABLE_MQTT` | `1` | MQTT 服务（esp-mqtt 为 esp-idf 内置组件，无需额外 lib_deps）；置 0 时前端 MQTT 配置区自动隐藏 |
+| `APP_PLATFORM` | `esp32s3` | 平台标识，决定 OTA 产物文件名后缀，须与 CI Release 文件名一致 |
+
+## 屏幕 UI 与按键
+
+4 个物理按键（OK / UP / DOWN / BACK，低电平有效）驱动 `app/UIMenu` 的菜单状态机，
+页面由 `ui/Ui`（LVGL）绘制。BACK 长按熄屏 / 唤醒；UP/DOWN/OK 长按以 180ms 连发调值。
+
+菜单一屏 12 行，动态页每次渲染时按最新状态快照重建文本：
+
+| 页面 | 内容 |
+|------|------|
+| 短信 | 最近 8 条预览，OK 进入可滚动详情 |
+| SOC 信息 | 芯片 / 固件版本 / 内存 / PSRAM / CPU / 温度 |
+| 通信模组 1 / 2 | 型号 / 固件 / 号码 / 运营商 / 注册 / IMEI / 信号 |
+| WiFi | 当前连接与 IP |
+| 邮件 / MQTT / 推送 | 各通道配置与连接状态 |
+| RGB 灯 | 预设切换与亮度 |
+| 关于 / 屏幕信息 | 设备信息与面板接线 |
+| 工具箱 | 检查新版本 → 确认升级、重启、恢复出厂（连按 OK 5 次确认）、重置 Web 登录密码 |
+
+屏幕设置（落盘 NVS `appcfg` / `disp`，也可经 `POST /api/disp` 修改）：
+
+- `idleSec`：无操作自动退回实时状态页（默认 10s，0 = 关闭）
+- `autoOffSec`：无操作自动熄屏，内容保留，任意键唤醒（默认 0 = 关闭）
+- `bright`：背光亮度 0-100%
+
+Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理键同一路径）。
+
+## MQTT 主题与命令
+
+主题结构：`<topicPrefix>/<deviceId>/<sub>`，`topicPrefix` 默认 `smsf`，
+`deviceId` 为芯片 eFuse MAC 的 12 位十六进制（与邮件里的设备 ID 一致）。
+
+| 主题 | 方向 | 说明 |
+|------|------|------|
+| `.../status` | 发布 | `online` / `offline`（后者由 LWT 遗嘱发出） |
+| `.../sms` | 发布 | 收到短信（含发件人、正文、时间戳、来源模组） |
+| `.../call` | 发布 | 来电提醒（号码可能为「未知号码」） |
+| `.../sim` | 发布 | SIM 卡插拔 |
+| `.../boot` | 发布 | 设备启动完成（开机后首次连上发布一次） |
+| `.../online` | 发布 | （重新）上线通知 |
+| `.../log` | 发布 | 运行日志实时推送（默认关闭，限流 20 条/秒） |
+| `.../command` | 订阅 | 远程命令（需开启「订阅命令主题」） |
+| `.../command/response` | 发布 | 命令执行结果 |
+
+命令为 JSON，可选带 `reqId`（结果中原样回传）：
+
+```json
+{"action":"send_sms","phone":"13800138000","content":"你好","modem":1}
+{"action":"send_at","cmd":"AT+CSQ","modem":1,"timeout":5000}
+{"action":"restart"}
+{"action":"reinit","modem":1}
+{"action":"info"}
+{"action":"help"}
+```
+
+## 推送模板占位符
+
+自定义通道（`PUSH_TYPE_CUSTOM`）的请求体模板中用 `{字段名}` 引用，
+未识别的占位符按原样保留以便排查：
+
+`{from}` `{message}` `{timestamp}` `{date}` `{deviceId}` `{deviceName}` `{uptime}`
+`{simSlot}` `{modemIndex}` `{message_type}`（兼容旧别名 `{trigger_type}`）
+`{channelName}` `{channelType}`
+
+（`{carrier}` `{to}` `{iccid}` `{signal}` `{remark}` 本框架暂不填充，保留字面量。）
+
 ## Web API 参考
 
 ### 约定与认证
@@ -225,93 +402,89 @@ build_flags =
 （`Content-Type: application/json`，非 JSON 的 POST 不匹配处理器）；
 所有响应（含错误）均为 JSON，错误形如
 `{"ok":false,"error":"描述"}` 并带合适的状态码（400 参数错 /
-401 未认证 / 413 请求体过大 / 500 服务端失败），未匹配路径返回
-`{"ok":false,"error":"not found"}`。
+401 未认证 / 403 禁止 / 413 请求体过大 / 500 服务端失败），未匹配路径返回
+`{"ok":false,"error":"not found"}`（404）。
 
 页面与静态资源（`/`、`/login`、`/assets/*`、`/pages/*`）公开（不含敏感数据）；
 全部 API 统一在 `/api/` 前缀下，除登录/登出/会话探测外均需认证。支持两种认证方式：
 
 1. **会话 Cookie（浏览器）**：`POST /api/login` 成功后服务端下发 `sid`
-   Cookie（`HttpOnly; SameSite=Strict; Path=/`），浏览器自动携带；
+   Cookie（`HttpOnly; SameSite=Strict; Path=/`，有效期 7 天），浏览器自动携带；
    `HttpOnly` 使 JS 读不到、`SameSite=Strict` 使 Cookie 不随跨站请求发送，
    第三方网页无法借登录态发起 CSRF 调用。
 2. **Bearer 访问令牌（脚本/第三方客户端）**：登录响应体返回 `token`，
    之后请求带 `Authorization: Bearer <token>` 头即可，无需 Cookie。
+   另有**持久化 API 令牌**（默认关闭，在系统设置页启用）：存于 NVS（`apitoken`），
+   **重启不失效**，可在 `/api/token` 查询与重置。
 
-会话与令牌均为服务端随机生成，仅存内存（上限 8 个），**重启后全部失效**。
+会话与临时令牌均为服务端随机生成，仅存内存（上限 8 个），**重启后全部失效**。
 `POST /api/logout` 作废当前会话与令牌。未认证访问返回 401
 `{"ok":false,"error":"unauthorized"}`。
 
-### 认证
+### 认证与令牌
 
 | 方法与路径 | 请求体 | 响应 |
 |-----------|--------|------|
-| `POST /api/login` | `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密错 401 |
+| `POST /api/login` | `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密错 401、会话满 500 |
 | `POST /api/logout` | 无 | `{"ok":true}` + 清除 Cookie，作废当前会话/令牌 |
 | `GET /api/session` | 无 | 已登录 `{"ok":true,"user":"admin"}`，否则 401 |
 | `GET /api/auth` | 无 | 当前用户名 `{"ok":true,"user":"admin"}`（密码不回传） |
 | `POST /api/auth` | `{"user":"新用户","pass":"新密码","passOld":"当前密码"}` | `{"ok":true}`；当前密码不符 403、长度超限 400、NVS 写入失败 500；成功后全部会话/令牌作废 |
+| `GET /api/token` | 无 | `{"ok":true,"enabled":bool,"token":".."}` |
+| `POST /api/token` | `{"enabled":bool}` | 开关持久化 API 令牌（启用且无令牌时自动生成），返回 `{"ok":true,"enabled":bool}` |
+| `POST /api/token/reset` | 无（普通 POST） | 重新生成令牌并写 NVS，旧令牌立即失效；未启用 403 |
 
-### 系统 / 屏幕 / RGB
+### 系统状态与维护
 
-| 方法与路径 | 说明 |
-|-----------|------|
-| `GET /` | 控制台页面（公开） |
-| `GET /login` | 独立登录页（公开，已登录自动跳回） |
-| `GET /api/led` | 切换下一个预设颜色，返回最新 RGB 状态 |
-| `GET /api/rgb` | 查询 RGB 状态：`{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}` |
-| `POST /api/rgb` | JSON `{"c":索引}` / `{"r":n,"g":n,"b":n}` / `{"bright":0-100}`，三者可组合（`c` 越界 400），返回最新状态 |
-| `GET /api/disp` | 查询屏幕状态，返回 `{"ok":true,"on":bool,"bright":0-100}` |
-| `POST /api/disp` | JSON `{"on":bool?,"bright":0-100?}`（字段可选，越界钳制），返回最新状态 |
-| `GET /api/status` | 状态 JSON（ssid/ip/rssi/uptime/heap/color/rgb/disp/dispBright/rgbBright/mode/connected） |
+| 方法与路径 | 请求体 | 说明 |
+|-----------|--------|------|
+| `GET /` | - | 控制台页面（公开） |
+| `GET /login` | - | 独立登录页（公开，已登录自动跳回） |
+| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaAvailable/mqtt{enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}` |
+| `POST /api/system/restart` | 无 | `{"ok":true,"msg":"设备即将重启"}`，2 秒后重启 |
+| `POST /api/system/reset` | 无 | 清空 NVS `appcfg` 全表 + 格式化 `userdata`，2 秒后重启（崩溃记录保留） |
+| `POST /api/sched` | `{enabled,mode,dailyMin,intervalH,weekdays}` 或 `{"sched":{...}}` | 定时重启配置，即时生效不重启。`mode`：`0` 每日定点（`dailyMin` 为当日分钟数）/ `1` 固定间隔（`intervalH` 小时，1-720）；`weekdays` 位掩码（bit0=周日）；无效 400 |
 
-### SSE 实时推送
+### 屏幕 / RGB / 按键
 
-| 方法与路径 | 说明 |
-|-----------|------|
-| `GET /api/sse` | SSE 事件流（需认证，`Accept: text/event-stream`）。浏览器端 `EventSource` 自动携带会话 Cookie；Bearer 令牌客户端无法使用 SSE（无法自定义头），请继续用上面的 REST 接口轮询 |
-
-事件列表（data 均为对应 GET 接口同款 JSON）：
-
-| 事件名 | 内容 | 推送时机 |
-|--------|------|---------|
-| `status` | 同 `/api/status` | 每秒比对，变化才推 |
-| `stats` | 同 `/api/uart/stats` | 变化才推 |
-| `at` | 新 AT 记录数组 | 有新记录才推（增量） |
-| `wifi` | 同 `/api/wifi/status` | 变化才推 |
-| `saved` | 同 `/api/wifi/list` | 变化才推 |
-| `rgb` | 同 `/api/rgb` | 变化才推 |
-| `disp` | 同 `/api/disp` | 变化才推 |
-
-新客户端接入立即收到全量快照；断线由浏览器自动重连，重连后前端会做一次
-REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine.store('live')`）
-由此驱动，不再定时轮询；SSE 不可用时自动降级为 2 秒轮询。
+| 方法与路径 | 请求体 | 说明 |
+|-----------|--------|------|
+| `GET /api/disp` | - | `{"ok":true,"on":bool,"bright":0-100,"autoOffSec":n,"idleSec":n}` |
+| `POST /api/disp` | `{"on":bool?,"bright":0-100?,"autoOffSec":n?,"idleSec":n?}` | 字段均可选，越界钳制；屏幕设置落盘 NVS，返回最新状态 |
+| `GET /api/screen` | - | **image/jpeg** 帧缓冲实时预览（`no-store`）；无帧缓冲 503 |
+| `POST /api/key` | `{"key":"up"\|"down"\|"ok"\|"back","event":"click"\|"long"\|"repeat"?}` | 远程按键注入（与物理键同路径），返回 `{"ok":true}` |
+| `GET /api/led` | - | 切换下一个预设颜色，返回最新 RGB 状态 |
+| `GET /api/rgb` | - | `{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}` |
+| `POST /api/rgb` | `{"c":索引?,"r":n?,"g":n?,"b":n?,"bright":0-100?}` | 三者可组合（`c` 越界 400，其余钳制），返回最新状态 |
 
 ### 串口 AT
 
 | 方法与路径 | 说明 |
 |-----------|------|
-| `GET /api/at/send?port=1\|2&baud=115200&eol=0..3&cmd=...&t=1000` | 发送 AT 命令，返回该条记录 JSON |
+| `GET /api/at/send?port=1\|2&baud=115200&eol=0..3&cmd=...&t=1000` | 发送 AT 命令，返回该条记录 JSON；超时 `t` 钳制到 100-5000ms |
 | `GET /api/at/hist?after=-1&n=20` | 增量拉取历史（after 之后，n 条） |
 | `GET /api/at/clear` | 清空历史，返回 `{"ok":true}` |
-| `GET /api/at/reset?port=1\|2` | 手动复位串口，返回 `{"ok":true}` |
-| `GET /api/at/baud` | 默认波特率 |
+| `GET /api/at/stats` | AT 环形缓冲统计（与 `/api/logs/stats` 对称） |
+| `GET /api/at/reset?port=1\|2` | 手动复位串口，返回 `{"ok":true}`；端口非法 400 |
 | `GET /api/uart/stats` | 两串口统计 JSON |
+| `GET /api/at/baud` | 默认波特率 `{"default":115200}` |
 
 `eol` 取值：`0`=CRLF，`1`=CR，`2`=LF，`3`=无。
+AT 命令经 `SmsService::sendAt` 下发，与短信收发共用端口锁，发完自动还原
+CMGF/CNMI，避免控制台命令误改短信配置。
 
 ### 设备日志
 
-运行日志存于 PSRAM 的定长记录环（`log/LogStore`，默认 512 条，写满 FIFO
-淘汰最旧；无 PSRAM 时自动退化为内部堆，功能不变）。时间戳与短信记录一致：
+运行日志存于 PSRAM 的定长记录环（`log/LogStore`，有 PSRAM 时 2048 条 ≈467KB，
+无 PSRAM 退化为 256 条；写满 FIFO 淘汰最旧）。时间戳与短信记录一致：
 时钟已同步为纪元秒，未同步为开机秒数。级别：`0` 调试 / `1` 信息 / `2` 警告 /
 `3` 错误。
 
 | 方法与路径 | 说明 |
 |-----------|------|
 | `GET /api/logs?page=1&pageSize=20&level=2&q=关键字` | 分页查询：`page` 从 1 起，`pageSize` 上限 100；`level` 为最低级别过滤（缺省不过滤，传 `2` 即仅看警告以上）；`q` 对 tag/msg 大小写不敏感匹配；结果按 ID 倒序（最新在前）。返回 `{"ok":true,"total":n,"page":p,"pageSize":ps,"logs":[{id,ts,level,tag,msg}...]}` |
-| `GET /api/logs?after=<id>&limit=100&level=&q=` | 增量拉取（轮询追加用，避免整页重绘闪烁）：只返回 ID 大于 `after` 的匹配记录，按 ID **升序**（旧→新），最多 `limit` 条（上限 100）；`level`/`q` 与分页模式同义。返回 `{"ok":true,"last":服务端最新ID,"total":匹配总数,"count":本次条数,"logs":[...]}`；`count < limit` 时表示后面已无匹配记录，前端可把基线直接推进到 `last` |
-| `GET /api/logs/stats` | 存储统计：`{"ok":true,"total":n,"max":n,"psram":bool,"bytes":n,"psramTotal":n,"psramFree":n}`；`psram=false` 表示缓冲未落在 PSRAM（无 PSRAM 或分配失败，已退化为内部堆，功能不受影响），此时由 `psramTotal` 区分两种原因（0 = 设备无 PSRAM）。启动串口会打印 `[log] ring ready: ... in PSRAM/heap` |
+| `GET /api/logs?after=<id>&limit=100&level=&q=` | 增量拉取（轮询追加用，避免整页重绘闪烁）：只返回 ID 大于 `after` 的匹配记录，按 ID **升序**（旧→新），最多 `limit` 条（上限 100）；返回 `{"ok":true,"last":服务端最新ID,"total":n,"count":n,"logs":[...]}`；`count < limit` 时表示后面已无匹配记录 |
+| `GET /api/logs/stats` | 存储统计：`{"ok":true,"total":n,"max":n,"psram":bool,"bytes":n,"psramTotal":n,"psramFree":n}`；`psram=false` 表示缓冲未落在 PSRAM（已退化为内部堆，功能不受影响），由 `psramTotal` 区分原因（0 = 设备无 PSRAM） |
 | `DELETE /api/logs` | 清空全部日志（逻辑清空，ID 计数保留）；清空动作本身补记一条 |
 
 ### WiFi 配网
@@ -325,21 +498,55 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 | `POST /api/wifi/delete` | `{"index":n}` | 按序号删除；越界返回 400 |
 | `POST /api/wifi/move` | `{"from":n,"to":m}` | 调整启动顺序；越界返回 400 |
 | `POST /api/wifi/connect` | `{"ssid":"..","pass":".."}` | 仅试连，不保存 |
+| `GET /api/wifi/appass` | - | AP 热点密码：`{"secure":bool,"pass":".."}` |
+| `POST /api/wifi/appass` | `{"pass":".."}` | 修改 AP 热点密码（空串=开放，非空须 8-63 字符），返回 `{"ok":true,"secure":bool}` |
+
+### 短信
+
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/sms?page=1&pageSize=20&q=&port=` | - | 列表：`{"ok":true,"total":n,"page":p,"pageSize":ps,"messages":[{id,dir:"in"\|"out",phone,content,ts,modem}]}`；`pageSize` 上限 100 |
+| `DELETE /api/sms?id=n` / `?all=1` | - | 删除单条（不存在 404）或清空 |
+| `GET /api/sms/stats` | - | `{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}` |
+| `GET /api/sms/latest` | - | 最新一条摘要（仪表盘用，与 SSE `sms` 事件同格式）；无记录返回 `{}` |
+| `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..",...}]}` |
+| `POST /api/sms/ports` | `{"port":1,"enabled":bool?,"alias":".."?}` | 启用/禁用与设别名（可只传其一），返回最新列表 |
+| `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
+| `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | 启动发送，立即返回 `{"ok":true,"started":true}`（CMGS 握手在独立任务执行，避免阻塞 async_tcp 任务） |
+| `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}` |
+| `GET /api/sms/admin` | - | 管理员远程控制：`{"ok":true,"enabled":bool,"phones":[".."]}` |
+| `POST /api/sms/admin` | `{"enabled":bool?,"phones":[".."]}` | 保存管理员配置（上限 5 个号码；空 `phones` 视为关闭），校验失败 400 |
+| `POST /api/sms/ping` | `{"port":1,"host":"8.8.8.8"?}` | 经通信模组做连通性测试（启动） |
+| `GET /api/sms/ping` | - | 轮询测试结果：`{"busy":bool,"ok":bool,"report":".."}` |
+
+### 黑名单
+
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/blacklist` | - | `{"ok":true,"enabled":bool,"action":n,"count":n,"list":[{"pattern":"..","mode":n,"scope":n,"note":"..","enabled":bool}]}` |
+| `POST /api/blacklist` | `{"enabled":bool,"action":0\|1,"list":[{pattern,mode,scope,note,enabled}...]}` | 整体保存，逐条校验（mode 0-2、scope 非 0、pattern 非空）+ 去重，落盘后返回最新配置 |
+| `POST /api/blacklist/enabled` | `{"enabled":bool}` | 只翻转总开关，不动规则与动作 |
+| `GET /api/blacklist/test?num=...` | - | 测试某号码是否命中（忽略总开关）：`{"ok":true,"matched":bool,"scope":n,"note":".."}` |
+
+`mode`：`0` 精确 / `1` 前缀 / `2` 通配符（`*` `?`）；
+`scope`：位掩码 `1`=短信、`2`=来电；`action`：`0` 仅记录不推送 / `1` 静默丢弃。
 
 ### 邮件通知（SMTP）
 
 | 方法与路径 | 请求体（JSON） | 说明 |
 |-----------|---------------|------|
 | `GET /api/email` | - | 邮件配置：`{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":465,"user":"..","sendTo":"..","hasPass":bool,"notifyTypes":n,"schedMode":0\|1,"schedHour":n,"schedMinute":n,"intervalH":n}`；授权码不回显 |
-| `POST /api/email` | `{"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","enabled":true,"notifyTypes":15,"schedMode":1,"schedHour":9,"schedMinute":0,"intervalH":24}` | 保存配置并落盘 NVS；`pass` 为空串表示不修改已保存授权码；`enabled` 为 SMTP 邮件通知总开关（缺省 true，兼容不带该字段的旧客户端）；`notifyTypes` 为位掩码（bit0=设备启动 bit1=SIM状态 bit2=收到短信 bit3=定时在线）；排程 `schedMode=1` 固定间隔（`intervalH` 小时，1-720）/ `schedMode=0` 每日定点（`schedHour:schedMinute`，依赖时间同步）；保存成功返回最新配置 |
+| `POST /api/email` | `{"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","enabled":true,"notifyTypes":31,"schedMode":1,"schedHour":9,"schedMinute":0,"intervalH":24}` | 保存配置并落盘 NVS；`pass` 为空串表示不修改已保存授权码；保存成功返回最新配置 |
 | `POST /api/email/enabled` | `{"enabled":true\|false}` | 只翻转总开关，不动其余配置；停用时丢弃待发队列，重新开启后立即恢复 |
-| `POST /api/email/test` | 无 | 入队一封测试邮件并**立即返回** `{"ok":true,"queued":true}`，实际构建与 SMTP 发送在设备主循环（loop 任务）完成；总开关未开、配置不完整或 WiFi 未连接返回 400，入队失败 500。**不可在 HTTP 任务里同步发邮件**：`async_tcp` 任务栈不足以支撑 TLS 握手，会栈溢出重启 |
+| `POST /api/email/test` | 无 | 入队一封测试邮件并**立即返回** `{"ok":true,"queued":true}`；总开关未开、配置不完整或 WiFi 未连接返回 400，入队失败 500 |
+
+**通知类型位掩码** `notifyTypes`：`bit0` 设备启动 / `bit1` SIM 状态 /
+`bit2` 收到短信 / `bit3` 定时在线 / `bit4` 来电提醒（出厂五类全开，缺省值 31）。
 
 **总开关**（`enabled`）：false 时一切邮件都不发送——短信 / SIM / 启动 /
-定时在线通知全部静默跳过，待发队列丢弃；已保存的 SMTP 参数与通知类型保留，
+定时在线 / 来电通知全部静默跳过，待发队列丢弃；已保存的 SMTP 参数与通知类型保留，
 重新开启后立即恢复。与「配置完整」（`configured`，四项参数齐全）相互独立：
-实际能否发邮件由 `enabled && configured` 共同决定。NVS 无该字段时默认开启
-（旧固件没有总开关，升级后保持原行为）。
+实际能否发邮件由 `enabled && configured` 共同决定。NVS 无该字段时默认开启。
 
 邮件模板：所有通知邮件共用一套卡片式 HTML（`EmailService::buildHtml`）——
 灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各通信模组
@@ -347,18 +554,93 @@ REST 兜底拉取补齐断线期数据。网页端（`assets/app.js` 的 `Alpine
 （识别「验证码 / OTP / code」等关键词附近的 4~6 位数字串，标题形如
 「验证码: 123456 来自 示例」）。HTML 超长（>6000 字符）时自动降级为纯文本。
 
-通知类型默认四类全开；「SIM 状态变更」仅在运行时插拔卡时触发（开机首次
-就绪、通信模组重启后的重新就绪均不通知）。发送走主循环队列，失败退避重试 3 次
-（2s / 4s），认证失败（账号或授权码错）直接丢弃并提示，不消耗重试。
+**不可在 HTTP 任务里同步发邮件**：`async_tcp` 任务栈不足以支撑 TLS 握手，会栈溢出重启。
+`/api/email/test` 只入队，实际构建与 SMTP 发送在设备主循环（loop 任务）完成，
+失败退避重试 3 次（2s / 4s），认证失败（账号或授权码错）直接丢弃并提示。
 
-**定时在线通知排程**（由通知类型位 bit3 总控，勾选后按排程触发）：
+### MQTT
 
-| 模式 | 字段 | 说明 |
-|------|------|------|
-| 固定间隔 | `schedMode=1` + `intervalH`（1-720 小时） | 基于 millis 计时，开机后每满一个周期发送一次 |
-| 每日定点 | `schedMode=0` + `schedHour`(0-23) + `schedMinute`(0-59) | 基于本地时间，每天到点发送一次；**依赖 NTP / SIM 时间同步**，未同步不触发；触发时刻落盘 NVS（`lastDaily`），重启不会补发当天已发过的通知；tick 被邮件发送阻塞时，触发点起 10 分钟窗口内的迟到触发仍有效 |
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/mqtt` | - | `{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":1883,"useTls":bool,"user":"..","hasPass":bool,"clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n}`；密码不回显 |
+| `POST /api/mqtt` | `{"server":"..","port":1883,"useTls":bool,"user":"..","pass":"..","clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n,"enabled":bool}` | 保存并落盘，立即重建客户端生效（无需重启）；`pass` 空串表示不改密码 |
+| `POST /api/mqtt/enabled` | `{"enabled":bool}` | 只翻转总开关（停用时销毁客户端停止连接，配置保留） |
+| `POST /api/mqtt/test` | 无 | 发布一条测试事件（经主循环 tick 发出），返回 `{"ok":true}` |
 
-保存配置（含排程）后会立即补发一封在线通知，便于确认配置生效。
+`notifyTypes` 位掩码：`bit0` 启动 / `bit1` SIM / `bit2` 短信 / `bit3` 上线 /
+`bit4` 来电 / `bit16` 运行日志（MQTT 专属，默认关闭）；除日志外出厂全开。
+主题与命令见 [MQTT 主题与命令](#mqtt-主题与命令)。
+
+### 推送通道
+
+| 方法与路径 | 请求体（JSON） | 说明 |
+|-----------|---------------|------|
+| `GET /api/push/types` | - | 13 种通道类型的字段 schema（前端动态渲染表单用）：`{"ok":true,"types":[...]}` |
+| `GET /api/push` | - | `{"ok":true,"enabled":bool,"strategy":n,"configured":bool,"channels":[{"type":n,"name":"..","url":"..","hasKey1":bool,"key2":"..",...,"customBody":"..","retryOnFail":bool,"enabled":bool,"valid":bool}]}`；密钥字段只回显 `hasKey1` |
+| `POST /api/push` | `{"enabled":bool,"strategy":n,"channels":[{...}]}` | 整体保存（最多 10 条），`key1` 空串表示保持已保存值；保存后立即生效 |
+| `POST /api/push/enabled` | `{"enabled":bool}` | 只翻转总开关，返回完整配置 |
+| `POST /api/push/test` | 无 | 入队一条测试推送并立即返回 `{"ok":true,"queued":true}`；未启用 / 无 WiFi / 无有效通道返回 400 |
+
+`strategy`：`0` 广播（同时发所有已启用通道）/ `1` 故障转移（按序尝试，首个成功即停）。
+通道 `type`：`1` POST-JSON / `2` Bark / `3` GET / `4` 钉钉 / `5` PushPlus /
+`6` Server酱 / `7` 自定义模板 / `8` 飞书 / `9` Gotify / `10` Telegram /
+`11` 企业微信 / `12` SMS 短信备份 / `13` Mailgun。
+`modemSlot` 指定 SMS 备份通道从哪个模组发出（<0 = 自动挑第一个就绪模组）。
+
+### OTA 升级
+
+| 方法与路径 | 请求体 | 说明 |
+|-----------|--------|------|
+| `GET /api/ota/status` | - | `{"state":n,"progress":0-100,"message":"..","currentVersion":"..","latestVersion":"..","available":bool}`；`state`：`0` 空闲 / `1` 检查中 / `2` 下载中 / `3` 写入中 / `4` 成功待重启 / `5` 失败 / `6` 烧录 LittleFS |
+| `GET /api/ota/version` | - | 触发后台版本检查，立即返回 `{"ok":true,"version":"..","latestVersion":"..","available":bool}` |
+| `POST /api/ota/start` | `{"tag":"<完整版本标识>"}` | 启动在线升级（后台任务下载写入），返回 `{"ok":true,"started":true}`，进度经 status 轮询 |
+| `POST /api/ota/upload` | multipart `file` | 本地固件上传，分片写入 OTA 分区，成功后自动重启 |
+| `POST /api/ota/upload-fs` | multipart `file` | 本地 LittleFS（Web UI）镜像上传 |
+
+产物文件名：`ota-<tag>-<platform>.bin` / `littlefs-<tag>-<platform>.bin`，
+下载地址由编译期注入的 `OTA_RELEASES_BASE_URL` 拼接。**Release tag 即完整版本标识**
+（`<VERSION>-<提交时间>-<短 SHA>`），设备自报版本、下载地址与比较用的都是同一个值。
+
+### 配置导入导出
+
+| 方法与路径 | 请求体 | 说明 |
+|-----------|--------|------|
+| `GET /api/config/export` | - | 下载 `sms_forwarder_config_YYYYMMDD.json`（`application/octet-stream`），含 `wifi/auth/email/sms/mqtt/push/blacklist/disp/sched`（含密码等敏感信息） |
+| `POST /api/config/import` | 原始 JSON（`application/json`，>64KB 返回 413） | 导入并落盘，返回 `{"ok":true,"msg":".."}` 后 2 秒重启；导入即作废全部会话 |
+
+### 崩溃转储
+
+| 方法与路径 | 请求体 | 说明 |
+|-----------|--------|------|
+| `GET /api/tools/coredump/info` | - | `{"hasCoredump":bool,"size":n,"crashTime":epoch,"crashVersion":"..","elfUrl":".."}`；无数据只返回 `hasCoredump:false` |
+| `GET /api/tools/coredump/export` | - | 分块流式下载 `sms-forwarder-coredump-<ts>.bin`；无数据 404 |
+| `POST /api/tools/coredump/clear` | 无 | 整分区擦除（0xFE0000 起 128KB）；NVS 里的崩溃时间与版本记录保留 |
+
+### SSE 实时推送
+
+| 方法与路径 | 说明 |
+|-----------|------|
+| `GET /api/sse` | SSE 事件流（需认证，`Accept: text/event-stream`）。浏览器端 `EventSource` 自动携带会话 Cookie；Bearer 令牌客户端无法使用 SSE（无法自定义头），请继续用 REST 接口轮询 |
+
+事件列表（data 均为对应 GET 接口同款 JSON）：
+
+| 事件名 | 内容 | 推送时机 |
+|--------|------|---------|
+| `status` | 同 `/api/status` | 每秒比对，变化才推 |
+| `stats` | 同 `/api/uart/stats` | 变化才推 |
+| `at` | 新 AT 记录数组 | 有新记录才推（增量） |
+| `wifi` | 同 `/api/wifi/status` | 变化才推 |
+| `saved` | 同 `/api/wifi/list` | 变化才推 |
+| `rgb` | 同 `/api/rgb` | 变化才推 |
+| `disp` | 同 `/api/disp` | 变化才推 |
+| `sms` | 同 `/api/sms/latest` | 新短信才推 |
+| `smsports` | 同 `/api/sms/ports` | 变化才推 |
+| `smsstats` | 同 `/api/sms/stats` | 变化才推 |
+
+新客户端接入立即收到全量快照；并发上限 8（超出顶掉最旧）。断线由浏览器自动重连，
+重连后前端会做一次 REST 兜底拉取补齐断线期数据。网页端
+（`assets/app.js` 的 `Alpine.store('live')`）由此驱动，不再定时轮询；
+SSE 不可用时自动降级为 2 秒轮询。
 
 ## 脚本示例
 
@@ -378,20 +660,31 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   -d '{"ssid":"MyWiFi","pass":"12345678","connect":true}' \
   http://设备IP/api/wifi/save
 
+# 查询短信列表（分页 + 关键字）
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://设备IP/api/sms?page=1&pageSize=20&q=验证码"
+
+# 从通信模组 1 发短信（POST 启动 + GET 轮询结果）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"port":1,"phone":"13800138000","content":"你好"}' \
+  http://设备IP/api/sms/send
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/sms/send
+
 # 查询邮件配置（GET）
 curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/email
 
 # 保存邮件配置（POST + JSON 请求体；pass 留空则不修改授权码）
-# 示例：每日 09:00 发送在线通知（schedMode=0）
+# 示例：每日 09:00 发送在线通知（schedMode=0），五类通知全开
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":15,"schedMode":0,"schedHour":9,"schedMinute":0}' \
+  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":31,"schedMode":0,"schedHour":9,"schedMinute":0}' \
   http://设备IP/api/email
 
 # 示例：固定间隔 24 小时（schedMode=1 + intervalH）
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":15,"schedMode":1,"intervalH":24}' \
+  -d '{"server":"smtp.qq.com","port":465,"user":"user@qq.com","pass":"授权码","sendTo":"me@example.com","enabled":true,"notifyTypes":31,"schedMode":1,"intervalH":24}' \
   http://设备IP/api/email
 
 # 总开关：停用 / 重新启用邮件通知（只翻开关，不动其余配置）
@@ -401,6 +694,31 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 
 # 发送测试邮件
 curl -X POST -H "Authorization: Bearer $TOKEN" http://设备IP/api/email/test
+
+# 推送通道：查询类型 schema / 当前配置 / 发送测试
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/push/types
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/push
+curl -X POST -H "Authorization: Bearer $TOKEN" http://设备IP/api/push/test
+
+# OTA：检查更新 -> 启动升级（tag 取 status 里的 latestVersion）
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/ota/version
+curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/ota/status
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tag":"1.0.0-20261004T121442-f2b513a"}' \
+  http://设备IP/api/ota/start
+
+# 配置备份 / 恢复
+curl -H "Authorization: Bearer $TOKEN" -o backup.json \
+  http://设备IP/api/config/export
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @backup.json \
+  http://设备IP/api/config/import
+
+# 远程按键注入（等价于按一次 OK）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"key":"ok"}' \
+  http://设备IP/api/key
 ```
 
 ## 项目结构
@@ -408,53 +726,99 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://设备IP/api/email/test
 ```
 src/
 ├── main.cpp              Arduino 入口（setup/loop 驱动 App）
+├── lv_conf.h             LVGL 9 配置（内存走 PSRAM、色彩深度、启用组件）
 ├── app/                  应用层
-│   ├── App.h/.cpp        通信模组装配与主循环调度
-│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 邮件通知 / 日志环
+│   ├── App.h/.cpp        模块装配与主循环调度（WiFi / SSE / 短信 / 屏幕 / 队列 / 定时重启）
+│   ├── Config.h          全局配置：引脚 / WiFi / AP / NVS / 超时 / 通知位掩码 / 环容量 / 分区 label
 │   ├── Psram.h           PSRAM 工具：可增长缓冲区 + 容器 / ArduinoJson 分配器
-│   └── StatusInfo.h      App -> Display 的状态快照结构
+│   ├── StatusInfo.h      App -> LVGL 的状态快照结构（零堆分配）
+│   ├── UIMenu.h/.cpp     LCD 菜单状态机（12 槽位、动态页、屏幕设置持久化）
+│   ├── SystemService.h/.cpp  定时重启（间隔 / 每日定点 + 星期位掩码）与配置导入导出
+│   ├── Coredump.h/.cpp   崩溃元信息记录、分区查询与清除
+│   ├── UserFs.h/.cpp     userdata 分区挂载 /data、容量查询、格式化
+│   └── KeyInject.h/.cpp  Web /api/key -> 主循环 UI 的按键事件队列
 ├── hal/                  硬件抽象层
-│   ├── Display.h/.cpp    ST7789 屏幕（pimpl 隔离 LovyanGFX）
-│   └── RgbLed.h/.cpp     WS2812 RGB 灯
-├── log/                  设备日志
-│   └── LogStore.h/.cpp   PSRAM 环形日志缓冲（定长条目 / FIFO / 分页查询）
+│   ├── Display.h/.cpp    ST7789 + LovyanGFX 面板 + LVGL 显示端口（pimpl 隔离）、JPEG 取帧
+│   ├── RgbLed.h/.cpp     WS2812 RGB 灯
+│   ├── Button.h/.cpp     4 键扫描与 click/long/repeat 事件
+│   └── CpuMonitor.h/.cpp 基于 FreeRTOS 运行时间统计的整机 CPU 使用率
+├── ui/                   LVGL 界面层
+│   ├── Ui.h/.cpp         开机页 / 状态页 / 菜单页 / 文本页 / 新短信弹窗的部件树
+│   ├── UiFonts.h/.cpp    TinyTTF 中文字库（ui_cn.ttf）+ 图标 / Logo 位图字体
+│   ├── UiIcons.h         图标码点宏
+│   └── fonts/            编译进 flash 的图标与 Logo 字体 C 文件
 ├── net/                  网络层
-│   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式
+│   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式 + 热点密码
 │   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
-│   ├── EmailService.h/.cpp  SMTP 邮件通知：HTML 模板 + 通知类型 + 发送队列
+│   ├── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
 │   ├── StatusBus.h/.cpp   SSE 实时推送（/api/sse，diff 比对只推变化）
 │   ├── StateJson.h        状态快照 JSON 序列化（REST 与 SSE 共用）
-│   └── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
-└── serial/               串口层
-    ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈）
-    └── AtHistory.h/.cpp     AT 记录环形缓冲（JSON 导出）
+│   ├── EmailService.h/.cpp  SMTP 邮件通知：HTML 模板 + 通知类型 + 发送队列 + 排程
+│   └── MqttService.h/.cpp  MQTT 事件上报 + 命令订阅（esp-mqtt）
+├── sms/                  短信与通信模组
+│   ├── SmsService.h/.cpp  双模组收发、PDU 处理、来电检测、管理员命令、模组管理
+│   ├── SmsStore.h/.cpp    短信持久化（/data/sms/<id>.txt，FIFO 1000，分页 / 搜索 / 今日统计）
+│   ├── SmsCodec.h/.cpp    PDU 编解码（lib/pdulib）+ 长短信重组
+│   ├── BlackList.h/.cpp   号码黑名单（精确 / 前缀 / 通配符，短信 + 来电作用域）
+│   ├── SmsRecord.h        SmsMessage / SmsConcatSlot / SmsPduPart 数据结构
+│   └── ModemSnapshot.h    模组状态 POD（型号 / 版本 / 号码 / 运营商 / 注册 / IMEI / 信号）
+├── push/                 推送通道
+│   ├── PushService.h/.cpp 调度：多通道、广播 / 故障转移、队列 + 主循环发送、NVS
+│   ├── PushChannels.h/.cpp 13 种通道的具体 HTTP 发送实现（TLS 经 TlsTurn 串行化）
+│   ├── PushTypes.h/.cpp    通道类型与策略枚举、类型 schema JSON
+│   └── MsgContext.h/.cpp   自定义模板可用字段与占位符渲染
+├── serial/               串口层
+│   ├── SerialBridge.h/.cpp  双串口 AT 透传（任务 + 互斥锁 + 自愈 + 统计）
+│   └── AtHistory.h/.cpp     AT 记录环形缓冲（cmd/bg/urc 三类，JSON 增量导出）
+├── ota/
+│   └── Ota.h/.cpp         OTA 状态机：版本检查、在线升级、本地固件 / LittleFS 分片烧录
+├── time/
+│   └── TimeSync.h/.cpp    NTP 为主 + SIM NITZ 兜底，NVS 持久化，UTC+8
+├── log/
+│   └── LogStore.h/.cpp    PSRAM 环形日志缓冲（定长条目 / FIFO / 分级 / 分页查询）
+└── utils/
+    ├── HttpSession.h/.cpp  HTTPS 会话 RAII 封装（跳过证书校验）
+    ├── TlsTurn.h/.cpp      全局 TLS 并发通道计数信号量（最多 4 个）
+    └── tls_mem.h/.cpp      mbedTLS 大块分配重定向到 PSRAM
 data/
 ├── login.html            独立登录页（POST /api/login，成功后跳回目标页）
 ├── index.html            控制台外壳：左侧分组菜单 + 顶栏 + hash 路由内容区
+├── ui_cn.ttf             中文字库（GB2312，TinyTTF 运行时渲染，不参与 gzip）
 ├── pages/                内容页片段（按菜单懒加载，纯静态无敏感数据）
-│   ├── dashboard.html    仪表盘：状态指标 / 屏幕 / RGB / 串口 / 最近动态 / API 令牌
-│   ├── serial.html       串口 AT：命令发送 / 历史日志 / 统计 / 复位
-│   ├── wifi.html         WiFi：扫描 / 保存 / 排序 / 删除
-│   ├── email.html        邮件通知：SMTP 配置 / 通知类型 / 测试发送
-│   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
-│   ├── display.html      屏幕显示：开关 / 背光亮度调节
+│   ├── dashboard.html    仪表盘：SOC / 状态指标 / 屏幕 / RGB / 串口 / 最近动态 / API 令牌
 │   ├── sms.html          短信：收发记录 / 发送 / 搜索 / 详情 / 删除 / 清空
-│   ├── modem.html        通信模组：状态 / 信号 / 运营商 / 号码 / 启用与别名
-│   ├── push.html         推送通道：13 种方式（含 SMS 短信备份），广播/故障转移策略
-│   ├── mqtt.html         MQTT：连接配置 / 事件类型开关 / 命令订阅
-│   ├── blacklist.html    黑名单：精确/前缀/通配符匹配，短信与来电命中后静默丢弃或仅记录不推送
+│   ├── admin.html        管理员：授权手机号（短信远程控制总开关 + 号码）
+│   ├── modem.html        通信模组：状态 / 信号 / 运营商 / 号码 / 启用与别名 / 重初始化
+│   ├── blacklist.html    黑名单：精确 / 前缀 / 通配符，短信与来电作用域，命中动作
+│   ├── push.html         推送通道：13 种方式（含 SMS 备份），广播 / 故障转移策略
+│   ├── mqtt.html         MQTT：连接配置 / 事件类型 / 命令订阅
+│   ├── email.html        邮件通知：SMTP 配置 / 通知类型 / 排程 / 测试发送
+│   ├── wifi.html         WiFi：扫描 / 保存 / 排序 / 删除 / AP 热点密码
+│   ├── serial.html       串口 AT：命令发送 / 历史日志 / 统计 / 复位
 │   ├── logs.html         运行日志：分页查看 / 级别与关键字过滤 / 自动刷新 / 清空
-│   ├── settings.html     系统设置：管理账号修改（用户名/密码存 NVS）
-│   └── tools.html        系统工具（规划中）
+│   ├── display.html      屏幕显示：开关 / 背光亮度 / 自动熄屏 / 自动返回 / Web 预览
+│   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
+│   ├── settings.html     系统设置：管理账号 / API 访问令牌 / 定时重启
+│   └── tools.html        系统工具：OTA 升级 / 配置导入导出 / 崩溃转储 / 重启 / 出厂复位
 └── assets/               静态资源（改后需重新 uploadfs）
     ├── app.css           设计系统与布局样式
     ├── app.js            菜单配置 / hash 路由 / 认证封装 / 各页 Alpine 组件
     └── vendor/
-        └── alpine.min.js Alpine.js 3.14.9 运行时（本地内置，AP 模式无外网可用）
+        └── alpine.min.js Alpine.js 3.x 运行时（本地内置，AP 模式无外网可用）
+lib/
+├── pdulib                PDU 编解码库（短信 PDU <-> 文本）
+└── jpge                  JPEG 编码器（屏幕实时预览）
 partitions/
-└── esp32s3_16mb.csv      16MB 分区表（含 LittleFS 专有分区）
+└── esp32s3_16mb.csv      16MB 分区表（含双 OTA 槽、userdata、LittleFS 资源分区、coredump）
 script/
-└── uploadfs_gz.py        data/ 打包时自动 gzip 并上传的 PlatformIO 脚本
+├── uploadfs_gz.py        data/ 打包时自动 gzip 并上传的 PlatformIO 脚本
+├── inject_app_version.py 编译期注入 Release tag 与 OTA 发布源地址
+├── gen_version.sh        生成版本标识（<VERSION>-<提交时间>-<短 SHA>）
+├── build_release.py      发布产物构建
+├── gen_release_notes.py  生成 Release 说明
+├── prune_releases.py     清理历史 Release
+├── gen_iconfont.py       生成图标字体 C 文件
+└── print_version_tag.sh  打印当前版本 tag
 ```
 
 代码注释为中文，覆盖类职责、方法、参数与字段含义。
