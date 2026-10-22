@@ -19,11 +19,12 @@
 // 短信服务：双通信模组的短信收发、存储与通信模组管理。
 //
 // 接收：SerialBridge 抽数任务把 +CMT: <len>\r\n<pdu> 段的通信模组自发数据
-//   经 onUnsolicited 交给本类（返回 true = 已消费，不进 AT 历史），
+//   经 onUnsolicited 交给本类（返回 true = 已消费；无论是否消费，该段都会以
+//   kUrc 类型记入 AT 历史，保证主动上报在控制台可见），
 //   PDU 解码 + 长短信重组 + 落盘都在该上下文快速完成（不回调串口类，
 //   避免与抽数任务持有的锁死锁）。
-// 发送：经 SerialBridge::send() 两段式完成 CMGS 握手（互斥锁保证
-//   抽数任务不会抢走响应字节）；PDU 流量 quiet 记入，不冲刷 AT 历史。
+// 发送：经 SerialBridge::sendSmsPdu() 两段式完成 CMGS 握手（互斥锁保证
+//   抽数任务不会抢走响应字节）；握手过程以 kBg 类型记入 AT 历史。
 // 通信模组配置（启用/禁用）持久化到 NVS：appcfg / sms，
 //   {"ver":1,"max":200,"modems":[{"port":1,"enabled":true},...]}
 class SmsService {

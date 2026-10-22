@@ -46,17 +46,18 @@ class SerialBridge {
   // 创建互斥量并启动串口抽数任务（重复调用无副作用）
   void begin();
 
-  // 阻塞式：写命令后在 timeoutMs 内收集响应
+  // 阻塞式：写命令后在 timeoutMs 内收集响应，必定记入 AT 历史（含后台命令）。
   // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时；
-  // quiet：true 时不记入 AT 历史（通信模组初始化、短信 PDU 交互等不需要用户看见的流量）
+  // type：来源类型，默认 kCmd（Web 控制台用户命令）；后台/内部流量传 kBg。
   Result send(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
-              uint32_t timeoutMs, bool quiet = false);
+              uint32_t timeoutMs, AtHistory::Type type = AtHistory::Type::kCmd);
 
   // 非阻塞式（try-lock）：若端口正忙（如正在发送短信）立即返回 false（out 无效），
   // 不阻塞抽数任务。成功取到端口锁返回 true（out 有效，resp 为空表示超时无响应）。
   // 由抽数任务在每端口处理完后调用，用于通信模组初始化/心跳等周期性 AT 交互。
+  // type：来源类型（后台/内部流量统一传 kBg），必定记入 AT 历史。
   bool trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
-               uint32_t timeoutMs, bool quiet, Result &out);
+               uint32_t timeoutMs, AtHistory::Type type, Result &out);
 
   // 短信发送专用：AT+CMGS=<len> 两段式握手（全程持端口锁，流程参照
   // esp32-sms-forwarding 的成熟实现）：
@@ -162,9 +163,9 @@ class SerialBridge {
 
   // 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
   // readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
-  // 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信丢失。
-  // 本方法持端口锁把 URC 段追加到 p.pend，由抽数任务按常规自发上报流程
-  // （120ms 静默后回调 _urc）归档；resp 本身不改动，调用方解析不受影响。
+  // 一并读进 resp；本方法把该段从响应里捞出、追加到 p.pend，由抽数任务按常规
+  // 自发上报流程（120ms 静默后回调 _urc 并记入 AT 历史为 kUrc）归档，避免被当作
+  // 本次 AT 响应的一部分而干扰调用方解析、或随响应窗口丢失。resp 本身不改动。
   void stashUrc(Port &p, const String &resp);
 
   // 串口错误中断的静态跳板（当前 onReceiveError 用 lambda 直接捕获 Port，此跳板作为无捕获场景的备用）

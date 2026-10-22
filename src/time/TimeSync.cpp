@@ -151,13 +151,13 @@ void TimeSync::syncFromSIM(uint8_t port) {
   if (!_bridge) return;
   if (port < 1 || port > cfg::kSmsMaxModems) return;
 
-  // quiet=true：内部流量不进 AT 历史（控制台只展示用户主动命令）。
+  // 内部流量以 kBg 类型记入 AT 历史（控制台可见但仍与用户命令区分）。
   // 用 trySend 非阻塞取锁：若端口正忙（如正在发送短信）立即跳过本次同步，下个
   // 周期再试——避免阻塞主循环（否则会与统一发送队列的 worker 抢端口锁数十秒，
   // 触发任务看门狗复位）。
   SerialBridge::Result r;
   if (!_bridge->trySend(port, cfg::kUartBaud, "AT+CCLK?", SerialBridge::kCrlf,
-                        cfg::kSimTimeCmdMs, true, r)) {
+                        cfg::kSimTimeCmdMs, AtHistory::Type::kBg, r)) {
     return;
   }
   if (!r.ok) return;

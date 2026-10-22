@@ -169,12 +169,12 @@ void SerialBridge::pumpOnce() {
         p.pend = String();
         p.pendMs = 0;
         unlockPort(i);
-        bool consumed = _urc && _urc(i + 1, seg);
-        if (!consumed) {
-          lockHist();
-          _hist.add(i + 1, String(), seg);  // cmd 为空 = 自发上报
-          unlockHist();
-        }
+        // 先触发消费回调（短信入库 / 来电识别等），无论是否被消费都记入 AT 历史，
+        // 保证「主动上报」在控制台可见（之前被消费即丢弃，导致 +CMT 等不可见）
+        if (_urc) _urc(i + 1, seg);
+        lockHist();
+        _hist.add(i + 1, AtHistory::Type::kUrc, String(), seg);  // cmd 为空 = 自发上报
+        unlockHist();
       } else {
         unlockPort(i);
       }
@@ -209,9 +209,9 @@ void SerialBridge::reportErrors(uint8_t i) {
 // 把 AT 响应收集窗口内混入的自发上报（短信 URC +CMT/+CMTI/+CDS，来电 URC
 // RING/+CRING/+CLIP/+CLCC/NO CARRIER 等）交回 pend：
 // readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
-// 一并读进 resp 而丢弃（quiet 时）或仅入 AT 历史，导致新短信/来电丢失。
-// 本方法持端口锁把 URC 段追加到 p.pend，由抽数任务按常规自发上报流程
-// （120ms 静默后回调 _urc）归档；resp 本身不改动，调用方解析不受影响。
+// 一并读进 resp；本方法把该段捞出、追加到 p.pend，由抽数任务按常规自发上报流程
+// （120ms 静默后回调 _urc 并以 kUrc 类型记入 AT 历史）归档，避免被当作本次 AT
+// 响应的一部分而干扰调用方解析、或随响应窗口丢失；resp 本身不改动。
 // p：端口状态（调用方须持有端口锁）；resp：刚收集到的 AT 响应
 void SerialBridge::stashUrc(Port &p, const String &resp) {
   // 找响应中第一个自发上报起始位置
@@ -270,12 +270,12 @@ String SerialBridge::readResponse(Port &p, uint32_t waitMs, uint32_t gapMs) {
   return out;
 }
 
-// 阻塞发送一条 AT 命令并等待响应，同时记入历史（quiet 时不记）
+// 阻塞发送一条 AT 命令并等待响应，必定记入历史（type 区分来源）。
 // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时；
-// quiet：true 时不记入 AT 历史
+// type：来源类型（用户命令 kBg 等），用于控制台着色/过滤
 SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
                                         const String &cmd, Eol eol,
-                                        uint32_t timeoutMs, bool quiet) {
+                                        uint32_t timeoutMs, AtHistory::Type type) {
   if (port < 1 || port > 2) return Result{false, (uint32_t)-1, String()};
 
   lockPort(port - 1);
@@ -308,12 +308,10 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
   }
 
   uint32_t id = 0;
-  if (!quiet) {
-    lockHist();
-    _hist.add(port, cmd, resp);
-    id = _hist.lastId();
-    unlockHist();
-  }
+  lockHist();
+  _hist.add(port, type, cmd, resp);
+  id = _hist.lastId();
+  unlockHist();
   unlockPort(port - 1);
 
   return Result{true, id, resp};
@@ -323,7 +321,7 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
 // 完成 AT 交互后返回 true（out 有效，resp 为空表示超时无响应）。由抽数任务的
 // 轮询回调调用，确保通信模组初始化/心跳的周期性 AT 永不阻塞抽数任务或主循环。
 bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol eol,
-                           uint32_t timeoutMs, bool quiet, Result &out) {
+                           uint32_t timeoutMs, AtHistory::Type type, Result &out) {
   out = Result{false, (uint32_t)-1, String()};
   if (port < 1 || port > 2) return false;
   if (!tryLockPort(port - 1)) return false;  // 端口忙（如正在发送短信）-> 非阻塞跳过
@@ -357,12 +355,10 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
   }
 
   uint32_t id = 0;
-  if (!quiet) {
-    lockHist();
-    _hist.add(port, cmd, resp);
-    id = _hist.lastId();
-    unlockHist();
-  }
+  lockHist();
+  _hist.add(port, type, cmd, resp);
+  id = _hist.lastId();
+  unlockHist();
   unlockPort(port - 1);
   out = Result{true, id, resp};
   return true;
@@ -460,6 +456,14 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
     }
   }
   unlockPort(port - 1);
+
+  // 短信发送握手（AT+CMGS=<len> + '>' 提示符 + OK/ERROR）统一记入 AT 历史，
+  // 便于排查发送失败；类型 kBg（系统发起的发送，非用户即时命令）。
+  // pre 含 '>' 提示阶段的输出，resp 含提交 PDU 后的响应，合并即完整握手过程。
+  String cmgsResp = pre + resp;
+  lockHist();
+  _hist.add(port, AtHistory::Type::kBg, "AT+CMGS=" + String(tpduLen), cmgsResp);
+  unlockHist();
 
   if (resp.indexOf("OK") >= 0 || (cmgs && !error)) {
     return Result{true, 0, resp};

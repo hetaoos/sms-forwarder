@@ -723,9 +723,14 @@ function pageSerial() {
   return {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
     cmd: '', localHist: [], localIdx: -1,
+    filter: 'all',             // 类型过滤：all / 0(用户) / 1(后台) / 2(上报)
     atStats: {},               // GET /api/at/stats（存储位置/容量等）
     // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
-    get entries() { return Alpine.store('live').at; },
+    get entries() {
+      const all = Alpine.store('live').at;
+      if (this.filter === 'all') return all;
+      return all.filter(e => String(e.type) === this.filter);
+    },
     get stats() { return Alpine.store('live').stats; },
     async init() {
       try {
@@ -797,6 +802,17 @@ function pageSerial() {
       }
     },
     portStat(p) { return this.stats[p - 1] || {}; },
+    // 记录类型文案：0 用户命令 / 1 后台命令 / 2 主动上报
+    typeLabel(t) {
+      if (t === 1) return '后台';
+      if (t === 2) return '上报';
+      return '用户';
+    },
+    typeBadge(t) {
+      if (t === 1) return 'bg';
+      if (t === 2) return 'urc';
+      return 'cmd';
+    },
     // 存储位置文案：区分「PSRAM」/「无 PSRAM」/「有 PSRAM 但分配失败」
     atStoreText() {
       if (!this.atStats.max) return '-';

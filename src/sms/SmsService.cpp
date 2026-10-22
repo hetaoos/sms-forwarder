@@ -489,8 +489,9 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
   }
   ModemState &m = _modems[port];
   m.lastSendMs = millis();  // 令初始化/心跳轮询在此期间让行
-  // quiet=false：命令与响应记入 AT 历史，供控制台展示
-  SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs, false);
+  // 用户主动命令（Web 控制台）：以 kCmd 类型记入 AT 历史，供控制台展示
+  SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs,
+                                        AtHistory::Type::kCmd);
   if (!r.ok) {
     err = "invalid port";
     return r;
@@ -498,9 +499,9 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
   // 还原短信关键配置（仅通信模组就绪时）；初始化进行中由状态机负责下发，无需此处干预
   if (m.initState == ModemInitState::kReady) {
     _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0", SerialBridge::kCrlf,
-                 cfg::kSmsCmdTimeoutMs, true);
+                 cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
     _bridge.send(port, cfg::kUartBaud, "AT+CNMI=2,2,0,0,0", SerialBridge::kCrlf,
-                 cfg::kSmsCmdTimeoutMs, true);
+                 cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
   }
   return r;
 }
@@ -690,7 +691,7 @@ void SmsService::pollCall(uint8_t port) {
   if (!m.callClccTried && (int32_t)(now - m.callClccDueMs) >= 0) {
     SerialBridge::Result r;
     if (_bridge.trySend(port, cfg::kUartBaud, "AT+CLCC", SerialBridge::kCrlf,
-                        kCallClccTimeoutMs, true, r)) {
+                        kCallClccTimeoutMs, AtHistory::Type::kBg, r)) {
       m.callClccTried = true;
       String num = parseClccNumber(r.resp);
       if (num.length() > 0) {
@@ -1295,10 +1296,12 @@ void SmsService::pollInit(uint8_t port) {
   }
 
   // 非阻塞 AT：端口忙返回 false（本轮跳过）；成功返回 true（resp 可能为空=超时）
+  // 初始化/心跳等内部流量统一以 kBg 类型记入 AT 历史（控制台可见但仍与用户命令区分）
   String resp;
-  auto at = [&](const char *cmd, uint32_t to, bool quiet = true) -> bool {
+  auto at = [&](const char *cmd, uint32_t to,
+               AtHistory::Type type = AtHistory::Type::kBg) -> bool {
     SerialBridge::Result r;
-    if (!_bridge.trySend(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf, to, quiet, r))
+    if (!_bridge.trySend(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf, to, type, r))
       return false;  // 端口忙
     resp = r.resp;
     return true;

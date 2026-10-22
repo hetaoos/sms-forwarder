@@ -26,17 +26,26 @@
   <!-- 日志 -->
   <div class="card">
     <h3>交互日志 <span class="sub" x-text="'共 ' + entries.length + ' 条（内存保留最近 ' + (atStats.max || '-') + ' 条）'"></span></h3>
+    <div class="seg" style="margin:-2px 0 12px">
+      <button class="seg-btn" :class="{on: filter==='all'}" @click="filter='all'">全部</button>
+      <button class="seg-btn" :class="{on: filter==='0'}" @click="filter='0'">用户命令</button>
+      <button class="seg-btn" :class="{on: filter==='1'}" @click="filter='1'">后台命令</button>
+      <button class="seg-btn" :class="{on: filter==='2'}" @click="filter='2'">主动上报</button>
+    </div>
     <div class="console" x-ref="console">
       <template x-for="e in entries" :key="e.id">
         <div class="entry">
-          <div class="meta" x-text="'#' + e.id + ' · 串口' + e.port"></div>
+          <div class="meta">
+            <span class="tag" :class="typeBadge(e.type)" x-text="typeLabel(e.type)"></span>
+            <span x-text="'#' + e.id + ' · 串口' + e.port"></span>
+          </div>
           <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
           <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
         </div>
       </template>
       <div class="hint" style="color:var(--muted)" x-show="!entries.length">暂无记录，发送一条命令试试</div>
     </div>
-    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。</div>
+    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。后台命令与主动上报现已一并记录。</div>
   </div>
 
   <!-- 参数栏 -->

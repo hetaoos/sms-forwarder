@@ -97,6 +97,13 @@ a{color:var(--primary);text-decoration:none}
 .btn.sm{padding:5px 10px;font-size:12px;border-radius:6px}
 .btn.block{width:100%;padding:11px;font-size:15px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* 分段过滤按钮（串口日志类型筛选） */
+.seg{display:inline-flex;gap:4px;background:#11131a;border:1px solid var(--border);
+  border-radius:8px;padding:3px}
+.seg-btn{font-size:12px;padding:5px 11px;border-radius:6px;border:none;background:transparent;
+  color:var(--muted);cursor:pointer;white-space:nowrap}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--primary);color:#fff}
 /* LCD 实时画面预览（方案 B）：按 3:4 还原 240x320 屏，像素化保持锐利 */
 .lcd-row{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .lcd-wrap{display:flex;justify-content:center;padding:6px 0 2px}
@@ -161,9 +168,16 @@ input.mono{font-family:var(--mono)}
   padding:12px;font-family:var(--mono);font-size:12.5px;line-height:1.55}
 .console .entry{margin-bottom:12px;padding-bottom:10px;border-bottom:1px dashed #2e3138}
 .console .entry:last-child{border-bottom:none}
-.console .meta{color:#6f7885;font-size:11px;margin-bottom:3px}
+.console .meta{color:#6f7885;font-size:11px;margin-bottom:3px;display:flex;
+  align-items:center;gap:6px;flex-wrap:wrap}
 .console .cmd{color:#7fd1ff;white-space:pre-wrap;word-break:break-all}
 .console .resp{color:#c8f5c0;margin:3px 0 0;white-space:pre-wrap;word-break:break-all}
+/* 串口日志来源徽标：用户/后台/上报 */
+.console .tag{font-size:10px;line-height:1;padding:2px 6px;border-radius:5px;
+  font-weight:600;letter-spacing:.3px}
+.console .tag.cmd{background:rgba(127,209,255,.18);color:#7fd1ff}
+.console .tag.bg{background:rgba(255,207,122,.16);color:#ffcf7a}
+.console .tag.urc{background:rgba(167,255,179,.16);color:#a7ffb3}
 /* 运行日志：暗色控制台内的元信息行（级别徽标 + ID + 时间 + 标签）与告警着色 */
 .console .log-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
   color:#6f7885;font-size:11px;margin-bottom:3px}

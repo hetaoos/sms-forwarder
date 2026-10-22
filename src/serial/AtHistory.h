@@ -6,19 +6,30 @@
 
 #include "app/Config.h"
 
-// 环形缓冲：保存最近若干条 AT 记录（含串口自发上报）。
+// 环形缓冲：保存最近若干条 AT 记录（含后台命令与串口自发上报）。
 // 与设备日志 _log 同思路：条目缓冲区整块分配在 PSRAM（PSRAM 优先），与 WiFi/
 // LwIP/SSL 等内部堆使用者隔离；板子无 PSRAM 或分配失败时自动退化到内部堆，
 // 并按 kAtHistoryRingSizeNoPsram 收紧条数，功能不变（psramOk() 可查落点）。
 // 条目为定长结构（cmd/resp 为内嵌字符数组，超长截断），写入只做 memcpy，
 // 运行期零堆分配、无碎片，抽数任务 / HTTP 任务等任意上下文可安全调用。
+//
+// 记录类型 type：区分「用户主动命令 / 后台命令 / 主动上报」，三者都会写入历史，
+// 仅用于控制台展示与过滤（不再因 quiet/被消费而丢弃任何串口流量）。
 class AtHistory {
  public:
+  // 记录类型：用于区分来源，控制台据此着色/过滤
+  enum Type : uint8_t {
+    kCmd = 0,   // 用户主动命令（Web 控制台 /api/at/send 下发）
+    kBg = 1,    // 后台命令（心跳 / 初始化 / 配置还原 / 时间同步 / 来电兜底的 AT+CLCC 等）
+    kUrc = 2,   // 主动上报（通信模组自发，如 +CMT / +CMTI / +CDS / +CLIP / +CLCC / RING）
+  };
+
   // 一条 AT 交互/上报记录（定长结构，按槽位原地写入）
   struct Entry {
     uint32_t id;                           // 全局自增 ID（不回绕，取模映射到槽位）
     uint8_t port;                          // 来源串口号（1/2）
-    char cmd[cfg::kAtHistoryCmdMax];       // 命令内容；空 = 串口自发上报
+    uint8_t type;                          // 来源类型，见 Type
+    char cmd[cfg::kAtHistoryCmdMax];       // 命令内容；空 = 串口自发上报（type=kUrc）
     char resp[cfg::kAtHistoryRespMax];     // 响应内容
   };
 
@@ -27,9 +38,9 @@ class AtHistory {
   // 收紧条数；两者都分配失败则缓冲不可用（add 静默丢弃，串口交互不受影响）
   void begin(uint16_t max);
 
-  // 追加一条记录（port：串口号；cmd：命令，空串=自发上报；resp：响应内容；
-  // 二者均超长自动截断到对应字段长度）
-  void add(uint8_t port, const String &cmd, const String &resp);
+  // 追加一条记录（port：串口号；type：来源类型；cmd：命令，空串=自发上报；
+  // resp：响应内容；二者均超长自动截断到对应字段长度）
+  void add(uint8_t port, Type type, const String &cmd, const String &resp);
 
   // 按 ID 取记录，不存在返回 nullptr
   const Entry *get(uint32_t id) const;
