@@ -182,6 +182,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     pos = (nl >= 0) ? nl + 1 : (int)t.length() + 1;
     line.trim();
     if (!line.length()) continue;  // 跳过空行（段首空行曾导致 +CMT 漏判）
+    m.lastActivityMs = millis();   // 任意模组上报都算"活跃"，用于抑制心跳探活
 
     // 等待中的 PDU 行优先归属上一条 +CMT
     if (m.waitingPdu) {
@@ -196,14 +197,52 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
       continue;
     }
 
-    // 运行时通信模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化
+    // 运行时通信模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化。
+    // 注意：+CPIN: READY 已移出此处——SIM 插拔由下方 +CPIN: URC 处理，避免误判重启。
     if (m.initState == ModemInitState::kReady) {
-      if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY") ||
-          line == "+CPIN: READY") {
+      if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY")) {
         m.needReinit = true;
         consumed = true;
         continue;
       }
+    }
+
+    // 注册状态 URC（AT+CEREG=3 / AT+CREG=1 已开启主动上报）：仅在就绪态驱动展示与运营商刷新，
+    // 替代周期性 AT+CEREG?/CREG? 查询。模组状态变化即上报，无需轮询。
+    if (m.initState == ModemInitState::kReady) {
+      int stat = -1;
+      if (line.startsWith("+CEREG:"))     stat = parseRegStat(line, "+CEREG:");
+      else if (line.startsWith("+CREG:"))  stat = parseRegStat(line, "+CREG:");
+      if (stat >= 0) {
+        if (stat != m.lastRegStat) {        // 任意注册状态变化都刷新运营商（家网/漫游/搜网切换）
+          m.operRefreshPending = true;
+          m.lastRegStat = stat;
+        }
+        m.reg = regText(stat);
+        int commas = 0;
+        for (int k = 0; k < line.length(); k++) if (line[k] == ',') commas++;
+        if (commas >= 3) {                  // 含 act 字段时才取（否则末段是 stat 非 act）
+          int lc = line.lastIndexOf(',');
+          if (lc >= 0) m.act = (uint8_t)line.substring(lc + 1).toInt();
+        }
+        consumed = true;
+        continue;
+      }
+    }
+    // SIM 卡状态 URC（+CPIN: 在插拔/状态变化时主动上报）：替代周期性 AT+CPIN? 查询。
+    if (line.startsWith("+CPIN:")) {
+      if (line.indexOf("READY") >= 0) {
+        setSimReady(port, true);
+      } else {  // NOT INSERTED / SIM PIN / +CME ERROR 10 等：掉卡或失效
+        setSimReady(port, false);
+        if (!m.needReinit) {
+          m.needReinit = true;
+          _log.addf(LogLevel::kWarn, "sms", "通信模组 %u SIM 卡疑似拔出，重新初始化",
+                    (unsigned)port);
+        }
+      }
+      consumed = true;
+      continue;
     }
 
     if (line.startsWith("+CMT:")) {
@@ -1200,10 +1239,13 @@ void SmsService::startInit(uint8_t port) {
   m.initAttempts = 0;
   m.regAttempts = 0;
   m.failCount = 0;
-  // 重置遥测（重新初始化后从空开始采集）
+  // 重置遥测（重新初始化后从空开始采集；静态信息将在 kReady 时一次性重查并缓存）
   m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.act = 0; m.num = "";
   m.vendor = ""; m.model = ""; m.revision = ""; m.operCode = "";
-  m.simReady = false; m.nextTeleMs = 0; m.teleStep = 0;
+  m.simReady = false;
+  m.identityQueried = false; m.idStep = 0; m.nextIdMs = 0;
+  m.nextCsqMs = 0; m.nextOpsMs = 0;
+  m.lastRegStat = -1; m.operRefreshPending = false;
   // 清空来电检测状态（重新初始化：进行中的来电不再派发）
   m.callPending = false; m.callDispatch = false; m.callNumber = "";
   m.callClipWaitUntilMs = 0; m.callLastNotifyMs = 0;
@@ -1278,8 +1320,11 @@ void SmsService::pollInit(uint8_t port) {
     return;
   // 节流：就绪态心跳(30s)与遥测(4s)各有计时，取较早者决定本轮是否动作
   uint32_t nextAt = m.nextPollMs;
-  if (m.initState == ModemInitState::kReady && m.nextTeleMs && m.nextTeleMs < nextAt)
-    nextAt = m.nextTeleMs;
+  if (m.initState == ModemInitState::kReady) {
+    if (m.nextIdMs   && m.nextIdMs   < nextAt) nextAt = m.nextIdMs;
+    if (m.nextCsqMs  && m.nextCsqMs  < nextAt) nextAt = m.nextCsqMs;
+    if (m.nextOpsMs  && m.nextOpsMs  < nextAt) nextAt = m.nextOpsMs;
+  }
   if (now < nextAt) return;
 
   // 运行时重启检测（onUnsolicited 在就绪态置位）
@@ -1304,6 +1349,7 @@ void SmsService::pollInit(uint8_t port) {
     if (!_bridge.trySend(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf, to, type, r))
       return false;  // 端口忙
     resp = r.resp;
+    m.lastActivityMs = now;  // 任意模组响应都算"活跃"，用于抑制心跳探活
     return true;
   };
 
@@ -1345,7 +1391,7 @@ void SmsService::pollInit(uint8_t port) {
     case ModemInitState::kWaitAt: {
       if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;  // 忙：跳过本轮
       if (resp.indexOf("OK") >= 0) {
-        m.lastOkMs = now;
+        m.lastActivityMs = now;
         m.failCount = 0;
         m.initState = ModemInitState::kWaitCpin;
         m.initAttempts = 0;
@@ -1425,7 +1471,7 @@ void SmsService::pollInit(uint8_t port) {
       // 逐条下发（每条 tick 一条，节流），避免一次性持端口锁过久
       static const char *kCmds[] = {
           "AT+COPS=0", "AT+CEREG=3", "AT+CGDCONT=1,\"IP\",\"\"",
-          "AT+CNMI=2,2,0,0,0", "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1"};
+          "AT+CNMI=2,2,0,0,0", "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
       if (m.configStep == 1) {
         // CEREG=3 失败降级到 =2（部分 2G 通信模组不支持带原因的注册上报）
         if (at("AT+CEREG=3", cfg::kSmsCmdTimeoutMs)) {
@@ -1441,8 +1487,17 @@ void SmsService::pollInit(uint8_t port) {
         m.initState = ModemInitState::kReady;
         m.failCount = 0;
         m.everReady = true;  // 此后 SIM 掉卡/插卡才算「运行时事件」
-        m.lastOkMs = now;
+        m.lastActivityMs = now;
         m.nextPollMs = now + cfg::kModemLivenessMs;
+        // 启动一次性静态采集（IMEI/号码/厂商/型号/版本/运营商），并初始化动态遥测计时。
+        // 注册/CPIN 改由 URC 主动上报（见 onUnsolicited），不再周期性轮询。
+        m.identityQueried = false;
+        m.idStep = 0;
+        m.nextIdMs = now;
+        m.nextCsqMs = now;
+        m.nextOpsMs = now + 6000;     // 运营商慢刷兜底（注册跃迁 URC 也会触发）
+        m.lastRegStat = 1;            // 视为已注册：避免就绪后首条 URC 误触发运营商刷新
+        m.operRefreshPending = false;
         _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 就绪（PDU 模式 + 短信直投已配置）",
                   (unsigned)port);
         // 通知上层（如时间同步立即尝试 SIM NITZ）。回调运行于抽数任务上下文，
@@ -1455,17 +1510,19 @@ void SmsService::pollInit(uint8_t port) {
     }
 
     case ModemInitState::kReady: {
-      // 心跳探活（周期 30s）与遥测采集（周期 4s）相互独立：各自计时、各自推进，
-      // 端口忙（如正在发送短信）则整轮跳过，下一轮重试。
+      // 心跳探活（周期 30s）与遥测采集相互独立：各自计时；端口忙（如正在发送短信）则跳过本轮。
       bool liveDue = (now >= m.nextPollMs);
-      bool teleDue = (now >= m.nextTeleMs);
-      if (!liveDue && !teleDue) return;
+      if (!liveDue && m.identityQueried &&
+          now < m.nextCsqMs && now < m.nextOpsMs)
+        return;
 
-      // 心跳探活：连续失败判定通信模组掉线/重启，回到初始化重新配置
-      if (liveDue) {
+      // 心跳探活：仅当 kModemLivenessMs 内无任何「模组响应 / URC 上报」(lastActivityMs 过期)才发 AT；
+      // 平时 CSQ 轮询(15s)/注册·CPIN URC/任意命令响应都会刷新 lastActivityMs，心跳 AT 几乎不发。
+      // 连续失败判定通信模组掉线/重启，回到初始化重新配置。
+      if (now - m.lastActivityMs >= cfg::kModemLivenessMs) {
         if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;  // 忙（如正在发送短信）跳过
         if (resp.indexOf("OK") >= 0) {
-          m.lastOkMs = now;
+          m.lastActivityMs = now;     // 探活成功也算活动
           m.failCount = 0;
           m.nextPollMs = now + cfg::kModemLivenessMs;
         } else {
@@ -1481,134 +1538,138 @@ void SmsService::pollInit(uint8_t port) {
             m.nextPollMs = now + cfg::kModemLivenessMs;
           }
         }
+      } else {
+        // 近期有活动，跳过心跳；nextPollMs 顺延到活动过期时刻，避免空转唤醒
+        m.nextPollMs = m.lastActivityMs + cfg::kModemLivenessMs;
       }
 
-      // 遥测：每轮推进一步，轮流查询信号 / 运营商 / 注册 / IMEI
-      if (teleDue) {
-        m.nextTeleMs = now + cfg::kModemTeleMs;
-        switch (m.teleStep) {
-          case 0: {  // 信号质量 AT+CSQ
-            if (at("AT+CSQ", cfg::kSmsCmdTimeoutMs)) {
-              int i = resp.indexOf("+CSQ:");
-              if (i >= 0) {
-                String s = resp.substring(i + 5);
-                int c = s.indexOf(',');
-                if (c >= 0) s = s.substring(0, c);
-                s.trim();
-                int v = s.toInt();
-                m.csq = (v == 99 || v < 0) ? -1 : (int8_t)v;
+      // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商）：就绪(reinit)后仅执行一次，
+      // 写入 ModemState 永久缓存，不再进入周期轮询。分 tick 逐条下发（kModemIdStepMs 节流）。
+      if (!m.identityQueried) {
+        if (now >= m.nextIdMs) {
+          m.nextIdMs = now + cfg::kModemIdStepMs;
+          switch (m.idStep) {
+            case 0: {  // 通信模组 IMEI AT+CGSN
+              if (at("AT+CGSN", cfg::kSmsCmdTimeoutMs)) {
+                String s = resp; s.replace("\r", ""); s.replace("\n", "");
+                int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+                s.trim(); m.imei = s;
               }
+              break;
             }
-            break;
-          }
-          case 1: {  // 运营商 AT+COPS?
-            if (at("AT+COPS?", cfg::kSmsCmdTimeoutMs)) {
-              int i = resp.indexOf("+COPS:");
-              if (i >= 0) {
-                // +COPS: <mode>[,<format>[,<oper>]]；运营商是第三个字段
-                // （<format> 为 0/1/2，取错会拿到 "0" 而非真实运营商）
-                String seg = resp.substring(i + 6);   // 去掉 "+COPS:"
-                int c1 = seg.indexOf(',');
-                int c2 = (c1 >= 0) ? seg.indexOf(',', c1 + 1) : -1;
-                String op;
-                if (c2 >= 0) {
-                  int c3 = seg.indexOf(',', c2 + 1);
-                  op = seg.substring(c2 + 1, c3 >= 0 ? c3 : seg.length());
-                  op.replace("\"", "");
-                  op.trim();
-                } else {
-                  op = "";  // 未注册：无运营商字段
-                }
-                m.oper = op;
-                m.operCode = operCode(m.oper);
-              }
-            }
-            break;
-          }
-          case 2: {  // 网络注册 + 接入技术（优先 LTE CEREG，否则 CREG）
-            int stat = -1;
-            if (at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) stat = parseRegStat(resp, "+CEREG:");
-            if (stat < 0 && at("AT+CREG?", cfg::kSmsCmdTimeoutMs)) stat = parseRegStat(resp, "+CREG:");
-            m.reg = regText(stat);
-            if (stat >= 0) {
-              int commas = 0;
-              for (int k = 0; k < resp.length(); k++) if (resp[k] == ',') commas++;
-              if (commas >= 3) {  // 含 act 字段时才取（否则末段是 stat 非 act）
-                int lc = resp.lastIndexOf(',');
-                if (lc >= 0) m.act = (uint8_t)resp.substring(lc + 1).toInt();
-              }
-            }
-            break;
-          }
-          case 3: {  // 通信模组 IMEI AT+CGSN
-            if (at("AT+CGSN", cfg::kSmsCmdTimeoutMs)) {
-              String s = resp; s.replace("\r", ""); s.replace("\n", "");
-              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
-              s.trim(); m.imei = s;
-            }
-            break;
-          }
-          case 4: {  // 本机号码（SIM 号码）AT+CNUM，取第二个引号串（number）
-            if (at("AT+CNUM", cfg::kSmsCmdTimeoutMs)) {
-              int i = resp.indexOf("+CNUM:");
-              if (i >= 0) {
-                String seg = resp.substring(i + 6);
-                int q1 = seg.indexOf('"'), q2 = (q1 >= 0) ? seg.indexOf('"', q1 + 1) : -1;
-                int q3 = (q2 >= 0) ? seg.indexOf('"', q2 + 1) : -1;
-                int q4 = (q3 >= 0) ? seg.indexOf('"', q3 + 1) : -1;
-                if (q3 >= 0 && q4 > q3) m.num = seg.substring(q3 + 1, q4);
-                else m.num = "";
-              }
-            }
-            break;
-          }
-          case 5: {  // 通信模组厂商 AT+CGMI
-            if (at("AT+CGMI", cfg::kSmsCmdTimeoutMs)) {
-              String s = resp; s.replace("\r", ""); s.replace("\n", "");
-              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
-              s.trim(); m.vendor = s;
-            }
-            break;
-          }
-          case 6: {  // 通信模组型号 AT+CGMM（如 ML307A-DSLN）
-            if (at("AT+CGMM", cfg::kSmsCmdTimeoutMs)) {
-              String s = resp; s.replace("\r", ""); s.replace("\n", "");
-              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
-              s.trim(); m.model = s;
-            }
-            break;
-          }
-          case 7: {  // 通信模组版本/完整料号 AT+CGMR（常含后缀，如 ML307A-DSLN-MTSH1S00 或固件版本）
-            if (at("AT+CGMR", cfg::kSmsCmdTimeoutMs)) {
-              String s = resp; s.replace("\r", ""); s.replace("\n", "");
-              int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
-              s.trim(); m.revision = s;
-            }
-            break;
-          }
-          case 8: {  // SIM 卡在位检测 AT+CPIN?（运行时拔卡检测，约每 36s 一轮）
-            if (at("AT+CPIN?", cfg::kSmsCmdTimeoutMs)) {
-              if (resp.indexOf("+CPIN: READY") >= 0) {
-                setSimReady(port, true);
-              } else if (resp.indexOf("+CPIN:") >= 0 ||
-                         resp.indexOf("NOT INSERTED") >= 0 ||
-                         resp.indexOf("+CME ERROR: 10") >= 0) {
-                // 掉卡/卡失效：标记未就绪（触发「已拔出」通知）并重新初始化。
-                // 状态机经 kWaitCpin 确认后进故障态慢速重试；用户重新插卡后
-                // CPIN 恢复 READY，setSimReady 会补发「已插入」通知。
-                setSimReady(port, false);
-                if (!m.needReinit) {
-                  m.needReinit = true;
-                  _log.addf(LogLevel::kWarn, "sms", "通信模组 %u SIM 卡疑似拔出，重新初始化",
-                            (unsigned)port);
+            case 1: {  // 本机号码（SIM 号码）AT+CNUM，取第二个引号串（number）
+              if (at("AT+CNUM", cfg::kSmsCmdTimeoutMs)) {
+                int i = resp.indexOf("+CNUM:");
+                if (i >= 0) {
+                  String seg = resp.substring(i + 6);
+                  int q1 = seg.indexOf('"'), q2 = (q1 >= 0) ? seg.indexOf('"', q1 + 1) : -1;
+                  int q3 = (q2 >= 0) ? seg.indexOf('"', q2 + 1) : -1;
+                  int q4 = (q3 >= 0) ? seg.indexOf('"', q3 + 1) : -1;
+                  if (q3 >= 0 && q4 > q3) m.num = seg.substring(q3 + 1, q4);
+                  else m.num = "";
                 }
               }
+              break;
             }
-            break;
+            case 2: {  // 通信模组厂商 AT+CGMI
+              if (at("AT+CGMI", cfg::kSmsCmdTimeoutMs)) {
+                String s = resp; s.replace("\r", ""); s.replace("\n", "");
+                int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+                s.trim(); m.vendor = s;
+              }
+              break;
+            }
+            case 3: {  // 通信模组型号 AT+CGMM（如 ML307A-DSLN）
+              if (at("AT+CGMM", cfg::kSmsCmdTimeoutMs)) {
+                String s = resp; s.replace("\r", ""); s.replace("\n", "");
+                int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+                s.trim(); m.model = s;
+              }
+              break;
+            }
+            case 4: {  // 通信模组版本/完整料号 AT+CGMR（常含后缀如 -MTSH1S00 或固件版本）
+              if (at("AT+CGMR", cfg::kSmsCmdTimeoutMs)) {
+                String s = resp; s.replace("\r", ""); s.replace("\n", "");
+                int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
+                s.trim(); m.revision = s;
+              }
+              break;
+            }
+            case 5: {  // 运营商 AT+COPS?（首次就绪采集；之后仅在注册跃迁/慢刷时刷新）
+              if (at("AT+COPS?", cfg::kSmsCmdTimeoutMs)) {
+                int i = resp.indexOf("+COPS:");
+                if (i >= 0) {
+                  String seg = resp.substring(i + 6);   // 去掉 "+COPS:"
+                  int c1 = seg.indexOf(',');
+                  int c2 = (c1 >= 0) ? seg.indexOf(',', c1 + 1) : -1;
+                  String op;
+                  if (c2 >= 0) {
+                    int c3 = seg.indexOf(',', c2 + 1);
+                    op = seg.substring(c2 + 1, c3 >= 0 ? c3 : seg.length());
+                    op.replace("\"", "");
+                    op.trim();
+                  } else {
+                    op = "";  // 未注册：无运营商字段
+                  }
+                  m.oper = op;
+                  m.operCode = operCode(m.oper);
+                }
+              }
+              break;
+            }
+          }
+          m.idStep++;
+          if (m.idStep >= 6) m.identityQueried = true;
+        }
+        return;  // 静态采集完成前不跑动态轮询，避免重复/竞争
+      }
+
+      // 动态遥测：仅轮询真正变化的数据，各查询独立计时；每 tick 至多一条（避免持锁过久）。
+      // 信号质量 AT+CSQ
+      if (now >= m.nextCsqMs) {
+        m.nextCsqMs = now + cfg::kTeleCsqMs;
+        if (at("AT+CSQ", cfg::kSmsCmdTimeoutMs)) {
+          int i = resp.indexOf("+CSQ:");
+          if (i >= 0) {
+            String s = resp.substring(i + 5);
+            int c = s.indexOf(',');
+            if (c >= 0) s = s.substring(0, c);
+            s.trim();
+            int v = s.toInt();
+            m.csq = (v == 99 || v < 0) ? -1 : (int8_t)v;
           }
         }
-        m.teleStep = (m.teleStep + 1) % 9;
+        return;
       }
+      // 网络注册状态：已由 onUnsolicited 处理 +CEREG:/+CREG: URC 主动上报并刷新 m.reg/act，
+      // 不再周期性轮询 AT+CEREG?/CREG?（仅在注册状态变化时更新，省去固定查询）。
+      // 运营商 AT+COPS?：注册跃迁触发刷新，或慢刷兜底（kTeleOpsMs）。端口忙则保持 pending 重试。
+      if (m.operRefreshPending || now >= m.nextOpsMs) {
+        if (at("AT+COPS?", cfg::kSmsCmdTimeoutMs)) {
+          m.nextOpsMs = now + cfg::kTeleOpsMs;
+          m.operRefreshPending = false;
+          int i = resp.indexOf("+COPS:");
+          if (i >= 0) {
+            String seg = resp.substring(i + 6);   // 去掉 "+COPS:"
+            int c1 = seg.indexOf(',');
+            int c2 = (c1 >= 0) ? seg.indexOf(',', c1 + 1) : -1;
+            String op;
+            if (c2 >= 0) {
+              int c3 = seg.indexOf(',', c2 + 1);
+              op = seg.substring(c2 + 1, c3 >= 0 ? c3 : seg.length());
+              op.replace("\"", "");
+              op.trim();
+            } else {
+              op = "";  // 未注册：无运营商字段
+            }
+            m.oper = op;
+            m.operCode = operCode(m.oper);
+          }
+        }
+        return;
+      }
+      // SIM 卡在位：已由 onUnsolicited 处理 +CPIN: URC 主动上报并调用 setSimReady，
+      // 不再周期性轮询 AT+CPIN?（拔卡时模组主动上报，必要时由心跳探活兜底重初始化）。
       return;
     }
 

@@ -247,7 +247,7 @@ class SmsService {
     uint8_t configStep = 0;    // 配置逐条下发索引（kPowerOn 时复用为阶段）
     uint8_t failCount = 0;     // 心跳/就绪后连续失败计数
     uint32_t nextPollMs = 0;   // 下次动作时间（节流，避免 AT 风暴）
-    uint32_t lastOkMs = 0;     // 上次 AT 成功响应时间（探活/诊断用）
+    uint32_t lastActivityMs = 0;  // 上次模组有活动(响应/URC 上报)的时刻；心跳仅在其过期(30s)时才发 AT
     uint32_t lastSendMs = 0;   // 上次发送短信时间（发送窗口内 pollInit 让行，避免干扰 CMGS 握手）
     bool needReinit = false;   // 运行时检测到通信模组重启 -> 重新开始初始化
     bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
@@ -274,8 +274,15 @@ class SmsService {
     String  model;             // 通信模组型号（AT+CGMM，如 ML307A-DSLN）
     String  revision;          // 通信模组版本/完整料号（AT+CGMR，常含后缀如 -MTSH1S00 或固件版本）
     String  operCode;          // 运营商短代码（CMCC/CUCC/CTCC/CBN，由 AT+COPS 解析）
-    uint32_t nextTeleMs = 0;   // 下次遥测查询时间（独立于心跳，节流）
-    uint8_t  teleStep = 0;     // 遥测轮询步骤（0 CSQ / 1 COPS / 2 CEREG / 3 CGSN）
+    // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商）：就绪(reinit)后仅执行一次并永久缓存
+    bool     identityQueried = false;  // 静态信息是否已采集并缓存
+    uint8_t  idStep = 0;               // 静态采集步骤（0 IMEI / 1 CNUM / 2 CGMI / 3 CGMM / 4 CGMR / 5 COPS）
+    uint32_t nextIdMs = 0;             // 下条静态采集命令时间（节流）
+    // 动态遥测：仅轮询真正变化的数据，各查询独立计时（每 tick 至多一条，避免持锁过久）
+    uint32_t nextCsqMs = 0;            // AT+CSQ 下次查询时间
+    uint32_t nextOpsMs = 0;            // AT+COPS? 下次查询时间（运营商，注册跃迁 URC 触发刷新）
+    int8_t   lastRegStat = -1;         // 上次注册 stat，用于检测「未注册↔已注册」跃迁以刷新运营商
+    bool     operRefreshPending = false; // 注册跃迁触发运营商刷新（成功后清除）
   };
 
   // 启用/禁用后启动/停止异步初始化（状态机交由 tick 驱动）

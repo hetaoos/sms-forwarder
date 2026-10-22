@@ -307,7 +307,10 @@ constexpr uint32_t kModemConfigStepMs = 400;   // 配置逐条下发间隔（避
 constexpr uint32_t kModemLivenessMs = 30000;   // 就绪后心跳间隔（探活）
 constexpr uint8_t  kModemLivenessMaxFail = 3;  // 连续心跳失败转重初始化
 constexpr uint32_t kModemFaultRetryMs = 15000; // 故障态重试间隔
-constexpr uint32_t kModemTeleMs = 4000;        // 就绪后遥测轮询周期（信号/运营商/注册/IMEI）
+// 就绪后动态遥测：各查询独立计时，仅轮询真正变化的数据（静态信息见 kReady 一次性采集）
+constexpr uint32_t kModemIdStepMs = 300;       // 一次性静态采集逐条下发间隔（避免持锁过久）
+constexpr uint32_t kTeleCsqMs  = 15000;        // 信号质量 AT+CSQ 轮询间隔（注册/CPIN 改由 URC 主动上报）
+constexpr uint32_t kTeleOpsMs  = 300000;       // 运营商 AT+COPS? 慢刷兜底（注册状态跃迁 URC 触发刷新）
 // 通信模组硬复位（EN 引脚）：-1 表示不控制（沿用通信模组自身上电时序）
 constexpr int8_t   kModemEnPin1 = -1;
 constexpr int8_t   kModemEnPin2 = -1;
