@@ -73,9 +73,11 @@ enum : uint8_t {
 struct RowDef {
   const char *icon;
   const char *label;
+  bool scroll = false;  // 值过长时横向滚动（跑马灯）而非省略号截断
 };
 constexpr RowDef kStatusRowDef[kStatusRowCnt] = {
-    {UI_ICON_WIFI, "WIFI"},        // 已连：SSID；AP：热点名
+    // WIFI 的值可能是很长的 SSID / AP 热点名，截断就看不全了，让它滚动
+    {UI_ICON_WIFI, "WIFI", true},  // 已连：SSID；AP：热点名
     {UI_ICON_INFO, "密码"},        // AP 时才显示（开放热点）
     {UI_ICON_GLOBE, "IP"},
     {UI_ICON_SIGNAL, "RSSI"},
@@ -329,10 +331,12 @@ void Ui::buildStatus() {
     lv_obj_t *nm = newLabel(row, 1, C_LABEL, kStatusRowDef[i].label, LV_TEXT_ALIGN_LEFT);
     lv_obj_set_width(nm, kLabelW);
     // 值由 statusUpdate 填充，这里先留空，保证首帧一定被判定为“有变化”；
-    // 超长值（SSID / MAC / 运营商）以省略号截断，不撑破行
+    // 超长值（SSID / MAC / 运营商）默认以省略号截断，标了 scroll 的行（WIFI）
+    // 走横向滚动，不撑破行
     _stValue[i] = newLabel(row, 1, C_TEXT, "", LV_TEXT_ALIGN_RIGHT);
     lv_obj_set_flex_grow(_stValue[i], 1);
-    lv_label_set_long_mode(_stValue[i], LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_long_mode(_stValue[i], kStatusRowDef[i].scroll ? LV_LABEL_LONG_MODE_SCROLL
+                                                               : LV_LABEL_LONG_MODE_DOTS);
   }
 }
 
