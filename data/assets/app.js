@@ -511,7 +511,7 @@ async function loadUser() {
     const r = await fetch('/api/session');
     if (r.ok) { const j = await r.json(); currentUser = j.user || 'admin'; }
   } catch (e) {}
-  $('#userChip').innerHTML = '<i></i>' + escHtml(currentUser);
+  $('#userChip').textContent = currentUser;
 }
 
 async function logout() {
@@ -558,6 +558,8 @@ async function bootstrap() {
   renderShell();
   await loadUser();
   $('#logoutBtn').addEventListener('click', logout);
+  // 右上角用户名：点击前往系统设置（管理账号 / 修改密码）
+  $('#userChip').addEventListener('click', () => { location.hash = '#/settings'; });
   $('#menuBtn').addEventListener('click', openSidebar);
   $('#mask').addEventListener('click', closeSidebar);
   // 主题：按钮交互 + 同步图标/文案（data-theme 已由 head early script 抢先设置）

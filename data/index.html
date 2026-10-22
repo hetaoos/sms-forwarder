@@ -42,7 +42,8 @@
              不使用 Alpine 绑定：Alpine.start() 以微任务先于 defer 的 app.js 执行，
              彼时 store 尚未注册、绑定会失效，故由 app.js renderConnDot() 驱动 -->
         <i class="conn" id="connDot"></i>
-        <span class="chip" id="userChip"></span>
+        <!-- 用户名：点击跳转系统设置（管理账号 / 密码修改） -->
+        <button class="chip chip-link" id="userChip" type="button" title="系统设置"></button>
         <button class="btn ghost sm" id="logoutBtn">退出登录</button>
       </div>
     </header>
