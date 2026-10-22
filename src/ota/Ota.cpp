@@ -10,6 +10,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include "log/LogStore.h"     // devLog() —— 当前项目全局日志环（替代参考项目的 logger.h）
+#include "app/Config.h"        // cfg::kPartLabelSpiffs：分区 label 统一常量
 #include "utils/HttpSession.h"
 #include "utils/TlsTurn.h"
 #include <ArduinoJson.h>
@@ -58,12 +59,16 @@ bool otaPartitionAvailable() {
     return esp_ota_get_next_update_partition(nullptr) != nullptr;
 }
 
-// ── 查找 LittleFS 所在的数据分区 ───────────────────────────────────
-// Arduino 的 LittleFS 仍挂在 subtype=spiffs 的分区上，故按 spiffs 子类型查找。
-// 找不到时返回 nullptr（调用方各自决定是跳过还是报错）。
+// ── 查找 LittleFS 资源（Web UI）分区 ───────────────────────────────
+// ⚠️ 必须按 label "spiffs" 精确匹配，不能传 nullptr 取「地址最小的
+// data/spiffs」分区。分区表里 userdata 与 spiffs 同为 subtype=spiffs，而
+// userdata 地址（0x820000）排在 spiffs（0xD20000）之前，传 nullptr 会把
+// userdata 误当成 Web UI 分区一并擦除 —— 而 userdata 正是短信存储所在
+// （/data/sms），于是「升级固件 → 短信全丢」。WebPanel 用 LittleFS.begin(true)
+// 的默认 label "spiffs" 挂载的也是这个分区，两步必须指向同一目标。
 static const esp_partition_t* findFsPartition() {
     return esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, cfg::kPartLabelSpiffs);
 }
 
 // ── Ota::version ────────────────────────────────────────

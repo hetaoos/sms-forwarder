@@ -85,6 +85,16 @@ constexpr const char *kNvsNamespaceCoredump = "coredump";  // 独立命名空间
 constexpr const char *kNvsKeyCdCrashTs  = "cdCrashTs";   // 上次崩溃时间戳（纪元秒）
 constexpr const char *kNvsKeyCdCrashVer = "cdCrashVer";  // 上次崩溃时固件版本（Release tag）
 
+// ---------------- 分区表 label ----------------
+// 分区表（partitions/esp32s3_16mb.csv）中各分区的 label。
+// 多个 data 分区 subtype 同为 spiffs（userdata / spiffs），按 label 查找分区时
+// 必须传精确 label，严禁传 nullptr（会返回地址最小的 userdata，误把短信分区当
+// Web UI 分区擦除，导致升级后短信全丢，见 ota/Ota.cpp）。所有按 label 查找 /
+// 挂载分区的地方统一引用此处常量，禁止再硬编码字符串。
+constexpr const char *kPartLabelSpiffs   = "spiffs";    // Web UI 资源分区（LittleFS 镜像）
+constexpr const char *kPartLabelUserdata = "userdata";  // 用户数据分区（短信等，挂载 /data）
+constexpr const char *kPartLabelCoredump = "coredump";  // 崩溃转储分区（按 subtype 查找，label 仅供参考）
+
 // ---------------- SMTP 邮件通知（参考 esp32-sms-forwarding）----------------
 // 通知类型位掩码：每个位代表一类「会单独发一封 HTML 邮件」的事件。
 // 关闭后该事件不再发邮件，短信存储 / SSE / Web 等其余功能不受影响。

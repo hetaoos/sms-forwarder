@@ -226,8 +226,10 @@ WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
   loadApiToken();     // 载入 API 令牌配置（NVS，默认关闭）
-  // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404
-  if (!LittleFS.begin(true)) {
+  // 挂载失败时格式化一次重试；仍失败则仅 API 可用，页面返回 404。
+  // 显式指定 label（与 ota/Ota.cpp 的 findFsPartition 同源宏），避免依赖
+  // LittleFS 库默认 label；base_path "/littlefs" 为库默认值，保持现状。
+  if (!LittleFS.begin(true, "/littlefs", 10, cfg::kPartLabelSpiffs)) {
     _log.addf(LogLevel::kError, "http", "LittleFS 挂载失败，网页不可用");
   } else {
     _log.addf(LogLevel::kInfo, "http", "LittleFS 已挂载");

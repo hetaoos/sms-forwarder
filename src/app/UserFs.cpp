@@ -1,5 +1,6 @@
 #include "app/UserFs.h"
 
+#include "app/Config.h"       // cfg::kPartLabelUserdata：分区 label 统一常量
 #include "log/LogStore.h"
 
 #include <LittleFS.h>
@@ -24,11 +25,11 @@ bool begin() {
   if (g_mounted) return true;
   // formatOnFail=true 只在注册返回 ESP_FAIL（分区存在但无有效 FS）时自动格式化；
   // 若仍失败（如全新分区首挂偶发失败），再显式格式化重试一次兜底。
-  g_mounted = g_fs.begin(true, "/data", 10, "userdata");
+  g_mounted = g_fs.begin(true, "/data", 10, cfg::kPartLabelUserdata);
   if (!g_mounted) {
     _log.addf(LogLevel::kWarn, "fs", "userdata 挂载失败，正在格式化并重试");
     if (g_fs.format()) {
-      g_mounted = g_fs.begin(false, "/data", 10, "userdata");
+      g_mounted = g_fs.begin(false, "/data", 10, cfg::kPartLabelUserdata);
     }
   }
   if (g_mounted) {
@@ -60,7 +61,7 @@ bool format() {
     g_mounted = false;
   }
   bool ok = g_fs.format();
-  if (ok) g_mounted = g_fs.begin(true, "/data", 10, "userdata");
+  if (ok) g_mounted = g_fs.begin(true, "/data", 10, cfg::kPartLabelUserdata);
   _log.addf(LogLevel::kInfo, "fs", ok ? "userdata 已格式化并重新挂载"
                                       : "userdata 格式化失败");
   return g_mounted;
