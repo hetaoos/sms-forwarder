@@ -110,6 +110,41 @@ def sha256(path):
     return h.hexdigest()
 
 
+def _dir_has_files(d):
+    if not os.path.isdir(d):
+        return False
+    for _root, _dirs, _files in os.walk(d):
+        if _files:
+            return True
+    return False
+
+
+def ensure_data():
+    """CNB 默认用部分/浅克隆，data/ 的 blob 可能没物化到工作树（导致 data/ 为空、
+    LittleFS 镜像缺 Web UI）。这里在构建前显式从 git 还原 data/，触发缺失 blob 的
+    拉取与写入。失败不致命：uploadfs_gz.py 在 buildfs 阶段还有「从 git 对象库提取」
+    的兜底，二者同源（都依赖 git 对象可达）。
+    """
+    data_dir = os.path.join(ROOT, "data")
+    if _dir_has_files(data_dir):
+        return
+    print("[build_release] 工作树 data/ 为空，尝试 git 物化")
+    for cmd in (["git", "checkout", "--", "data"],
+                ["git", "restore", "--source=HEAD", "--worktree", "--", "data"]):
+        try:
+            subprocess.run(cmd, cwd=ROOT, check=False,
+                           capture_output=True, text=True)
+        except Exception as e:
+            print("[build_release] %s 异常: %s" % (" ".join(cmd), e))
+        if _dir_has_files(data_dir):
+            break
+    if _dir_has_files(data_dir):
+        print("[build_release] ✅ data/ 已物化")
+    else:
+        print("[build_release] ⚠️ git 物化 data/ 未成功，"
+              "将依赖 uploadfs_gz 的 git 提取兜底")
+
+
 def build_platform(platform, tag, skip_build=False):
     cfg = PLATFORMS[platform]
     env = cfg["pio_env"]
@@ -117,6 +152,7 @@ def build_platform(platform, tag, skip_build=False):
     os.makedirs(DIST, exist_ok=True)
 
     if not skip_build:
+        ensure_data()
         force_rebuild()
         run(["pio", "run", "-e", env])
 
