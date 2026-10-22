@@ -948,21 +948,29 @@ bool SmsService::pingHost(uint8_t port, const String &hostIn, String &report) {
   if (!host.length()) host = "8.8.8.8";
 
   String err;
-  // 1) 尽力激活 PDP 上下文（已激活则很快返回 OK）；失败不阻断，交给 CGPING 自行报错
+  // 1) 尽力激活 PDP 上下文（已激活则很快返回 OK）；失败不阻断，交给 MPING 自行报错
   static constexpr uint32_t kCgactTimeoutMs = 15000;
   sendAt(port, cfg::kUartBaud, "AT+CGACT=1,1", SerialBridge::kCrlf,
          kCgactTimeoutMs, err);
-  // 2) 发起 ping（默认 4 次，超时取较长值）
-  SerialBridge::Result r = sendAt(port, cfg::kUartBaud, "AT+CGPING=\"" + host + "\"",
+  // 2) 发起 ping：AT+MPING=<host>,<count>,<timeout>,<size>,<ttl>
+  //    参数范围（AT+MPING=?）：count(1-60) timeout(1-65535) size(1-1400) ttl(1-15)
+  static constexpr int kMpingCount = 4;
+  static constexpr int kMpingTimeoutMs = 10000;
+  static constexpr int kMpingSize = 32;
+  static constexpr int kMpingTtl = 15;  // 受模组 ttl 上限(1-15)约束
+  String cmd = "AT+MPING=\"" + host + "\"," + String(kMpingCount) + "," +
+               String(kMpingTimeoutMs) + "," + String(kMpingSize) + "," +
+               String(kMpingTtl);
+  SerialBridge::Result r = sendAt(port, cfg::kUartBaud, cmd,
                                   SerialBridge::kCrlf, cfg::kSmsSendTimeoutMs, err);
   const String &resp = r.resp;
 
   // 无回显：可能模块不支持 / 数据未开通 / 上下文失败
-  if (resp.indexOf("+CGPING:") < 0) {
+  if (resp.indexOf("+MPING:") < 0) {
     String reason;
     if (resp.indexOf("ERROR") >= 0) reason = "模块返回 ERROR";
     else if (resp.indexOf("NO CARRIER") >= 0) reason = "NO CARRIER";
-    else if (resp.indexOf("OK") >= 0) reason = "模块无 CGPING 回显（可能不支持）";
+    else if (resp.indexOf("OK") >= 0) reason = "模块无 MPING 回显（可能不支持）";
     else reason = "无响应";
     report = "PING " + host + " 失败：" + reason;
     String raw = resp;
@@ -973,20 +981,21 @@ bool SmsService::pingHost(uint8_t port, const String &hostIn, String &report) {
     return false;
   }
 
-  // 容错解析 +CGPING:（不同模组格式略有差异）：
+  // 容错解析 +MPING:（不同模组格式略有差异）：
   //  - 汇总行（UNISOC/部分模组）：<sent>,<recv>,<lost>,<min>,<avg>,<max>
   //  - 逐跳行（SIMCOM）：<idx>,<result>,<rtt>，result==0 视为成功
+  static const String kMpingPrefix = "+MPING:";
   int sent = 0, recv = 0, lost = 0;
   long rttMin = -1, rttAvg = 0, rttMax = -1;
   bool haveSummary = false;
 
   int pos = 0;
   while (true) {
-    int idx = resp.indexOf("+CGPING:", pos);
+    int idx = resp.indexOf(kMpingPrefix, pos);
     if (idx < 0) break;
     int eol = resp.indexOf('\n', idx);
     if (eol < 0) eol = resp.length();
-    String line = resp.substring(idx + 9, eol);  // 跳过 "+CGPING:"
+    String line = resp.substring(idx + kMpingPrefix.length(), eol);  // 跳过 "+MPING:"
     line.trim();
     int commas = 0;
     for (size_t i = 0; i < line.length(); i++) if (line[i] == ',') commas++;
