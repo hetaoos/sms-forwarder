@@ -248,6 +248,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     if (line.startsWith("+CMT:")) {
       // PDU 可能在同段后续行，也可能在下一段（头/PDU 跨 flush 时）
       m.waitingPdu = true;
+      { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 收短信延长暂停窗口
       consumed = true;
       continue;
     }
@@ -478,11 +479,11 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   // 推进参考号（跳过 0：库要求非零）
   if (++m.csmsRef == 0) m.csmsRef = 1;
 
-  // 逐段发送，任一失败即中止；发送期间持续刷新 lastSendMs 让初始化轮询让行
-  m.lastSendMs = millis();
+  // 逐段发送，任一失败即中止；发送期间持续延长 cmdPauseUntil 令后台指令让行
+  { uint32_t u = millis() + cfg::kSmsSendPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }
   for (int i = 0; i < n; i++) {
     if (!sendPduPart(port, parts[i], err)) return 0;
-    m.lastSendMs = millis();
+    { uint32_t u = millis() + cfg::kSmsSendPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }
   }
 
   // 入库（发出记录）
@@ -515,7 +516,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
 // ---------------- 串口调试 ----------------
 // 经短信通信模组发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
 // 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
-// 置 lastSendMs 令 pollInit 让行，避免与心跳 AT 互相干扰。通信模组就绪后自动还原
+// 发送前延长 cmdPauseUntil 令 pollInit 让行，避免与后台查询 AT 互相干扰。通信模组就绪后自动还原
 // CMGF=0 / CNMI=2,2，使控制台任意 AT（如切到文本模式、关直投、关射频）都不会
 // 让短信收发永久失效——这是与原"直接 _bridge.send 绕过短信通信模组"最关键的区别。
 SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
@@ -527,7 +528,7 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
     return empty;
   }
   ModemState &m = _modems[port];
-  m.lastSendMs = millis();  // 令初始化/心跳轮询在此期间让行
+  { uint32_t u = millis() + cfg::kSmsSendPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 用户命令期间令后台指令让行
   // 用户主动命令（Web 控制台）：以 kCmd 类型记入 AT 历史，供控制台展示
   SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs,
                                         AtHistory::Type::kCmd);
@@ -1244,8 +1245,8 @@ void SmsService::startInit(uint8_t port) {
   m.vendor = ""; m.model = ""; m.revision = ""; m.operCode = "";
   m.simReady = false;
   m.identityQueried = false; m.idStep = 0; m.nextIdMs = 0;
-  m.nextCsqMs = 0; m.nextOpsMs = 0;
-  m.lastRegStat = -1; m.operRefreshPending = false;
+  m.nextCsqMs = 0; m.nextOpsMs = 0; m.cmdPauseUntil = 0;
+  m.lastRegStat = -1; m.operRefreshPending = false; m.regSynced = false;
   // 清空来电检测状态（重新初始化：进行中的来电不再派发）
   m.callPending = false; m.callDispatch = false; m.callNumber = "";
   m.callClipWaitUntilMs = 0; m.callLastNotifyMs = 0;
@@ -1314,10 +1315,10 @@ void SmsService::pollInit(uint8_t port) {
   uint32_t now = millis();
   // 发送窗口内让行：避免心跳/初始化 AT 在多段发送的两个段之间（端口锁短暂释放）
   // 插入，破坏正在进行的 CMGS 握手。窗口覆盖整段发送（等 > 5s + PDU 响应 30s），
-  // 之后恢复。仅在确有发送记录（lastSendMs != 0）时生效，避免开机 0 值误判。
-  if (m.lastSendMs != 0 &&
-      (now - m.lastSendMs) < cfg::kSmsCmgsPromptMs + cfg::kSmsSendTimeoutMs + 3000)
-    return;
+  // 暂停其他后台指令窗口：短信发送前标记、每收到短信延长（见 sendSms/sendAt/onUnsolicited/handleCmt）。
+  // 窗口内 pollInit 整体让行——心跳/遥测(CSQ/COPS)/重初始化均暂停，避免与短信收发交织。
+  // cmdPauseUntil 为绝对时刻，0 表示无暂停（开机初值为 0，不会误触发）。
+  if (now < m.cmdPauseUntil) return;
   // 节流：就绪态心跳(30s)与遥测(4s)各有计时，取较早者决定本轮是否动作
   uint32_t nextAt = m.nextPollMs;
   if (m.initState == ModemInitState::kReady) {
@@ -1496,7 +1497,7 @@ void SmsService::pollInit(uint8_t port) {
         m.nextIdMs = now;
         m.nextCsqMs = now;
         m.nextOpsMs = now + 6000;     // 运营商慢刷兜底（注册跃迁 URC 也会触发）
-        m.lastRegStat = 1;            // 视为已注册：避免就绪后首条 URC 误触发运营商刷新
+        // 注册状态初值不在此硬置；就绪后由一次性 AT+CEREG? 同步（见下方遥测），避免误判
         m.operRefreshPending = false;
         _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 就绪（PDU 模式 + 短信直投已配置）",
                   (unsigned)port);
@@ -1624,6 +1625,25 @@ void SmsService::pollInit(uint8_t port) {
         return;  // 静态采集完成前不跑动态轮询，避免重复/竞争
       }
 
+      // 初始注册状态同步（一次性）：设置 CEREG=3/CREG=1 后模组不会主动回送当前状态，
+      // 注册 URC 仅在状态变化时上报；故显式查询一次填充 m.reg/m.act，之后由 URC 增量维护。
+      // 端口忙（at 返回 false）则保持 regSynced=false，下个 tick 重试。
+      if (!m.regSynced) {
+        int st = -1;
+        if (at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) {
+          st = parseRegStat(resp, "+CEREG:");
+          if (st < 0 && at("AT+CREG?", cfg::kSmsCmdTimeoutMs))
+            st = parseRegStat(resp, "+CREG:");
+        }
+        if (st >= 0) {
+          m.lastRegStat = st;
+          m.reg = regText(st);
+          int commas = 0; for (int k = 0; k < resp.length(); k++) if (resp[k] == ',') commas++;
+          if (commas >= 3) { int lc = resp.lastIndexOf(','); if (lc >= 0) m.act = (uint8_t)resp.substring(lc + 1).toInt(); }
+          m.regSynced = true;
+        }
+      }
+
       // 动态遥测：仅轮询真正变化的数据，各查询独立计时；每 tick 至多一条（避免持锁过久）。
       // 信号质量 AT+CSQ
       if (now >= m.nextCsqMs) {
@@ -1708,6 +1728,8 @@ bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) 
 
 // 处理一条收到的 PDU
 void SmsService::handleCmt(uint8_t port, const String &pduHex) {
+  ModemState &m = _modems[port];
+  { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 收短信处理延长暂停窗口
   String sender, ts, text;
   int concat[3] = {0, 0, 0};
   if (!_codec.decode(pduHex, sender, ts, text, concat)) {

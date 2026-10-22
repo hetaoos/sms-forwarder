@@ -248,7 +248,7 @@ class SmsService {
     uint8_t failCount = 0;     // 心跳/就绪后连续失败计数
     uint32_t nextPollMs = 0;   // 下次动作时间（节流，避免 AT 风暴）
     uint32_t lastActivityMs = 0;  // 上次模组有活动(响应/URC 上报)的时刻；心跳仅在其过期(30s)时才发 AT
-    uint32_t lastSendMs = 0;   // 上次发送短信时间（发送窗口内 pollInit 让行，避免干扰 CMGS 握手）
+    uint32_t cmdPauseUntil = 0;  // 暂停其他后台指令的绝对时刻；短信发送前标记、每收到短信延长（见使用处）
     bool needReinit = false;   // 运行时检测到通信模组重启 -> 重新开始初始化
     bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
     bool simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
@@ -283,6 +283,7 @@ class SmsService {
     uint32_t nextOpsMs = 0;            // AT+COPS? 下次查询时间（运营商，注册跃迁 URC 触发刷新）
     int8_t   lastRegStat = -1;         // 上次注册 stat，用于检测「未注册↔已注册」跃迁以刷新运营商
     bool     operRefreshPending = false; // 注册跃迁触发运营商刷新（成功后清除）
+    bool     regSynced = false;        // 就绪后一次性 AT+CEREG? 同步是否完成（仅执行一次）
   };
 
   // 启用/禁用后启动/停止异步初始化（状态机交由 tick 驱动）

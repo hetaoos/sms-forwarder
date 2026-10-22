@@ -282,6 +282,8 @@ constexpr uint8_t kSmsConcatMaxParts = 20;    // 单条长短信最多分段
 constexpr uint32_t kSmsConcatTimeoutMs = 30000;  // 长短信重组超时（收到最后一段后 30s）
 constexpr uint32_t kSmsCmgsPromptMs = 5000;      // AT+CMGS= 后等 '>' 提示符的上限
 constexpr uint32_t kSmsSendTimeoutMs = 30000;     // 单段 CMGS 发送超时（PDU 响应收集上限）
+constexpr uint32_t kSmsRecvPauseMs = 2000;        // 收到短信后延长暂停窗口的量（避免与短信处理交织）
+constexpr uint32_t kSmsSendPauseMs = kSmsCmgsPromptMs + kSmsSendTimeoutMs + 3000;  // 短信发送期间暂停后台指令的窗口（覆盖整段 CMGS 握手）
 constexpr uint32_t kSmsCmdTimeoutMs = 1500;       // AT 配置类命令超时
 constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
 
