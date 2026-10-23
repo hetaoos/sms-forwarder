@@ -42,15 +42,14 @@ bool   MqttService::s_bootNotified    = false;
 bool   MqttService::s_pendingBoot     = false;
 QueueHandle_t MqttService::s_cmdQueue = nullptr;
 
-// TLS 通道守卫（仅 _useTls 时占用 4 通道之一；release 幂等，明文连接不占）
+// TLS 通道守卫（仅 usingTls() 时占用 4 通道之一；release 幂等，明文连接不占）
 TlsTurn MqttService::_tlsGuard;
 unsigned long MqttService::_mqttTlsNextTryMs = 0;
 
 // 配置（NVS: appcfg/mqtt）
 bool     MqttService::_enabled          = false;
 String   MqttService::_server;
-uint16_t MqttService::_port             = 1883;
-bool     MqttService::_useTls           = false;
+String   MqttService::_scheme           = "mqtt";
 String   MqttService::_user;
 String   MqttService::_pass;
 String   MqttService::_clientId;
@@ -458,9 +457,9 @@ void MqttService::buildClient() {
   if (!_enabled || s_client != nullptr) return;
   if (_server.length() == 0) return;
 
-  // 启用 TLS 时：从末尾槽申请一个 TLS 通道（长连接，避免占用临时通道的前部槽）。
+  // 启用 TLS 时（mqtts / wss）：从末尾槽申请一个 TLS 通道（长连接，避免占用临时通道的前部槽）。
   // 拿不到（4 通道全忙）则延后建连，下个 tick 重试（非阻塞，避免卡住主循环）。
-  if (_useTls) {
+  if (usingTls()) {
     unsigned long now = millis();
     if (now < _mqttTlsNextTryMs) return;
     _tlsGuard = TlsTurn("MQTT-TLS", 0, /*preferBack=*/true);
@@ -472,7 +471,8 @@ void MqttService::buildClient() {
     }
   }
 
-  // 规范 server：去除可能误带的协议前缀(mqtt://、mqtts://)、多余的 "//" 与行首 ":"
+  // 规范 host：去除可能误带的协议前缀（mqtt://、mqtts://、ws://、wss://）、
+  // 多余的 "//" 与行首 ":"；最终 URI 由下拉方案 + host 拼成
   String host = _server;
   host.trim();
   int schemeEnd = host.indexOf("://");
@@ -481,10 +481,12 @@ void MqttService::buildClient() {
   while (host.startsWith(":"))  host = host.substring(1);
   host.trim();
 
-  s_uri  = _useTls ? "mqtts://" : "mqtt://";
-  s_uri += host;
-  s_uri += ":";
-  s_uri += String(_port > 0 ? _port : 1883);
+  // 方案：去掉可能误带的 "://"，再拼成完整 URI（scheme 来自前端下拉）
+  String scheme = _scheme;
+  int ss = scheme.indexOf("://");
+  if (ss >= 0) scheme = scheme.substring(0, ss);
+  if (scheme.length() == 0) scheme = "mqtt";
+  s_uri  = scheme + "://" + host;
   if (_clientId.length() > 0) {
     s_cid = _clientId;
   } else {
@@ -520,7 +522,7 @@ void MqttService::buildClient() {
   mqtt_cfg.network.reconnect_timeout_ms = 5000;
   mqtt_cfg.buffer.size = 4096;            // 启动/状态消息含多字段 JSON，放大缓冲避免单帧超限
 
-  if (_useTls) {
+  if (usingTls()) {
     // 跳过对端证书校验（仅加密、不验证身份，存在中间人风险，仅适合可信局域网环境）
     mqtt_cfg.broker.verification.skip_cert_common_name_check = true;
     mqtt_cfg.broker.verification.crt_bundle_attach = mqttInsecureCertAttach;
@@ -535,14 +537,14 @@ void MqttService::buildClient() {
 
 void MqttService::destroyClient() {
   if (s_client == nullptr) {
-    _tlsGuard.release();  // 释放 TLS 通道（_useTls 时才占着，release 幂等）
+    _tlsGuard.release();  // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
     return;
   }
   esp_mqtt_client_stop(s_client);
   esp_mqtt_client_destroy(s_client);
   s_client = nullptr;
   s_connected = false;
-  _tlsGuard.release();    // 释放 TLS 通道（_useTls 时才占着，release 幂等）
+  _tlsGuard.release();    // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
 }
 
 // ── 对外接口 ───────────────────────────────────────────────
@@ -647,15 +649,18 @@ bool MqttService::notifyEnabled(uint32_t mask) const {
   return (_notifyTypes & mask) != 0;
 }
 
-bool MqttService::saveConfig(const String &server, uint16_t port, bool useTls,
+bool MqttService::saveConfig(const String &scheme, const String &server,
                             const String &user, const String &password,
                             const String &clientId, const String &topicPrefix,
                             uint16_t keepAlive, bool subscribeEnabled,
                             uint32_t notifyTypes, bool enabled) {
+  _scheme           = scheme;
+  _scheme.trim();
+  int ss = _scheme.indexOf("://");
+  if (ss >= 0) _scheme = _scheme.substring(0, ss);
+  if (_scheme.length() == 0) _scheme = "mqtt";
   _server           = server;
   _server.trim();
-  _port             = (port > 0 && port <= 65535) ? port : 1883;
-  _useTls           = useTls;
   _user             = user;
   _user.trim();
   if (password.length() > 0) _pass = password;  // 空串保持已保存的密码
@@ -682,9 +687,8 @@ String MqttService::configJson() const {
   doc["configured"] = isConfigured();
   doc["connected"]  = s_connected;   // 当前是否真正连上（实时，跨任务安全读取）
   doc["error"]      = s_lastError;   // 最近一次连接错误描述（空串=无错误）
+  doc["scheme"]     = _scheme;
   doc["server"]     = _server;
-  doc["port"]       = _port;
-  doc["useTls"]     = _useTls;
   doc["user"]       = _user;
   doc["hasPass"]    = _pass.length() > 0;
   doc["clientId"]   = _clientId;
@@ -699,9 +703,8 @@ String MqttService::configJson() const {
 
 void MqttService::exportTo(JsonObject &o) const {
   o["enabled"]          = _enabled;
+  o["scheme"]           = _scheme;
   o["server"]           = _server;
-  o["port"]             = _port;
-  o["useTls"]           = _useTls;
   o["user"]             = _user;
   o["pass"]             = _pass;            // 备份用，含密码
   o["clientId"]         = _clientId;
@@ -713,10 +716,9 @@ void MqttService::exportTo(JsonObject &o) const {
 
 bool MqttService::importFrom(const JsonObject &o) {
   _enabled  = o["enabled"] | _enabled;
+  _scheme   = o["scheme"] | _scheme;
+  if (_scheme.length() == 0) _scheme = "mqtt";
   _server   = o["server"] | _server;
-  int port  = o["port"] | (int)_port;
-  _port     = (port > 0 && port <= 65535) ? (uint16_t)port : _port;
-  _useTls   = o["useTls"] | _useTls;
   _user     = o["user"] | _user;
   if (o["pass"].is<const char *>()) _pass = o["pass"].as<String>();
   _clientId = o["clientId"] | _clientId;
@@ -749,10 +751,8 @@ bool MqttService::loadConfig() {
     return false;
   }
   _enabled          = doc["enabled"] | false;   // NVS 无该字段默认关闭
+  _scheme           = doc["scheme"] | "mqtt";
   _server           = doc["server"] | "";
-  int port          = doc["port"] | 1883;
-  _port             = (port > 0 && port <= 65535) ? (uint16_t)port : 1883;
-  _useTls           = doc["useTls"] | false;
   _user             = doc["user"] | "";
   _pass             = doc["pass"] | "";
   _clientId         = doc["clientId"] | "";
@@ -769,9 +769,8 @@ bool MqttService::persistConfig() {
   JsonDocument doc(psramJsonAllocator());
   doc["ver"]              = 1;
   doc["enabled"]          = _enabled;
+  doc["scheme"]           = _scheme;
   doc["server"]           = _server;
-  doc["port"]             = _port;
-  doc["useTls"]           = _useTls;
   doc["user"]             = _user;
   doc["pass"]             = _pass;
   doc["clientId"]         = _clientId;

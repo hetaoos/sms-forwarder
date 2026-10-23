@@ -95,6 +95,13 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["swVer"] = Ota::version();
   // 本机 MAC 地址（STA 接口，大写冒号分隔）
   doc["mac"] = WiFi.macAddress();
+  // 设备 ID（= 芯片 MAC 高 48 位，12 位十六进制；与 MQTT ClientID / 主题前缀一致）
+  {
+    uint64_t mac = ESP.getEfuseMac() >> 24;
+    char dbuf[13];
+    snprintf(dbuf, sizeof(dbuf), "%012llx", (unsigned long long)mac);
+    doc["deviceId"] = dbuf;
+  }
 
   // 今日短信统计（收/发），按本地日期（午夜为界）
   int recv = 0, sent = 0;

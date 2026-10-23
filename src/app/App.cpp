@@ -316,9 +316,11 @@ void App::collectStatus(StatusInfo &out) {
     out.mqttConn = MqttService::connected();
     out.mqttSub = MqttService::_subscribeEnabled;
     {
-      const String &srv = MqttService::_server;
-      snprintf(out.mqttServer, sizeof(out.mqttServer), "%s:%u",
-               srv.length() ? srv.c_str() : "-", (unsigned)MqttService::_port);
+      static String sMqttSrv;
+      sMqttSrv = MqttService::scheme() + "://" + MqttService::_server;
+      const char *src = sMqttSrv.length() ? sMqttSrv.c_str() : "-";
+      strncpy(out.mqttServer, src, sizeof(out.mqttServer) - 1);
+      out.mqttServer[sizeof(out.mqttServer) - 1] = '\0';
     }
     snprintf(out.mqttClient, sizeof(out.mqttClient), "%s",
              MqttService::deviceId().c_str());

@@ -1832,8 +1832,8 @@ function pageMqtt() {
     { bit: 65536, label: '运行日志实时推送', desc: '运行日志按 20 条/秒限流推送（默认关闭）' },
   ];
   return {
-    cfg: { server: '', port: 1883, user: '', pass: '', clientId: '',
-           topicPrefix: 'smsf', keepAlive: 60, useTls: false,
+    cfg: { scheme: 'mqtt', server: '', user: '', pass: '', clientId: '',
+           topicPrefix: 'smsf', keepAlive: 60,
            subscribeEnabled: true, notifyTypes: 15, enabled: false },
     configured: false,
     hasPass: false,
@@ -1846,6 +1846,11 @@ function pageMqtt() {
     get live() {
       const s = Alpine.store('live').status;
       return (s && s.mqtt) ? s.mqtt : null;
+    },
+    // 设备 ID（来自状态接口，= 芯片 MAC 高 48 位，与 MQTT ClientID / 主题前缀一致）
+    get deviceId() {
+      const s = Alpine.store('live').status;
+      return (s && s.deviceId) ? s.deviceId : '';
     },
     connEnabled() { const l = this.live; return l ? l.enabled : this.cfg.enabled; },
     connConfigured() { const l = this.live; return l ? l.configured : this.configured; },
@@ -1867,12 +1872,11 @@ function pageMqtt() {
         if (r.ok) {
           const j = await r.json();
           this.cfg.server = j.server || '';
-          this.cfg.port = j.port || 1883;
+          this.cfg.scheme = j.scheme || 'mqtt';
           this.cfg.user = j.user || '';
           this.cfg.clientId = j.clientId || '';
           this.cfg.topicPrefix = j.topicPrefix || 'smsf';
           this.cfg.keepAlive = j.keepAlive || 60;
-          this.cfg.useTls = !!j.useTls;
           this.cfg.subscribeEnabled = j.subscribeEnabled !== false;
           this.cfg.notifyTypes = j.notifyTypes ?? 15;   // 缺省：除日志外全开
           this.cfg.enabled = !!j.enabled;
@@ -1906,9 +1910,8 @@ function pageMqtt() {
       try {
         const r = await postOp('/api/mqtt', {
           enabled: !!this.cfg.enabled,
+          scheme: (this.cfg.scheme || 'mqtt').trim(),
           server: (this.cfg.server || '').trim(),
-          port: Number(this.cfg.port) || 1883,
-          useTls: !!this.cfg.useTls,
           user: (this.cfg.user || '').trim(),
           pass: this.cfg.pass || '',       // 空 = 不修改已保存密码
           clientId: (this.cfg.clientId || '').trim(),

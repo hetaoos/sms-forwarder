@@ -71,11 +71,17 @@ class MqttService {
   bool notifyEnabled(uint32_t mask) const;
   // 保存配置并落盘 NVS；pass 为空串表示保持已保存的密码不变；
   // notifyTypes 越界位被过滤；enabled 为 MQTT 总开关。返回是否写入成功。
-  bool saveConfig(const String &server, uint16_t port, bool useTls,
+  // scheme：协议方案（mqtt / mqtts / ws / wss），由前端下拉选择；
+  // server：Broker 主机与端口（host[:port]，不含协议前缀）。
+  bool saveConfig(const String &scheme, const String &server,
                   const String &user, const String &password,
                   const String &clientId, const String &topicPrefix,
                   uint16_t keepAlive, bool subscribeEnabled,
                   uint32_t notifyTypes, bool enabled);
+  // 方案是否需要 TLS（mqtts / wss）；静态，因仅依赖静态配置
+  static bool usingTls() { return _scheme == "mqtts" || _scheme == "wss"; }
+  // 当前协议方案（供状态展示）
+  static String scheme() { return _scheme; }
   // 配置 JSON（GET /api/mqtt 用，password 不回显）。
   String configJson() const;
   // 导出完整配置（含密码，供备份用）到给定 JSON 对象。
@@ -85,9 +91,8 @@ class MqttService {
 
   // ---- 配置（NVS: appcfg/mqtt，自管，不依赖全局 config 单例）----
   static bool     _enabled;          // MQTT 总开关
-  static String   _server;           // Broker 地址（不含协议前缀）
-  static uint16_t _port;             // 端口
-  static bool     _useTls;           // 是否 TLS
+  static String   _server;           // Broker 地址（host[:port]，不含协议前缀）
+  static String   _scheme;           // 协议方案：mqtt / mqtts / ws / wss
   static String   _user;             // 用户名（匿名可空）
   static String   _pass;             // 密码（GET 不回显）
   static String   _clientId;         // 客户端 ID（空则用 SMSFwd-<设备ID>）
@@ -155,7 +160,7 @@ class MqttService {
   static esp_mqtt_client_handle_t s_client;
   static bool s_connected;       // 当前连接状态
 
-  // TLS 轮次守卫：仅当 _useTls 时，建连前取、断连/销毁前还（从末尾槽分配）。
+  // TLS 轮次守卫：仅当 usingTls() 时，建连前取、断连/销毁前还（从末尾槽分配）。
   // 与 OTA/推送/邮件共用 4 通道计数信号量；release() 幂等，明文连接不占通道。
   // 与此类其余状态一致，均声明为 static（buildClient/destroyClient 为静态函数）。
   static TlsTurn _tlsGuard;

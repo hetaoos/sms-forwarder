@@ -31,11 +31,18 @@
     </div>
     <form @submit.prevent="save()">
       <div class="grid cols2">
-        <div class="field"><label>服务器地址</label>
-          <input class="inp" x-model="cfg.server" placeholder="broker.emqx.io"
-                 maxlength="64" autocomplete="off"></div>
-        <div class="field"><label>端口</label>
-          <input class="inp" x-model="cfg.port" type="number" min="1" max="65535"></div>
+        <div class="field" style="grid-column:1/-1"><label>服务器（地址:端口）</label>
+          <div class="bar" style="margin-top:0">
+            <select class="inp" style="max-width:150px" x-model="cfg.scheme">
+              <option value="mqtt">mqtt://</option>
+              <option value="mqtts">mqtts://</option>
+              <option value="ws">ws://</option>
+              <option value="wss">wss://</option>
+            </select>
+            <input class="inp" style="flex:1;min-width:160px" x-model="cfg.server"
+                   placeholder="broker.emqx.io:1883" maxlength="128" autocomplete="off">
+          </div>
+        </div>
         <div class="field"><label>用户名（匿名可空）</label>
           <input class="inp" x-model="cfg.user" placeholder="可选"
                  maxlength="64" autocomplete="off"></div>
@@ -50,11 +57,6 @@
                  maxlength="32" autocomplete="off"></div>
         <div class="field"><label>保活间隔（秒，1-3600）</label>
           <input class="inp" x-model="cfg.keepAlive" type="number" min="1" max="3600"></div>
-        <div class="field"><label>TLS 加密</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text);margin-top:6px">
-            <input type="checkbox" x-model="cfg.useTls"> 启用 TLS（自签名证书不校验身份）
-          </label>
-        </div>
       </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--muted);margin-top:14px">
         <input type="checkbox" x-model="cfg.subscribeEnabled"> 订阅命令主题（远程控制）
@@ -71,8 +73,9 @@
       事件发布到 <b>&lt;前缀&gt;/&lt;设备ID&gt;/&lt;类型&gt;</b>（sms / sim / boot / online / log / status）；<br>
       启用命令订阅后，可向 <b>&lt;前缀&gt;/&lt;设备ID&gt;/command</b> 发送 JSON 命令
       （send_sms / send_at / restart / reinit / info / help）。<br>
-      TLS 仅加密、不校验证书；<b>加密端口通常为 8883，明文端口（如 1883）请勿勾选 TLS</b>，
-      否则握手失败（日志报 tls_err=0x8004 / 0x800B）。连接失败多为地址/端口/网络问题，先确认设备能访问该 Broker。
+      加密方案（mqtts / wss）仅加密、不校验证书，<b>加密端口通常为 8883（wss 为 443）</b>；
+      明文方案（mqtt / ws）请勿用于敏感传输，否则握手失败（日志报 tls_err=0x8004 / 0x800B）。
+      连接失败多为地址/端口/网络问题，先确认设备能访问该 Broker。
     </div>
   </div>
 
@@ -103,6 +106,8 @@
   <!-- 说明 -->
   <div class="card">
     <h3>发布与订阅说明</h3>
+    <div class="row"><span class="k">设备 ID</span>
+      <span class="v" style="font-family:monospace" x-text="deviceId"></span></div>
     <div class="row"><span class="k">连接</span><span class="v">esp-mqtt 自带网络任务与自动重连，主循环无需轮询；断线期间事件由 outbox 自动补发</span></div>
     <div class="row"><span class="k">遗嘱</span><span class="v">连接时注册 LWT（status=offline，retained），异常掉线时 Broker 自动发布</span></div>
     <div class="row"><span class="k">日志</span><span class="v">运行日志实时推送（轻量限流 20 条/秒），默认不勾选，避免日志风暴</span></div>

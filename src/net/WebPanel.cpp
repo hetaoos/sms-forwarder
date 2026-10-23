@@ -705,13 +705,13 @@ void WebPanel::setupRoutes() {
   _server.on("/api/mqtt/test", HTTP_POST, [this](AsyncWebServerRequest *req) { handleMqttTest(req); });
 
   // ---- 以下是父路径 /api/mqtt，必须排在上述子路径之后 ----
-  // 配置读取：{"ok":true,"enabled":bool,"configured":bool,"server":"..","port":n,
-  //   "useTls":bool,"user":"..","hasPass":bool,"clientId":"..","topicPrefix":"..",
+  // 配置读取：{"ok":true,"enabled":bool,"configured":bool,"scheme":"mqtt|mqtts|ws|wss",
+  //   "server":"host[:port]","user":"..","hasPass":bool,"clientId":"..","topicPrefix":"..",
   //   "keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n}
   // 密码不回显（hasPass 表示是否已保存），避免泄露
   _server.on("/api/mqtt", HTTP_GET, [this](AsyncWebServerRequest *req) { handleMqttGet(req); });
 
-  // 配置保存：JSON {"server":"..","port":1883,"useTls":bool,"user":"..","pass":"..",
+  // 配置保存：JSON {"scheme":"..","server":"host[:port]","user":"..","pass":"..",
   //   "clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,
   //   "notifyTypes":n,"enabled":bool}
   // pass 为空串表示保持已保存的密码不变（表单不回显）；enabled 为 MQTT
@@ -1865,25 +1865,22 @@ void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
     sendErr(req, 400, "invalid json");
     return;
   }
+  String scheme = json["scheme"] | "mqtt";
   String server = json["server"] | "";
   String user = json["user"] | "";
   String pass = json["pass"] | "";
   String clientId = json["clientId"] | "";
   String topicPrefix = json["topicPrefix"] | "smsf";
-  int port = 1883;
   int keepAlive = 60;
   int notifyTypes = 0;
-  bool useTls = false;
   bool subscribeEnabled = true;
   bool enabled = false;
-  jsonInt(json["port"], port);
   jsonInt(json["keepAlive"], keepAlive);
-  jsonBool(json["useTls"], useTls);
   jsonBool(json["subscribeEnabled"], subscribeEnabled);
   jsonBool(json["enabled"], enabled);
   jsonInt(json["notifyTypes"], notifyTypes);
 
-  if (!_mqtt.saveConfig(server, (uint16_t)port, useTls, user, pass, clientId,
+  if (!_mqtt.saveConfig(scheme, server, user, pass, clientId,
                          topicPrefix, (uint16_t)keepAlive, subscribeEnabled,
                          (uint32_t)notifyTypes, enabled)) {
     sendErr(req, 500, "config save failed");

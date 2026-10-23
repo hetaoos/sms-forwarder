@@ -81,7 +81,7 @@ struct StatusInfo {
   bool mqttOn = false;        // 总开关
   bool mqttCfg = false;       // 服务器是否已配置
   bool mqttConn = false;      // 是否已连上 Broker
-  char mqttServer[28] = "-";  // "host:1883"
+  char mqttServer[64] = "-";  // "mqtts://host:8883"
   char mqttClient[20] = "-";  // 客户端 ID
   char mqttTopic[24] = "-";   // 主题前缀
   char mqttErr[28] = "-";     // 最近一次连接错误（空 = 无错误）
