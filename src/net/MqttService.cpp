@@ -21,6 +21,7 @@
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
+#include "util/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
 // ── 通信模组级状态 ─────────────────────────────────────────────
 // esp-mqtt 的 config 只保存指针，不会拷贝字符串，因此 URI/ID/Will/账号等
@@ -70,16 +71,8 @@ unsigned long MqttService::s_logLastSec  = 0;
 int           MqttService::s_logSecCount = 0;
 
 // ── 设备标识 ───────────────────────────────────────────────
-String MqttService::deviceId() {
-  uint64_t mac = ESP.getEfuseMac() >> 24;  // 高 48 位为 MAC
-  char buf[13];
-  snprintf(buf, sizeof(buf), "%012llx", (unsigned long long)mac);
-  return String(buf);
-}
-
-String MqttService::deviceName() {
-  return "SMS-Forwarder-" + deviceId();
-}
+String MqttService::deviceId()   { return Device::id(); }
+String MqttService::deviceName() { return Device::name(); }
 
 String MqttService::fullTopic(const String &sub) {
   String p = _topicPrefix.length() > 0 ? _topicPrefix : "smsf";

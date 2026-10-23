@@ -7,6 +7,8 @@
 
 #include <math.h>
 
+#include "util/DeviceId.h"    // Device::id()：统一的设备唯一 ID
+
 // ReadyMail 通过宏裁剪协议实现，必须在 include 之前打开 SMTP。
 // ENABLE_DEBUG 不打开：它会把整段 SMTP 会话打到串口，噪音过大。
 #define ENABLE_SMTP
@@ -69,13 +71,8 @@ const char MAIL_CSS[] =
   ".code2{font-size:28px;font-weight:700;color:#d00;letter-spacing:5px;margin-top:2px}"
   ".hl{color:#2f6fed}";
 
-// 设备唯一 ID：完整芯片 eFuse MAC，12 位十六进制（与参考项目一致）
-String mailDeviceId() {
-  uint64_t mac = ESP.getEfuseMac() >> 24;  // 高 48 位为 MAC
-  char buf[13];
-  snprintf(buf, sizeof(buf), "%012llx", (unsigned long long)mac);
-  return String(buf);
-}
+// 设备唯一 ID：统一走 Device::id()（完整芯片 eFuse MAC，12 位小写十六进制）
+String mailDeviceId() { return Device::id(); }
 
 // ---- 验证码识别（移植自 esp32-sms-forwarding 的 email.cpp）----
 

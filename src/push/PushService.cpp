@@ -1,5 +1,6 @@
 #include "push/PushService.h"
 #include "log/LogStore.h"
+#include "util/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
 #include <WiFi.h>
 #include <Preferences.h>
@@ -56,16 +57,8 @@ static int8_t normModemSlot(int v) {
 }
 
 // ---------------- 标识 / 时间 ----------------
-String PushService::deviceId() {
-  uint64_t mac = ESP.getEfuseMac() >> 24;  // 高 48 位为 MAC
-  char buf[13];
-  snprintf(buf, sizeof(buf), "%012llX", mac);
-  return String(buf);
-}
-
-String PushService::deviceName() {
-  return "SMS-Forwarder-" + deviceId();
-}
+String PushService::deviceId()   { return Device::id(); }
+String PushService::deviceName() { return Device::name(); }
 
 String PushService::localDateStr() {
   time_t now = time(nullptr);
