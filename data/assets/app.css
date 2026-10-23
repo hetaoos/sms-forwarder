@@ -82,6 +82,8 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
 /* 190px 下限：常规宽度下每排 5 项，仪表盘 10 项正好两排对齐；
    窄屏自动降为 3 列 / 2 列（日志、串口页的 4 项同样按此自适应） */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px}
+/* 手机竖屏：190px 下限会退化到单列，这里强制两列（指标名允许换行） */
+@media (max-width:560px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
   padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;
   align-items:center;min-height:72px}
