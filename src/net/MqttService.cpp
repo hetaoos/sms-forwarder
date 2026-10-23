@@ -42,6 +42,7 @@ bool   MqttService::s_wasConnected    = false;
 bool   MqttService::s_bootNotified    = false;
 bool   MqttService::s_pendingBoot     = false;
 QueueHandle_t MqttService::s_cmdQueue = nullptr;
+SemaphoreHandle_t MqttService::s_lifecycleMux = nullptr;
 
 // TLS 通道守卫（仅 usingTls() 时占用 4 通道之一；release 幂等，明文连接不占）
 TlsTurn MqttService::_tlsGuard;
@@ -169,10 +170,16 @@ void MqttService::onLog(uint8_t level, const char *tag, const char *msg, uint32_
 // ── 发布 ───────────────────────────────────────────────────
 bool MqttService::publish(const String &subtopic, const String &payload, int qos,
                           bool retain) {
-  if (s_client == nullptr) return false;
+  if (s_lifecycleMux == nullptr) return false;
+  // 持锁快照 handle：destroyClient 在释放锁后才真正销毁，故本调用要么在销毁前完成
+  // enqueue，要么看到 nullptr 直接跳过，杜绝悬空指针 use-after-free。
+  if (xSemaphoreTake(s_lifecycleMux, 0) != pdTRUE) return false;
+  esp_mqtt_client_handle_t h = s_client;
+  if (h == nullptr) { xSemaphoreGive(s_lifecycleMux); return false; }
   String topic = fullTopic(subtopic);
-  int id = esp_mqtt_client_enqueue(s_client, topic.c_str(), payload.c_str(),
+  int id = esp_mqtt_client_enqueue(h, topic.c_str(), payload.c_str(),
                                   payload.length(), qos, retain ? 1 : 0, 0);
+  xSemaphoreGive(s_lifecycleMux);
   return id >= 0;
 }
 
@@ -447,19 +454,26 @@ static esp_err_t mqttInsecureCertAttach(void *conf) {
 }
 
 void MqttService::buildClient() {
-  if (!_enabled || s_client != nullptr) return;
+  if (!_enabled) return;
   if (_server.length() == 0) return;
+  if (s_lifecycleMux == nullptr) return;
+
+  // 持生命周期锁：与 destroyClient / 其它 buildClient 调用互斥，确保 s_client
+  // 的「检查-构建-赋值」原子完成，避免重复构建或重复销毁。
+  if (xSemaphoreTake(s_lifecycleMux, portMAX_DELAY) != pdTRUE) return;
+  if (s_client != nullptr) { xSemaphoreGive(s_lifecycleMux); return; }
 
   // 启用 TLS 时（mqtts / wss）：从末尾槽申请一个 TLS 通道（长连接，避免占用临时通道的前部槽）。
   // 拿不到（4 通道全忙）则延后建连，下个 tick 重试（非阻塞，避免卡住主循环）。
   if (usingTls()) {
     unsigned long now = millis();
-    if (now < _mqttTlsNextTryMs) return;
+    if (now < _mqttTlsNextTryMs) { xSemaphoreGive(s_lifecycleMux); return; }
     _tlsGuard = TlsTurn("MQTT-TLS", 0, /*preferBack=*/true);
     if (!_tlsGuard.held()) {
       _mqttTlsNextTryMs = now + 5000;
       if (_log) _log->addf(LogLevel::kWarn, "mqtt",
                            "TLS 通道已满，MQTT 延后建连（5s 后重试）");
+      xSemaphoreGive(s_lifecycleMux);
       return;
     }
   }
@@ -521,23 +535,36 @@ void MqttService::buildClient() {
     mqtt_cfg.broker.verification.crt_bundle_attach = mqttInsecureCertAttach;
   }
 
-  s_client = esp_mqtt_client_init(&mqtt_cfg);
-  if (s_client != nullptr) {
-    esp_mqtt_client_register_event(s_client, MQTT_EVENT_ANY, mqtt_event_handler, nullptr);
-    esp_mqtt_client_start(s_client);
+  esp_mqtt_client_handle_t h = esp_mqtt_client_init(&mqtt_cfg);
+  if (h != nullptr) {
+    esp_mqtt_client_register_event(h, MQTT_EVENT_ANY, mqtt_event_handler, nullptr);
+    esp_mqtt_client_start(h);
+    s_client = h;            // 仅在成功创建后赋值，且全程持锁，tick 不会看到半初始化的 client
+  } else {
+    _tlsGuard.release();     // init 失败：归还已占用的 TLS 通道（幂等）
   }
+  xSemaphoreGive(s_lifecycleMux);
 }
 
 void MqttService::destroyClient() {
-  if (s_client == nullptr) {
-    _tlsGuard.release();  // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
+  if (s_lifecycleMux == nullptr) return;
+  // 持锁期间只做「快照 handle + 立即置空 s_client」，使并发的 destroyClient（网页任务
+  // 停用）与 tick 不会重复销毁同一个 handle；真正的 esp_mqtt_client_destroy 在释放锁
+  // 之后执行，避免阻塞 MQTT 内部任务导致死锁。
+  if (xSemaphoreTake(s_lifecycleMux, portMAX_DELAY) != pdTRUE) return;
+  esp_mqtt_client_handle_t h = s_client;
+  s_client = nullptr;        // 立即置空：其它任务看到 nullptr 即跳过，杜绝重复销毁
+  s_connected = false;
+  s_wasConnected = false;   // 复位连接跳变检测，下次（重）连能重新触发订阅/上线
+  xSemaphoreGive(s_lifecycleMux);
+
+  if (h == nullptr) {
+    _tlsGuard.release();    // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
     return;
   }
-  esp_mqtt_client_stop(s_client);
-  esp_mqtt_client_destroy(s_client);
-  s_client = nullptr;
-  s_connected = false;
-  _tlsGuard.release();    // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
+  esp_mqtt_client_stop(h);
+  esp_mqtt_client_destroy(h);
+  _tlsGuard.release();      // 释放 TLS 通道（usingTls() 时才占着，release 幂等）
 }
 
 // ── 对外接口 ───────────────────────────────────────────────
@@ -552,6 +579,10 @@ void MqttService::begin(WifiManager &wifi, SmsService &sms, TimeSync &time,
     // 无 PSRAM 或分配失败时退化到内部堆，功能不变。
     s_cmdQueue = xQueueCreateWithCaps(8, sizeof(MqttCmdMsg), MALLOC_CAP_SPIRAM);
     if (s_cmdQueue == nullptr) s_cmdQueue = xQueueCreate(8, sizeof(MqttCmdMsg));
+  }
+  if (s_lifecycleMux == nullptr) {
+    // 客户端生命周期互斥锁（防止网页任务停用与主循环 tick 并发销毁同一 handle）
+    s_lifecycleMux = xSemaphoreCreateMutex();
   }
   // 每次开机重置，使首次连接可补发启动通知
   s_bootNotified = false;
@@ -583,9 +614,16 @@ void MqttService::tick() {
   // 连接刚建立（本 tick 检测到跳变）时，在主循环完成订阅 / 上线状态 / 启动通知补发
   if (s_connected && !s_wasConnected) {
     s_wasConnected = true;
-    if (_subscribeEnabled) {
+    // 快照 handle 并持锁后订阅：避免与并发 destroyClient 竞争导致向已销毁的 client 订阅
+    esp_mqtt_client_handle_t h = nullptr;
+    if (s_lifecycleMux != nullptr &&
+        xSemaphoreTake(s_lifecycleMux, 0) == pdTRUE) {
+      h = s_client;
+      xSemaphoreGive(s_lifecycleMux);
+    }
+    if (h != nullptr && _subscribeEnabled) {
       String cmdTopic = fullTopic("command");
-      esp_mqtt_client_subscribe(s_client, cmdTopic.c_str(), 0);
+      esp_mqtt_client_subscribe(h, cmdTopic.c_str(), 0);
     }
     publishStatus("online");
     notifyOnline();   // 上线事件（按 kMqttNotifyOnline 位决定是否发布，每次（重）连接发布一次）

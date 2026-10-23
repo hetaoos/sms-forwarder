@@ -174,6 +174,13 @@ class MqttService {
   // 队列元素类型 MqttCmdMsg 定义在 MqttService.cpp 文件作用域（供事件回调直接构造）。
   static QueueHandle_t s_cmdQueue;
 
+  // 客户端生命周期互斥锁：buildClient / destroyClient / publish 等跨任务访问
+  // s_client 的操作均须持此锁，防止「网页任务停用」与「主循环 tick」并发对同一
+  // handle 重复销毁（esp_mqtt_client_destroy 重复调用会双重释放导致异常）。
+  // 注意：destroyClient 在持锁期间只做「快照 handle + 置空 s_client」，真正的
+  // esp_mqtt_client_destroy 在释放锁之后执行，避免阻塞 MQTT 内部任务造成死锁。
+  static SemaphoreHandle_t s_lifecycleMux;
+
   // 日志推送的轻量限流（只做速率保护，不做消息缓存）
   static constexpr int LOG_THROTTLE_PER_SEC = 20;
   static unsigned long s_logLastSec;
