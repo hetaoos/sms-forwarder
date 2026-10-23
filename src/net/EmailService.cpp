@@ -1425,7 +1425,7 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
   inner.append("</td></tr>");
   String mlabel = modemLabelOf(modem);
   if (mlabel.length() > 0) {
-    inner.append("<tr><td class=\"kn\">接收通信模组</td><td class=\"vn\">");
+    inner.append("<tr><td class=\"kn\">模组</td><td class=\"vn\">");
     appendEscaped(inner, mlabel);
     inner.append("</td></tr>");
   }
@@ -1443,7 +1443,7 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
   }
   text += "\n时间: " + tsText;
   if (mlabel.length() > 0) {
-    text += "\n接收通信模组: " + mlabel;
+    text += "\n模组: " + mlabel;
   }
   text += "\n内容:\n" + message;
 }
