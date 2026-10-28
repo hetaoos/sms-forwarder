@@ -10,6 +10,9 @@
 #include <freertos/FreeRTOS.h>       // xTaskCreate / vTaskDelay
 #include <freertos/task.h>
 
+#include <algorithm>                 // std::sort：长短信分段排序
+#include <time.h>                    // localtime_r / mktime：每日定点排程
+
 namespace {
 
 // 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
@@ -21,6 +24,16 @@ LogStore &_log = devLog();
 void copyTo(char *dst, size_t n, const String &s) {
   if (!s.length()) return;
   snprintf(dst, n, "%s", s.c_str());
+}
+
+// 32 位 FNV-1a 哈希：短信正文指纹（去重键的一部分）
+uint32_t textHash(const String &s) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < s.length(); i++) {
+    h ^= (uint8_t)s[i];
+    h *= 16777619u;
+  }
+  return h;
 }
 
 }  // namespace
@@ -66,6 +79,7 @@ SmsService::SmsService(SerialBridge &bridge) : _bridge(bridge) {}
 // 载入配置、准备存储、对启用通信模组启动异步初始化（状态机由抽数任务轮询驱动）
 void SmsService::begin() {
   _mutex = xSemaphoreCreateMutex();
+  _codecMutex = xSemaphoreCreateMutex();
   _store.begin(cfg::kSmsStoreMax);
   bool hadRecord = loadConfig();
   if (!hadRecord) saveConfig();  // 首次启动落一份默认配置
@@ -94,6 +108,16 @@ void SmsService::begin() {
   }
 
   _lastSmsId = _store.maxId();
+  _pollBaseMs = millis();  // 间隔模式以「开机」为基准
+  _safetyLastMs = millis();  // 兜底轮询以「开机」为基准（首个周期后才触发）
+
+  // 主动查询任务（通信模组存储兜底）：独立任务执行阻塞式 AT 查询，
+  // 不占用抽数任务（URC 解析）与主循环的时间片；优先级低于发送任务。
+  if (_codecMutex) {
+    xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 8192, this, 3, &_queryTask);
+  } else {
+    _log.addf(LogLevel::kWarn, "sms", "编解码互斥量创建失败，主动查询不可用");
+  }
 }
 
 // 周期调用（主循环）：长短信重组超时清理 + 来电检测派发；
@@ -110,6 +134,7 @@ void SmsService::tick() {
   _codec.pruneTimeouts(_concat);
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) pollCall(p);
   pollAdminCmd();  // 管理员短信命令（入队于抽数任务，执行于主循环）
+  pollSchedule();  // 定时主动查询：只判断到期并置待查标记（不做阻塞 AT）
 }
 
 // 统一发送入口：入队一个 SendJob（不阻塞）。队列满返回 false。
@@ -252,9 +277,16 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
       consumed = true;
       continue;
     }
-    // 其它短信相关 URC（CNMI=2,2 模式下正常不会出现）：消费但不处理，
-    // 避免通信模组索引通知类流量冲刷 AT 历史
-    if (line.startsWith("+CMTI:") || line.startsWith("+CDS:")) {
+    // +CMTI:（CNMI=2,1 存储模式）：通信模组已把新短信写进自身存储并给出索引。
+    // 本机收不到 +CMT 直投，只能靠主动查询把它读回——置待查标记，由查询任务处理。
+    // 查询进行中同样置位：查询期间到达的新短信本轮未必读到，留给下一轮。
+    if (line.startsWith("+CMTI:")) {
+      m.queryPending = true;
+      consumed = true;
+      continue;
+    }
+    // +CDS:（状态报告）：消费但不处理，避免通信模组索引类流量冲刷 AT 历史
+    if (line.startsWith("+CDS:")) {
       consumed = true;
       continue;
     }
@@ -413,6 +445,15 @@ bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
 void SmsService::exportTo(JsonObject &o) const {
   o["max"] = _max;
   o["adminEnabled"] = _adminEnabled;
+  o["cnmiStore"] = _cnmiStore;
+  o["deleteAfterRead"] = _deleteAfterRead;
+  JsonObject po = o["poll"].to<JsonObject>();
+  po["enabled"] = _pollEnabled;
+  po["mode"] = _pollMode;
+  po["intervalH"] = _pollIntervalH;
+  po["hour"] = _pollDailyMin / 60;
+  po["minute"] = _pollDailyMin % 60;
+  po["safetySec"] = (uint32_t)(_safetyPollMs / 1000);
   JsonArray ap = o["adminPhones"].to<JsonArray>();
   for (uint8_t i = 0; i < _adminPhoneCount; i++) ap.add(_adminPhones[i]);
   JsonArray arr = o["modems"].to<JsonArray>();
@@ -517,7 +558,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
 // 经短信通信模组发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
 // 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
 // 发送前延长 cmdPauseUntil 令 pollInit 让行，避免与后台查询 AT 互相干扰。通信模组就绪后自动还原
-// CMGF=0 / CNMI=2,2，使控制台任意 AT（如切到文本模式、关直投、关射频）都不会
+// CMGF=0 / CNMI（存储或直投模式），使控制台任意 AT（如切到文本模式、关直投、关射频）都不会
 // 让短信收发永久失效——这是与原"直接 _bridge.send 绕过短信通信模组"最关键的区别。
 SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
                                         const String &cmd, SerialBridge::Eol eol,
@@ -540,7 +581,7 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
   if (m.initState == ModemInitState::kReady) {
     _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0", SerialBridge::kCrlf,
                  cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
-    _bridge.send(port, cfg::kUartBaud, "AT+CNMI=2,2,0,0,0", SerialBridge::kCrlf,
+    _bridge.send(port, cfg::kUartBaud, cnmiCmd(), SerialBridge::kCrlf,
                  cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
   }
   return r;
@@ -1481,7 +1522,8 @@ void SmsService::pollInit(uint8_t port) {
       // 逐条下发（每条 tick 一条，节流），避免一次性持端口锁过久
       static const char *kCmds[] = {
           "AT+COPS=0", "AT+CEREG=3", "AT+CGDCONT=1,\"IP\",\"\"",
-          "AT+CNMI=2,2,0,0,0", "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
+          nullptr,  // 占位：CNMI 随配置动态生成（存储 / 直投模式）
+          "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
       if (m.configStep == 1) {
         // CEREG=3 失败降级到 =2（部分 2G 通信模组不支持带原因的注册上报）
         if (at("AT+CEREG=3", cfg::kSmsCmdTimeoutMs)) {
@@ -1489,6 +1531,10 @@ void SmsService::pollInit(uint8_t port) {
         } else {
           return;  // 忙
         }
+      } else if (m.configStep == 3) {
+        // CNMI：存储模式（2,1，短信落通信模组存储 + 上报 +CMTI 索引）/
+        // 直投模式（2,2，新短信直接推送到本机串口）
+        if (!at(cnmiCmd(), cfg::kSmsCmdTimeoutMs)) return;  // 忙
       } else {
         if (!at(kCmds[m.configStep], cfg::kSmsCmdTimeoutMs)) return;  // 忙
       }
@@ -1508,8 +1554,8 @@ void SmsService::pollInit(uint8_t port) {
         m.nextOpsMs = now + 6000;     // 运营商慢刷兜底（注册跃迁 URC 也会触发）
         // 注册状态初值不在此硬置；就绪后由一次性 AT+CEREG? 同步（见下方遥测），避免误判
         m.operRefreshPending = false;
-        _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 就绪（PDU 模式 + 短信直投已配置）",
-                  (unsigned)port);
+        _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 就绪（PDU 模式 + 短信%s已配置）",
+                  (unsigned)port, _cnmiStore ? "存储" : "直投");
         // 通知上层（如时间同步立即尝试 SIM NITZ）。回调运行于抽数任务上下文，
         // 仅允许置标记等轻量操作
         if (_onReady) _onReady(port);
@@ -1735,31 +1781,60 @@ bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) 
   return err.length() == 0;  // sendSmsPdu 用 err 表达失败原因（含通信模组响应）
 }
 
-// 处理一条收到的 PDU
-void SmsService::handleCmt(uint8_t port, const String &pduHex) {
-  ModemState &m = _modems[port];
-  { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 收短信处理延长暂停窗口
+// 处理一条收到的 PDU（解码 + 重组 + 落盘）
+// 线程模型：+CMT 直投走抽数任务上下文，通信模组存储查询走查询任务上下文——两者
+// 都调用本函数。pdulib 解码实例与长短信重组槽位都是共享状态，故用 _codecMutex
+// 串行化（跨任务安全）。
+SmsService::CmtOutcome SmsService::handleCmt(uint8_t port, const String &pduHex) {
+  if (!_codecMutex) return CmtOutcome::kKeep;
+  xSemaphoreTake(_codecMutex, portMAX_DELAY);
   String sender, ts, text;
   int concat[3] = {0, 0, 0};
-  if (!_codec.decode(pduHex, sender, ts, text, concat)) {
+  bool ok = _codec.decode(pduHex, sender, ts, text, concat);
+  CmtOutcome out = ok ? processDecodedLocked(port, sender, ts, text, concat)
+                      : CmtOutcome::kKeep;
+  xSemaphoreGive(_codecMutex);
+  if (!ok) {
     _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 的 PDU 解码失败（%u 字符）",
               (unsigned)port, (unsigned)pduHex.length());
-    return;
   }
+  return out;
+}
 
+// 处理一条已解码的短信（长短信分段在此重组）；调用方须持有 _codecMutex
+SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
+                                                        const String &sender,
+                                                        const String &ts,
+                                                        const String &text,
+                                                        const int *concat) {
+  ModemState &m = _modems[port];
+  { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 收短信处理延长暂停窗口
+
+  String fullText = text;
+  String fullTs = ts;
   uint32_t epoch = SmsCodec::sctsToEpoch(ts);
   if (concat[2] > 0) {
-    // 长短信：喂入重组槽位，未收齐直接返回
-    String full, fullTs;
+    // 长短信：喂入重组槽位，未收齐则保留（模组侧副本不删，等下一段到齐）
+    String full, fts;
     if (!_codec.reassemble(_concat, sender, ts, text, concat[0], concat[1],
-                           concat[2], full, fullTs)) {
-      return;
+                           concat[2], full, fts)) {
+      return CmtOutcome::kKeep;
     }
-    text = full;
-    ts = fullTs;
-    epoch = SmsCodec::sctsToEpoch(ts);
+    fullText = full;
+    fullTs = fts;
+    epoch = SmsCodec::sctsToEpoch(fts);
     _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 长短信已拼接（%u 段）",
               (unsigned)port, (unsigned)concat[2]);
+  }
+
+  // 去重：TTL 内相同的（发送方 + 时间戳 + 正文指纹）视为已处理过——
+  // 模组侧删除失败时下一轮会再次读到同一条，靠这里避免重复落盘/重复推送。
+  String dkey = sender + "|" + fullTs + "|" + (unsigned)fullText.length() + "|" +
+                (unsigned)textHash(fullText);
+  if (dedupHit(dkey)) {
+    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 的短信重复（已处理过），跳过落盘：来自 %s",
+              (unsigned)port, sender.c_str());
+    return CmtOutcome::kDelete;
   }
 
   // 黑名单拦截：在落盘与转发之前判定，使「静默丢弃」真正不入库、不推送。
@@ -1773,14 +1848,17 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
               sender.c_str(),
               _blacklist->action() == BlackList::kDrop ? "静默丢弃" : "仅记录不推送",
               note.length() ? ("[" + note + "]").c_str() : "");
-    if (_blacklist->action() == BlackList::kDrop) return;  // 不入库、不推送
+    if (_blacklist->action() == BlackList::kDrop) {
+      dedupAdd(dkey);
+      return CmtOutcome::kDelete;  // 不入库、不推送
+    }
   }
 
   // 管理员短信远程控制：命中命令则转 tick 执行，不落盘、不转发。
   // 顺序与旧实现一致：总开关 + 黑名单优先于管理员判定（管理员把自己拉黑则命令失效，
   // 这是用户的显式选择）；总开关关闭或号码列表为空时，所有短信按普通短信处理。
   if (_adminEnabled && _adminPhoneCount > 0 && isAdmin(sender)) {
-    String cmd = text;
+    String cmd = fullText;
     cmd.trim();
     String key = cmd;
     key.toUpperCase();
@@ -1789,32 +1867,388 @@ void SmsService::handleCmt(uint8_t port, const String &pduHex) {
                 (unsigned)port, sender.c_str(), cmd.c_str());
       // 有效命令（含队列忙被丢弃）一律消费，不再入库/转发；
       // 仅 SMS: 格式错误时返回 false，按普通短信继续处理（便于发现笔误）
-      if (enqueueAdminCmd(port, sender, cmd)) return;
+      if (enqueueAdminCmd(port, sender, cmd)) {
+        dedupAdd(dkey);  // 命令已消费：模组侧副本删除失败时也不应重复执行
+        return CmtOutcome::kDelete;
+      }
     }
   }
 
   SmsMessage msg;
   msg.incoming = true;
   msg.phone = sender;
-  msg.content = text;
+  msg.content = fullText;
   msg.ts = epoch ? epoch : nowTs();
   msg.modem = port;
   uint32_t id = _store.add(msg);
-  if (id) {
-    lock();
-    _lastSmsId = id;
-    unlock();
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 收到短信 #%u，来自 %s（%u 字节）",
-              (unsigned)port, (unsigned)id, sender.c_str(),
-              (unsigned)text.length());
-  } else {
+  if (!id) {
     // 解码成功但未入库：留痕便于区分「没收到」与「收到没存上」
     _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 收到来自 %s 的短信，但入库失败",
               (unsigned)port, sender.c_str());
+    return CmtOutcome::kKeep;  // 落盘失败：保留模组侧副本，下轮查询重试
   }
+  lock();
+  _lastSmsId = id;
+  unlock();
+  dedupAdd(dkey);
+  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 收到短信 #%u，来自 %s（%u 字节）",
+            (unsigned)port, (unsigned)id, sender.c_str(),
+            (unsigned)fullText.length());
   // 通知上层（邮件通知等）。命中黑名单（仅记录模式）时跳过，不向任何通道转发；
-  // 静默丢弃已在上面 return。回调运行于抽数任务上下文，只允许轻量操作。
-  if (_onSms && !blocked) _onSms(sender, text, msg.ts, (int8_t)port);
+  // 静默丢弃已在上面返回。回调运行于抽数任务/查询任务上下文，只允许轻量操作。
+  if (_onSms && !blocked) _onSms(sender, fullText, msg.ts, (int8_t)port);
+  return CmtOutcome::kDelete;
+}
+
+// ---------------- 主动查询任务（通信模组存储兜底）----------------
+// 通信模组以 CNMI=2,1 接收时短信落在通信模组侧，本机收不到 +CMT 直投。
+// 查询任务把模组存储里的短信读回本机：列索引 -> 逐条读 PDU -> 复用收信处理链
+// （解码 / 长短信重组 / 黑名单 / 管理员命令 / 落盘 / 推送）-> 处理成功后删除
+// 模组侧副本。任何一步失败都不删除内容，下轮查询重试（配合去重表避免重复落盘）。
+
+// 查询任务入口
+void SmsService::queryTaskEntry(void *arg) {
+  static_cast<SmsService *>(arg)->queryTask();
+}
+
+// 查询任务主循环：轮询各端口的待查标记（+CMTI / 定时 / 手动触发都会置位）
+void SmsService::queryTask() {
+  for (;;) {
+    // 接收模式切换后热下发 CNMI（阻塞 AT 只在本任务里做）
+    if (_cnmiDirty) {
+      _cnmiDirty = false;
+      for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+        ModemState &m = _modems[p];
+        if (!m.enabled || m.initState != ModemInitState::kReady) continue;
+        _bridge.send(p, cfg::kUartBaud, cnmiCmd(), SerialBridge::kCrlf,
+                     cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
+        _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已下发 %s", (unsigned)p, cnmiCmd());
+      }
+    }
+    for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+      ModemState &m = _modems[p];
+      if (!m.queryPending) continue;
+      if (!m.enabled || m.initState != ModemInitState::kReady) continue;  // 未就绪：保留标记待下次
+      m.queryPending = false;
+      m.queryRunning = true;
+      bool ok = queryPort(p);
+      m.queryRunning = false;
+      if (!ok) m.queryPending = true;  // 查询失败：下轮重试
+    }
+    vTaskDelay(pdMS_TO_TICKS(cfg::kSmsQueryPollMs));
+  }
+}
+
+// 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
+bool SmsService::queryPort(uint8_t port) {
+  ModemState &m = _modems[port];
+  // 查询期间暂停后台指令（心跳 / 遥测），避免 AT 互相交织
+  { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }
+
+  // 1) 存储占用（仅用于日志；失败不阻断后续查询）
+  SerialBridge::Result cp = _bridge.send(port, cfg::kUartBaud, "AT+CPMS=\"SM\"",
+                                         SerialBridge::kCrlf, cfg::kSmsQueryTimeoutMs,
+                                         AtHistory::Type::kBg);
+  if (cp.ok && cp.resp.indexOf("+CPMS:") >= 0) {
+    _log.addf(LogLevel::kDebug, "sms", "通信模组 %u 短信存储占用：%s",
+              (unsigned)port, cp.resp.substring(cp.resp.indexOf("+CPMS:")).c_str());
+  }
+
+  // 2) 列出全部短信索引
+  SerialBridge::Result gl = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=0",
+                                         SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                         AtHistory::Type::kBg);
+  if (!gl.ok) {
+    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败", (unsigned)port);
+    return false;
+  }
+  std::vector<int> idxs;
+  parseSmsIndexes(gl.resp, idxs);
+  if (idxs.empty()) {
+    m.queryLastFound = 0;
+    m.queryLastHandled = 0;
+    _queryLastMs = millis();
+    return true;  // 无存量：正常结束
+  }
+
+  // 3) 逐条读出 PDU 并解码（解码需持有编解码锁：pdulib 实例非线程安全）
+  struct Stored {
+    int    idx = 0;
+    String sender, ts, text;
+    int    concat[3] = {0, 0, 0};
+  };
+  std::vector<Stored> msgs;
+  for (int idx : idxs) {
+    if (msgs.size() >= cfg::kSmsQueryMaxMsgs) {
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 存量短信超过 %u 条，本轮仅处理前 %u 条",
+                (unsigned)port, (unsigned)cfg::kSmsQueryMaxMsgs, (unsigned)msgs.size());
+      break;
+    }
+    char cmd[24];
+    snprintf(cmd, sizeof(cmd), "AT+CMGR=%d", idx);
+    SerialBridge::Result gr = _bridge.send(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf,
+                                           cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
+    if (!gr.ok) continue;
+    String pdu = extractPduHex(gr.resp);
+    if (!pdu.length()) continue;  // 读不到内容：跳过，不删除
+    Stored s;
+    s.idx = idx;
+    xSemaphoreTake(_codecMutex, portMAX_DELAY);
+    bool ok = _codec.decode(pdu, s.sender, s.ts, s.text, s.concat);
+    xSemaphoreGive(_codecMutex);
+    if (!ok) continue;
+    msgs.push_back(s);
+  }
+  m.queryLastFound = (uint32_t)msgs.size();
+  if (msgs.empty()) {
+    _queryLastMs = millis();
+    return true;
+  }
+
+  // 4) 分组：长短信按（发送方 + 参考号）归组，其余各自成组
+  std::vector<std::vector<int>> groups;
+  for (size_t i = 0; i < msgs.size(); i++) {
+    int g = -1;
+    if (msgs[i].concat[2] > 1) {
+      for (size_t j = 0; j < groups.size(); j++) {
+        const Stored &h = msgs[groups[j][0]];
+        if (h.sender == msgs[i].sender && h.concat[0] == msgs[i].concat[0]) { g = (int)j; break; }
+      }
+    }
+    if (g < 0) {
+      groups.push_back(std::vector<int>());
+      g = (int)groups.size() - 1;
+    }
+    groups[g].push_back((int)i);
+  }
+
+  // 5) 逐组处理：按分段序号升序喂入收信处理链，长短信在最后一段到齐时才落盘
+  uint32_t handled = 0;
+  for (auto &grp : groups) {
+    std::sort(grp.begin(), grp.end(), [&](int a, int b) {
+      return msgs[a].concat[1] < msgs[b].concat[1];
+    });
+    CmtOutcome last = CmtOutcome::kKeep;
+    for (int i : grp) {
+      Stored &s = msgs[i];
+      xSemaphoreTake(_codecMutex, portMAX_DELAY);
+      last = processDecodedLocked(port, s.sender, s.ts, s.text, s.concat);
+      xSemaphoreGive(_codecMutex);
+    }
+    // 整组可删的条件：序号最大的一段处理成功（长短信只有最后一段到齐才会落盘）
+    if (last != CmtOutcome::kDelete) continue;
+    if (!_deleteAfterRead) {
+      handled++;
+      continue;
+    }
+    for (int i : grp) {
+      char del[24];
+      snprintf(del, sizeof(del), "AT+CMGD=%d", msgs[i].idx);
+      SerialBridge::Result dr = _bridge.send(port, cfg::kUartBaud, del, SerialBridge::kCrlf,
+                                             cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
+      if (!dr.ok || dr.resp.indexOf("OK") < 0) {
+        _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 删除短信 %d 失败（已入库，靠去重避免重复）",
+                  (unsigned)port, msgs[i].idx);
+      }
+    }
+    handled++;
+  }
+  m.queryLastHandled = handled;
+  _queryLastMs = millis();
+  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 查询完成：存量 %u 条，处理 %u 条",
+            (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled);
+  return true;
+}
+
+// 解析 AT+CMGL 响应中的短信索引（+CMGL: <idx>,...）
+void SmsService::parseSmsIndexes(const String &resp, std::vector<int> &out) {
+  int pos = 0;
+  for (;;) {
+    int i = resp.indexOf("+CMGL:", pos);
+    if (i < 0) break;
+    int j = i + 6;
+    while (j < (int)resp.length() && resp[j] == ' ') j++;
+    int idx = 0;
+    bool num = false;
+    while (j < (int)resp.length() && resp[j] >= '0' && resp[j] <= '9') {
+      idx = idx * 10 + (resp[j] - '0');
+      j++;
+      num = true;
+    }
+    if (num && idx > 0) out.push_back(idx);
+    pos = i + 6;
+  }
+}
+
+// 从 AT+CMGR 响应中提取 PDU 十六进制串（+CMGR: 头之后的下一行）
+String SmsService::extractPduHex(const String &resp) {
+  int pos = 0;
+  while (pos <= (int)resp.length()) {
+    int nl = resp.indexOf('\n', pos);
+    String line = (nl >= 0) ? resp.substring(pos, nl) : resp.substring(pos);
+    pos = (nl >= 0) ? nl + 1 : (int)resp.length() + 1;
+    line.trim();
+    if (!line.length()) continue;
+    if (line.startsWith("+CMGR:")) continue;  // 头行：取下一行
+    if (isPduLine(line)) return line;
+    if (line == "OK" || line.startsWith("+CMS ERROR") ||
+        line.startsWith("+CME ERROR")) break;
+  }
+  return String();
+}
+
+// 去重表查询：TTL 内同键视为已处理过
+bool SmsService::dedupHit(const String &key) {
+  uint32_t now = millis();
+  for (uint8_t i = 0; i < cfg::kSmsDedupSlots; i++) {
+    if (!_dedup[i].key.length()) continue;
+    if (now - _dedup[i].ms >= cfg::kSmsDedupTtlMs) continue;  // 已过期
+    if (_dedup[i].key == key) return true;
+  }
+  return false;
+}
+
+// 去重表登记（环形覆盖最旧）
+void SmsService::dedupAdd(const String &key) {
+  _dedup[_dedupNext].key = key;
+  _dedup[_dedupNext].ms = millis();
+  _dedupNext = (uint8_t)((_dedupNext + 1) % cfg::kSmsDedupSlots);
+}
+
+// 请求查询通信模组存储中的短信（异步，不阻塞调用方）
+bool SmsService::requestQuery(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  if (!_modems[port].enabled) return false;
+  _modems[port].queryPending = true;
+  return true;
+}
+
+// 对所有启用的通信模组各发起一次查询
+void SmsService::requestQueryAll() {
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) requestQuery(p);
+}
+
+// 查询状态 JSON（Web 展示）
+String SmsService::queryStatusJson() const {
+  JsonDocument doc;
+  doc["storeMode"] = _cnmiStore;
+  doc["deleteAfterRead"] = _deleteAfterRead;
+  doc["lastMs"] = _queryLastMs;
+  doc["safetySec"] = (uint32_t)(_safetyPollMs / 1000);  // 兜底轮询周期（秒）
+  JsonArray arr = doc["ports"].to<JsonArray>();
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = p;
+    o["enabled"] = _modems[p].enabled;
+    o["pending"] = _modems[p].queryPending;
+    o["running"] = _modems[p].queryRunning;
+    o["lastFound"] = _modems[p].queryLastFound;
+    o["lastHandled"] = _modems[p].queryLastHandled;
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+// 判断定时查询是否到期；到期仅置待查标记（真正的 AT 由查询任务执行）
+// 每日定点模式依赖本地时间（需时间已同步）；固定间隔模式基于开机时长。
+void SmsService::pollSchedule() {
+  // ---- 兜底轮询（常开）：与 +CMTI 自动上报互为补充 ----
+  // 自动上报（URC 索引）丢失时，本周期主动下发 AT 指令把模组存储里的短信拉回来，
+  // 保证不漏收；只在存储模式（短信落模组侧）下有意义。
+  if (_cnmiStore && millis() - _safetyLastMs >= _safetyPollMs) {
+    _safetyLastMs = millis();
+    requestQueryAll();
+    _log.addf(LogLevel::kDebug, "sms", "兜底轮询触发主动查询（每 %u 秒）",
+              (unsigned)(_safetyPollMs / 1000));
+  }
+
+  if (!_pollEnabled) return;
+
+  if (_pollMode == cfg::kSchedModeInterval) {
+    uint32_t ivMs = (uint32_t)_pollIntervalH * 3600UL * 1000UL;
+    if (millis() - _pollBaseMs < ivMs) return;
+    _pollBaseMs = millis();
+    requestQueryAll();
+    _log.addf(LogLevel::kInfo, "sms", "定时主动查询触发（间隔 %u 小时）",
+              (unsigned)_pollIntervalH);
+    return;
+  }
+
+  // 每日定点：需时间已同步（未同步时 nowTs() 返回开机秒数 < 1.6e9）
+  uint32_t now = nowTs();
+  if (now < 1600000000) return;
+  time_t tt = (time_t)now;
+  struct tm t;
+  localtime_r(&tt, &t);
+  uint32_t curSec = (uint32_t)(t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec);
+  uint32_t targetSec = (uint32_t)_pollDailyMin * 60UL;
+  if (curSec < targetSec || curSec >= targetSec + cfg::kSchedDailyWindowSec) return;
+  // 本地天序号：同一天只触发一次
+  struct tm tl = t;
+  tl.tm_hour = 0; tl.tm_min = 0; tl.tm_sec = 0;
+  uint32_t day = (uint32_t)mktime(&tl) / 86400UL;
+  if (_pollLastDay == day) return;
+  _pollLastDay = day;
+  saveConfig();  // 持久化，防重启后同日重复触发
+  requestQueryAll();
+  _log.addf(LogLevel::kInfo, "sms", "定时主动查询触发（每日 %02u:%02u）",
+            (unsigned)(_pollDailyMin / 60), (unsigned)(_pollDailyMin % 60));
+}
+
+// 解析并应用定时查询配置字段（不落盘；载入与设置共用）
+void SmsService::setPollFields(JsonObjectConst o) {
+  if (!o) return;
+  if (o["enabled"].is<bool>()) _pollEnabled = o["enabled"].as<bool>();
+  if (o["mode"].is<int>()) {
+    int m = o["mode"].as<int>();
+    _pollMode = (m == cfg::kSchedModeDaily) ? cfg::kSchedModeDaily
+                                            : cfg::kSchedModeInterval;
+  }
+  if (o["intervalH"].is<int>()) {
+    int h = o["intervalH"].as<int>();
+    _pollIntervalH = (uint16_t)constrain(h, (int)cfg::kSchedIntervalHMin,
+                                         (int)cfg::kSchedIntervalHMax);
+  }
+  if (o["hour"].is<int>() || o["minute"].is<int>()) {
+    int hh = o["hour"] | 0;
+    int mm = o["minute"] | 0;
+    _pollDailyMin = (uint16_t)constrain(hh * 60 + mm, 0, 1439);
+  }
+  if (o["safetySec"].is<int>()) {
+    int s = o["safetySec"].as<int>();
+    _safetyPollMs = (uint32_t)constrain(s, 30, 3600) * 1000UL;
+  }
+}
+
+// 应用定时查询配置并落盘
+bool SmsService::applyPollConfig(JsonObjectConst o) {
+  if (!o) return false;
+  setPollFields(o);
+  _pollBaseMs = millis();  // 配置变更后重置基线，避免用旧基线立刻触发
+  if (!saveConfig()) {
+    _log.addf(LogLevel::kError, "sms", "定时查询配置落盘失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "sms", "定时主动查询配置已更新：%s，%s",
+            _pollEnabled ? "启用" : "停用",
+            _pollMode == cfg::kSchedModeDaily ? "每日定点" : "固定间隔");
+  return true;
+}
+
+// 切换短信接收模式（CNMI）：落盘保存 + 标记热下发。
+// 真正的 CNMI 下发由查询任务串行执行（阻塞 AT 不进 Web 任务）。
+bool SmsService::setStoreMode(bool on) {
+  if (_cnmiStore == on) return true;
+  _cnmiStore = on;
+  _cnmiDirty = true;
+  if (!saveConfig()) {
+    _log.addf(LogLevel::kError, "sms", "短信接收模式配置落盘失败");
+    return false;
+  }
+  _log.addf(LogLevel::kInfo, "sms", "短信接收模式已切换：%s",
+            on ? "存储+索引上报(CNMI=2,1)" : "直投(CNMI=2,2)");
+  return true;
 }
 
 // 最新一条短信的摘要 JSON
@@ -1867,6 +2301,15 @@ bool SmsService::loadConfig() {
   }
   // 总开关：缺省（旧配置/未写入）一律视为禁用，符合「默认关」约定
   _adminEnabled = doc["adminEnabled"] | false;
+  // 收信模式与查询后删除策略：缺省沿用当前默认（存储模式 + 读完删除）
+  _cnmiStore = doc["cnmiStore"] | true;
+  _deleteAfterRead = doc["deleteAfterRead"] | true;
+  // 定时主动查询配置（poll 节）
+  if (doc["poll"].is<JsonObject>()) {
+    JsonObject po = doc["poll"].as<JsonObject>();
+    setPollFields(po);
+    if (po["lastDay"].is<uint32_t>()) _pollLastDay = po["lastDay"].as<uint32_t>();
+  }
   for (JsonObject o : doc["modems"].as<JsonArray>()) {
     int port = o["port"] | 0;
     if (port >= 1 && port <= cfg::kSmsMaxModems) {
@@ -1896,6 +2339,9 @@ bool SmsService::importFrom(const JsonObject &o) {
     }
   }
   if (o["adminEnabled"].is<bool>()) _adminEnabled = o["adminEnabled"].as<bool>();
+  if (o["cnmiStore"].is<bool>()) _cnmiStore = o["cnmiStore"].as<bool>();
+  if (o["deleteAfterRead"].is<bool>()) _deleteAfterRead = o["deleteAfterRead"].as<bool>();
+  if (o["poll"].is<JsonObject>()) setPollFields(o["poll"].as<JsonObject>());
   for (JsonObject m : o["modems"].as<JsonArray>()) {
     int port = m["port"] | 0;
     if (port >= 1 && port <= cfg::kSmsMaxModems) {
@@ -1917,6 +2363,18 @@ bool SmsService::saveConfig() {
   doc["ver"] = 1;
   doc["max"] = _max;
   doc["adminEnabled"] = _adminEnabled;
+  doc["cnmiStore"] = _cnmiStore;
+  doc["deleteAfterRead"] = _deleteAfterRead;
+  {
+    JsonObject po = doc["poll"].to<JsonObject>();
+    po["enabled"] = _pollEnabled;
+    po["mode"] = _pollMode;
+    po["intervalH"] = _pollIntervalH;
+    po["hour"] = _pollDailyMin / 60;
+    po["minute"] = _pollDailyMin % 60;
+    po["safetySec"] = (uint32_t)(_safetyPollMs / 1000);  // 兜底轮询周期
+    po["lastDay"] = _pollLastDay;   // 运行时状态一并持久化（每日模式防重复触发）
+  }
   {
     JsonArray ap = doc["adminPhones"].to<JsonArray>();
     for (uint8_t i = 0; i < _adminPhoneCount; i++) ap.add(_adminPhones[i]);

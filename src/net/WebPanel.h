@@ -208,6 +208,21 @@ class WebPanel {
   void handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsPingGet(AsyncWebServerRequest *req);
 
+  // 主动查询通信模组存储中的短信：POST {"port":n?} 触发（缺省 = 全部启用模组），
+  // 异步执行（查询任务），GET 返回查询状态（各端口待查/执行中 + 上次结果）。
+  void handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleSmsQueryGet(AsyncWebServerRequest *req);
+
+  // 定时主动查询配置：GET 读 / POST {"enabled","mode","intervalH","hour","minute"}
+  void handleSmsPollGet(AsyncWebServerRequest *req);
+  void handleSmsPollPost(AsyncWebServerRequest *req, JsonVariant &json);
+
+  // 短信接收模式（CNMI）：GET 读当前模式 / POST {"store":bool} 切换
+  // store=true 存储模式（CNMI=2,1，短信落通信模组侧并上报 +CMTI，配合主动查询）；
+  // store=false 直投模式（CNMI=2,2，新短信直接投递给设备）
+  void handleSmsStoreGet(AsyncWebServerRequest *req);
+  void handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // 邮件：配置读取 / 总开关 / 测试发送 / 配置保存
   void handleEmailGet(AsyncWebServerRequest *req);
   void handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json);

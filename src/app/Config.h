@@ -287,6 +287,21 @@ constexpr uint32_t kSmsSendPauseMs = kSmsCmgsPromptMs + kSmsSendTimeoutMs + 3000
 constexpr uint32_t kSmsCmdTimeoutMs = 1500;       // AT 配置类命令超时
 constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
 
+// ---------------- 主动查询短信（模组存储兜底）----------------
+// 通信模组以 CNMI=2,1（落存储 + 上报 +CMTI 索引）接收时短信不再直投，
+// 改由「查询任务」按需/定时把模组存储里的短信读回本机：落盘 + 推送成功后再删除
+// 模组侧副本。直投模式（CNMI=2,2）下该链路仅作兜底（+CMT 丢失时的补救）。
+constexpr uint32_t kSmsQueryPollMs = 250;        // 查询任务轮询周期（检查待查标记）
+constexpr uint32_t kSmsQueryTimeoutMs = 3000;     // 单条查询 AT 的响应收集超时
+constexpr uint32_t kSmsQueryListTimeoutMs = 8000; // AT+CMGL 列表响应收集超时（存量多时更久）
+constexpr uint8_t  kSmsQueryMaxMsgs = 20;        // 单轮最多处理的存量短信条数（防止长时间占端口）
+constexpr uint32_t kSmsDedupTtlMs = 600000;      // 去重有效期（10 分钟）：防止删除失败后重复落盘
+constexpr uint8_t  kSmsDedupSlots = 32;          // 去重表槽位数（环形覆盖最旧）
+// 兜底轮询周期（毫秒）：与 +CMTI 自动上报互为补充——URC 丢失时按此周期
+// 主动下发 AT 指令拉取通信模组存储中的短信，防止漏收。常开，不随排程配置变化。
+// 每轮仅 AT+CPMS + AT+CMGL 两条指令（存量为空时响应很短），串口占用约 1%。
+constexpr uint32_t kSmsSafetyPollMs = 60000;     // 1 分钟
+
 // ---------------- 时间同步（NTP 为主，SIM NITZ 兜底）----------------
 constexpr int32_t  kNtpGmtOffsetSec = 8 * 3600;                 // 时区偏移：UTC+8
 constexpr uint32_t kNtpTimeoutMs    = 10000;                    // NTP 启动后等待首次同步的上限

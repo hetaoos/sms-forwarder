@@ -83,10 +83,103 @@
     </div>
   </div>
 
+  <!-- 主动查询短信（通信模组存储兜底） -->
+  <div class="card" style="margin-top:16px">
+    <h3>主动查询短信
+      <span class="badge" :class="storeMode ? 'ok' : 'info'"
+            x-text="storeMode ? '存储模式' : '直投模式'"></span>
+    </h3>
+    <p class="hint">短信以 CNMI=2,1 接收时先落在通信模组侧：设备收到 +CMTI 索引通知后立即下发 AT 指令
+      主动读回（AT+CMGL / AT+CMGR），另有兜底轮询每 <b x-text="safetyText()"></b> 主动拉取一次，
+      防止自动上报丢失导致漏短信。读回后自动删除通信模组侧副本，取回的短信照常落盘并推送。</p>
+
+    <div class="bar" style="margin-top:10px;align-items:center">
+      <label class="chk"><input type="checkbox" x-model="storeMode" @change="saveStore()">
+        <span>存储模式（CNMI=2,1）：短信落通信模组侧并上报索引，由设备主动读回</span></label>
+    </div>
+
+    <div class="bar" style="margin-top:10px;align-items:flex-end">
+      <div class="field" style="max-width:180px"><label>兜底轮询周期（秒，30-3600）</label>
+        <input type="number" min="30" max="3600" step="10" x-model.number="poll.safetySec">
+      </div>
+      <button class="btn ghost" @click="saveSafety()" :disabled="pollSaving">保存周期</button>
+      <span class="hint">自动上报（+CMTI）丢失时，按此周期主动下发指令补拉，防止漏短信。</span>
+    </div>
+
+    <div class="bar" style="margin-top:10px">
+      <button class="btn" @click="startQuery(0)" :disabled="queryBusy"
+              x-text="queryBusy ? '查询中…' : '立即查询全部'"></button>
+      <select class="inp sm" style="min-width:150px" x-model.number="queryPort">
+        <option value="0">指定通信模组…</option>
+        <template x-for="m in modems" :key="'q'+m.port">
+          <option :value="m.port" x-text="modemLabel(m)" :disabled="!m.enabled"></option>
+        </template>
+      </select>
+      <button class="btn ghost" @click="startQuery(queryPort)"
+              :disabled="queryBusy || !queryPort">查询</button>
+    </div>
+
+    <div class="bar" style="margin-top:10px;align-items:flex-start;flex-wrap:wrap;gap:8px"
+         x-show="queryPorts().length" x-cloak>
+      <template x-for="q in queryPorts()" :key="'qs'+q.port">
+        <span class="badge" :class="q.running ? 'warn' : (q.pending ? 'info' : 'ok')"
+              x-text="modemLabel({port:q.port}) + ' · ' + queryStateText(q) +
+                     '（发现 ' + q.lastFound + ' / 处理 ' + q.lastHandled + '）'"></span>
+      </template>
+    </div>
+  </div>
+
+  <!-- 定时主动查询 -->
+  <div class="card" style="margin-top:16px">
+    <h3>定时主动查询
+      <span class="badge" :class="poll.enabled ? 'ok' : 'err'"
+            x-text="poll.enabled ? '已启用' : '已禁用'"></span>
+    </h3>
+    <p class="hint">按计划主动查询通信模组存储中的短信，取回的短信照常落盘并推送。
+      与兜底轮询相互独立：兜底轮询常开用于防漏，此处是你额外指定的日程。
+      固定间隔基于开机时长；每日定点依赖本地时间（需时间已同步）。</p>
+
+    <form @submit.prevent="savePoll()">
+      <div class="bar" style="margin-top:12px;align-items:center">
+        <label class="chk"><input type="checkbox" x-model="poll.enabled"> <span>启用定时主动查询</span></label>
+      </div>
+
+      <div class="grid cols2" style="margin-top:12px">
+        <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer">
+          <input type="radio" style="margin-top:3px" value="1" x-model.number="poll.mode">
+          <span><span style="font-size:14px;color:var(--text)">固定间隔</span><br>
+          <span style="font-size:12px;color:var(--muted)">每隔 N 小时查询一次（1-720）</span></span>
+        </label>
+        <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer">
+          <input type="radio" style="margin-top:3px" value="0" x-model.number="poll.mode">
+          <span><span style="font-size:14px;color:var(--text)">每日定点</span><br>
+          <span style="font-size:12px;color:var(--muted)">每天固定时刻查询一次</span></span>
+        </label>
+      </div>
+
+      <div x-show="poll.mode == 1" style="margin-top:12px">
+        <div class="field"><label>间隔（小时，1-720）</label>
+          <input type="number" min="1" max="720" x-model.number="poll.intervalH">
+        </div>
+      </div>
+
+      <div x-show="poll.mode == 0" style="margin-top:12px">
+        <div class="field"><label>每日时间（HH:MM）</label>
+          <input type="time" x-model="poll.daily">
+        </div>
+      </div>
+
+      <div class="bar" style="margin-top:14px">
+        <button type="submit" class="btn" :disabled="pollSaving"
+                x-text="pollSaving ? '保存中…' : '保存配置'"></button>
+      </div>
+    </form>
+  </div>
+
   <div class="card" style="margin-top:16px">
     <h3>说明</h3>
     <p class="hint" style="margin:0">
-      启用后设备自动将通信模组配置为 PDU 模式（CMGF=0）并开启新短信直投（CNMI=2,2）。<br>
+      启用后设备自动将通信模组配置为 PDU 模式（CMGF=0）并开启新短信存储上报（CNMI=2,1）。<br>
       信号 / 运营商 / 注册 / 号码等遥测每数秒自动刷新；若通信模组停在「故障 / 未连接」，多为未插 SIM 或信号不足。
     </p>
   </div>

@@ -105,19 +105,24 @@ class PushService {
     MsgType type = MSG_TYPE_SMS;
   };
 
-  // 失败重试项：channelIdx>=0 表示单通道重试，-1 表示整链重试
+  // 失败重试项：channelIdx 指向要重发的通道下标
   struct RetryItem {
     int      channelIdx = -1;
     PushJob  job;
-    uint8_t  attempts = 0;
+    uint8_t  attempts = 0;      // 已尝试次数（等待网络期间不计入）
     uint32_t nextAt = 0;
+    bool     needsNet = false;  // HTTP 通道：WiFi 未连接时推迟，不消耗尝试次数
   };
 
   // 单条推送任务执行（广播 / 故障转移编排）
-  void executeChain(const PushJob &job);
+  // attempts：整链重试的累计尝试次数（用于退避与封顶判断）
+  void executeChain(const PushJob &job, uint8_t attempts = 0);
 
   // 单通道推送（含跳过判断、构建上下文），供重试回调
   bool executeChannel(int channelIdx, const PushJob &job);
+
+  // 重试退避时长（毫秒）：2s,4s,8s... 封顶 kRetryBackoffMax
+  static uint32_t retryBackoffMs(uint8_t attempts);
 
   // 内部辅助：按通道配置分发单次推送（不含跳过判断）
   bool _sendOneChannel(const PushChannel &ch, const MessageContext &ctx,
@@ -155,10 +160,11 @@ class PushService {
   PushChannel  _channels[MAX_PUSH_CHANNELS];
   int          _count = 0;                     // 有效通道数（遍历以此为界）
 
-  static constexpr uint8_t kQueueSize = 6;     // 待发队列深度（满时丢新的）
-  static constexpr uint8_t kRetrySize = 20;    // 重试表容量
-  static constexpr uint8_t kMaxAttempts = 3;   // 单条重试最大次数（含首次）
+  static constexpr uint8_t kQueueSize = 6;     // 待发队列深度（满时丢最旧）
+  static constexpr uint8_t kRetrySize = 32;    // 重试表容量
+  static constexpr uint8_t kMaxAttempts = 8;   // 单条重试最大次数（含首次）
   static constexpr uint32_t kRetryBackoffBase = 2000;  // 退避基值（2s,4s,...）
+  static constexpr uint32_t kRetryBackoffMax = 300000; // 退避封顶（5min）
 
   PushJob    _queue[kQueueSize];
   uint8_t    _queueCount = 0;

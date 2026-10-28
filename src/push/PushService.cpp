@@ -139,14 +139,21 @@ bool PushService::requestTest() {
 void PushService::tick() {
   // 先处理重试表（到期项），再处理主队列（每 tick 至多一条，避免长时间阻塞 loop）
   uint32_t now = millis();
-  if (_retryCount > 0 && WiFi.status() == WL_CONNECTED && (int32_t)(now - _nextRetryMs) >= 0) {
+  if (_retryCount > 0 && (int32_t)(now - _nextRetryMs) >= 0) {
     RetryItem item;
     bool have = false;
+    bool waitNet = false;
     {
       Guard g(_mutex);
       // 取一个到期的重试项
       for (uint8_t i = 0; i < _retryCount; i++) {
         if ((int32_t)(now - _retry[i].nextAt) >= 0) {
+          // HTTP 通道依赖网络：WiFi 未连接时推迟重试，且不消耗尝试次数
+          // （对齐 EmailService 的「等网络不丢任务」范式）
+          if (_retry[i].needsNet && WiFi.status() != WL_CONNECTED) {
+            waitNet = true;
+            continue;
+          }
           item = _retry[i];
           for (uint8_t j = i + 1; j < _retryCount; j++) _retry[j - 1] = _retry[j];
           _retryCount--;
@@ -155,17 +162,31 @@ void PushService::tick() {
         }
       }
     }
+    if (waitNet) {
+      // 等 WiFi 恢复，2s 后再看（期间不占用尝试次数）
+      _nextRetryMs = millis() + 2000;
+    }
     if (have) {
       if (item.channelIdx >= 0) {
         bool ok = executeChannel(item.channelIdx, item.job);
-        if (!ok && item.attempts < kMaxAttempts) {
-          item.attempts++;
-          item.nextAt = millis() + (kRetryBackoffBase << (item.attempts - 1));
-          Guard g(_mutex);
-          enqueueRetryLocked(item);
+        if (!ok) {
+          if (item.needsNet && WiFi.status() != WL_CONNECTED) {
+            // 网络仍未恢复：推迟重试，不消耗尝试次数
+            item.nextAt = millis() + 2000;
+            Guard g(_mutex);
+            enqueueRetryLocked(item);
+          } else if (item.attempts < kMaxAttempts) {
+            item.attempts++;
+            item.nextAt = millis() + retryBackoffMs(item.attempts);
+            Guard g(_mutex);
+            enqueueRetryLocked(item);
+          } else {
+            _log.addf(LogLevel::kWarn, "push", "重试次数已达上限，放弃推送（发送方 %s）",
+                      item.job.sender.c_str());
+          }
         }
       } else {
-        executeChain(item.job);  // 整链重试
+        executeChain(item.job, item.attempts);  // 整链重试
       }
       _nextRetryMs = millis() + HTTP_COOLDOWN_MS;
       return;  // 本 tick 只处理一个重试/主任务
@@ -185,7 +206,15 @@ void PushService::tick() {
 }
 
 // ---------------- 策略引擎 ----------------
-void PushService::executeChain(const PushJob& job) {
+// 重试退避：2s,4s,8s... 指数增长并封顶（5min），避免长时间失败时高频空转
+uint32_t PushService::retryBackoffMs(uint8_t attempts) {
+  if (attempts == 0) attempts = 1;
+  if (attempts > 16) attempts = 16;  // 防位移溢出
+  uint32_t v = kRetryBackoffBase << (attempts - 1);
+  return v > kRetryBackoffMax ? kRetryBackoffMax : v;
+}
+
+void PushService::executeChain(const PushJob& job, uint8_t attempts) {
   // 先持锁快照配置，随后释放，避免 HTTP 发送期间长期持锁阻塞 Web 保存 / 回调
   PushChannel snap[MAX_PUSH_CHANNELS];
   int  snapCount;
@@ -203,11 +232,16 @@ void PushService::executeChain(const PushJob& job) {
 
   bool wifiOk = (WiFi.status() == WL_CONNECTED);
   bool anyAction = false;
+  bool anyDeferred = false;  // 有通道因 WiFi 未连接而推迟发送
 
   // 故障转移：收集失败通道，仅在整链全部失败时才入队重试。
   int  failoverRetry[MAX_PUSH_CHANNELS];
   int  failoverRetryCount = 0;
   bool failoverChainDone = false;
+  // 因 WiFi 未连接而无法尝试的 HTTP 通道：整链失败时才补入重试表
+  // （若后续通道已成功送达，则不补发，避免重复推送）
+  int  deferredHttp[MAX_PUSH_CHANNELS];
+  int  deferredCount = 0;
 
   String messageType = MsgTypeInfo(job.type, job.modem).toString();
   MessageContext ctx = buildMsgContext(job, messageType);
@@ -216,7 +250,16 @@ void PushService::executeChain(const PushJob& job) {
     const PushChannel& ch = snap[i];
     if (!pushChannelValid(ch)) continue;
     if (isHttpPush(ch.type) && !wifiOk) {
-      _log.addf(LogLevel::kInfo, "push", "WiFi未连接，跳过HTTP通道: %s", ch.name.c_str());
+      // WiFi 未连接：HTTP 通道发不出去，但不能丢——保留任务等待网络恢复
+      _log.addf(LogLevel::kInfo, "push", "WiFi未连接，HTTP通道待网络恢复: %s", ch.name.c_str());
+      anyDeferred = true;
+      if (snapStrategy == PUSH_STRATEGY_FAILOVER) {
+        if (deferredCount < MAX_PUSH_CHANNELS) deferredHttp[deferredCount++] = i;
+      } else {
+        RetryItem it; it.channelIdx = i; it.job = job; it.needsNet = true;
+        Guard g(_mutex);
+        enqueueRetryLocked(it);
+      }
       continue;
     }
     if (ch.type == PUSH_TYPE_SMS && smsPushSkipped(job.type)) {
@@ -250,6 +293,8 @@ void PushService::executeChain(const PushJob& job) {
       // 广播模式：继续所有通道
       if (!ok && ch.retryOnFail) {
         RetryItem it; it.channelIdx = i; it.job = job;
+        it.needsNet = isHttpPush(ch.type);  // HTTP 通道：断网期间不消耗尝试次数
+        Guard g(_mutex);
         enqueueRetryLocked(it);
         _log.addf(LogLevel::kInfo, "push", "通道 %s 失败，已加入重试队列", name.c_str());
       }
@@ -260,19 +305,42 @@ void PushService::executeChain(const PushJob& job) {
   if (snapStrategy == PUSH_STRATEGY_FAILOVER && !failoverChainDone) {
     for (int j = 0; j < failoverRetryCount; j++) {
       RetryItem it; it.channelIdx = failoverRetry[j]; it.job = job;
+      it.needsNet = isHttpPush(snap[failoverRetry[j]].type);
+      Guard g(_mutex);
       enqueueRetryLocked(it);
       _log.addf(LogLevel::kInfo, "push", "故障转移链全部失败，通道 %s 加入重试队列",
                 snap[failoverRetry[j]].name.c_str());
     }
-    // 整链全部失败且无任何可重试通道：整链重试一次（退避）
-    if (failoverRetryCount == 0) {
-      RetryItem it; it.channelIdx = -1; it.job = job;
+    // 整链全部失败且无任何可重试通道：整链重试（按尝试次数退避，封顶后放弃）
+    // （若存在因断网而推迟的通道，已按通道单独挂起，不再整链重试，避免重复）
+    if (failoverRetryCount == 0 && deferredCount == 0) {
+      uint8_t next = (uint8_t)(attempts + 1);
+      if (next < kMaxAttempts) {
+        RetryItem it; it.channelIdx = -1; it.job = job; it.attempts = next;
+        it.nextAt = millis() + retryBackoffMs(next);
+        Guard g(_mutex);
+        enqueueRetryLocked(it);
+      } else {
+        _log.addf(LogLevel::kWarn, "push", "重试次数已达上限，放弃推送（发送方 %s）",
+                  job.sender.c_str());
+      }
+    }
+    // 因断网未能尝试的 HTTP 通道：整链失败说明尚未送达，补入重试表等待网络恢复
+    for (int j = 0; j < deferredCount; j++) {
+      RetryItem it; it.channelIdx = deferredHttp[j]; it.job = job; it.needsNet = true;
+      Guard g(_mutex);
       enqueueRetryLocked(it);
+      _log.addf(LogLevel::kInfo, "push", "通道 %s 待网络恢复，已加入重试队列",
+                snap[deferredHttp[j]].name.c_str());
     }
   }
 
   if (!anyAction) {
-    _log.addf(LogLevel::kInfo, "push", "未配置任何有效推送通道，跳过推送");
+    if (anyDeferred) {
+      _log.addf(LogLevel::kInfo, "push", "网络不可用，消息已转入重试队列等待恢复");
+    } else {
+      _log.addf(LogLevel::kInfo, "push", "未配置任何有效推送通道，跳过推送");
+    }
   }
   _log.addf(LogLevel::kInfo, "push", "=== 多通道推送完成 ===");
 }
@@ -365,16 +433,18 @@ String PushService::renderChannelBody(const PushChannel& ch, const MessageContex
 void PushService::enqueueJobLocked(const PushJob& job) {
   if (_queueCount >= kQueueSize) {
     // 满时丢弃最旧
+    String dropped = _queue[0].sender;
     for (uint8_t i = 1; i < _queueCount; i++) _queue[i - 1] = _queue[i];
     _queueCount--;
-    _log.addf(LogLevel::kWarn, "push", "推送队列已满，丢弃最旧任务");
+    _log.addf(LogLevel::kWarn, "push", "推送队列已满，丢弃最旧任务（发送方 %s）", dropped.c_str());
   }
   _queue[_queueCount++] = job;
 }
 
 void PushService::enqueueRetryLocked(const RetryItem& item) {
   if (_retryCount >= kRetrySize) {
-    _log.addf(LogLevel::kWarn, "push", "重试表已满，丢弃重试项");
+    _log.addf(LogLevel::kWarn, "push", "重试表已满，丢弃重试项（发送方 %s）",
+              item.job.sender.c_str());
     return;
   }
   _retry[_retryCount++] = item;

@@ -632,6 +632,22 @@ void WebPanel::setupRoutes() {
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPingPost(req, json); });
   _server.on("/api/sms/ping", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPingGet(req); });
 
+  // 主动查询通信模组存储中的短信（存储模式兜底）：POST {"port":n?} 触发
+  // （缺省 = 全部启用模组），异步执行；GET 返回查询状态
+  _server.on("/api/sms/query", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsQueryPost(req, json); });
+  _server.on("/api/sms/query", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsQueryGet(req); });
+
+  // 定时主动查询配置：GET 读当前配置；POST {"enabled","mode","intervalH","hour","minute"}
+  _server.on("/api/sms/poll", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPollGet(req); });
+  _server.on("/api/sms/poll", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPollPost(req, json); });
+
+  // 短信接收模式（CNMI）：GET 读当前模式；POST {"store":bool} 切换
+  _server.on("/api/sms/store", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsStoreGet(req); });
+  _server.on("/api/sms/store", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsStorePost(req, json); });
+
   // ---- 以下是父路径 /api/sms，必须排在上述子路径之后 ----
   // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
   // "pageSize":ps,"messages":[{id,dir,phone,content,ts,modem}],...}
@@ -1733,6 +1749,97 @@ void WebPanel::handleSmsPingGet(AsyncWebServerRequest *req) {
   doc["busy"] = busy;
   doc["ok"] = ok;
   doc["report"] = result;
+  sendJsonDoc(req, doc);
+}
+
+// 主动查询通信模组存储短信：POST 触发（异步，由查询任务执行）。
+// JSON {"port":n?}：给出端口则只查该端口，缺省则对所有启用模组各查一次。
+void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  int port = 0;
+  if (json["port"].is<int>()) {
+    port = json["port"].as<int>();
+    if (port < 1 || port > cfg::kSmsMaxModems) {
+      sendErr(req, 400, "invalid port");
+      return;
+    }
+  }
+  bool started = false;
+  if (port) {
+    started = _sms.requestQuery((uint8_t)port);
+    if (!started) {
+      sendErr(req, 400, "通信模组未启用或不存在");
+      return;
+    }
+  } else {
+    _sms.requestQueryAll();
+    started = true;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["started"] = started;
+  sendJsonDoc(req, doc);
+}
+
+// 主动查询状态：各端口待查/执行中标记 + 上次查询发现/处理条数。
+void WebPanel::handleSmsQueryGet(AsyncWebServerRequest *req) {
+  sendJson(req, _sms.queryStatusJson());
+}
+
+// 定时主动查询配置：读取开关与模式参数
+void WebPanel::handleSmsPollGet(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["enabled"] = _sms.pollEnabled();
+  doc["mode"] = _sms.pollMode();
+  doc["intervalH"] = _sms.pollIntervalH();
+  doc["hour"] = (uint8_t)(_sms.pollDailyMin() / 60);
+  doc["minute"] = (uint8_t)(_sms.pollDailyMin() % 60);
+  doc["safetySec"] = (uint32_t)(_sms.safetyPollMs() / 1000);
+  sendJsonDoc(req, doc);
+}
+
+// 定时主动查询配置：保存 JSON {"enabled","mode","intervalH","hour","minute","safetySec"}
+void WebPanel::handleSmsPollPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>() || !_sms.applyPollConfig(json.as<JsonObjectConst>())) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["enabled"] = _sms.pollEnabled();
+  doc["mode"] = _sms.pollMode();
+  doc["intervalH"] = _sms.pollIntervalH();
+  doc["hour"] = (uint8_t)(_sms.pollDailyMin() / 60);
+  doc["minute"] = (uint8_t)(_sms.pollDailyMin() % 60);
+  doc["safetySec"] = (uint32_t)(_sms.safetyPollMs() / 1000);
+  sendJsonDoc(req, doc);
+}
+
+// 短信接收模式（CNMI）：读取当前模式
+void WebPanel::handleSmsStoreGet(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["store"] = _sms.storeMode();
+  sendJsonDoc(req, doc);
+}
+
+// 切换短信接收模式：JSON {"store":bool}（true=存储模式，false=直投模式）
+void WebPanel::handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>() || !json["store"].is<bool>()) {
+    sendErr(req, 400, "invalid json");
+    return;
+  }
+  if (!_sms.setStoreMode(json["store"].as<bool>())) {
+    sendErr(req, 500, "config save failed");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["store"] = _sms.storeMode();
   sendJsonDoc(req, doc);
 }
 

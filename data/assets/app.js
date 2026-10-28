@@ -1622,6 +1622,9 @@ function pageModem() {
       const live = Alpine.store('live');
       if (live.smsports.length) this.applyPorts(live.smsports);
       else this.loadPorts();
+      this.loadQueryStatus();
+      this.loadStore();
+      this.loadPoll();
     },
     applyPorts(list) {
       this.modems = list || [];
@@ -1707,6 +1710,120 @@ function pageModem() {
         this._pollTimer = setTimeout(tick, 1000);
       };
       tick();
+    },
+
+    // ---- 主动查询短信（通信模组存储兜底）----
+    queryStatus: { storeMode: true, deleteAfterRead: true, ports: [] },
+    queryPort: 0,             // 0 = 全部模组
+    queryBusy: false,
+    _qTimer: null,
+    // 短信接收模式：true = 存储模式（CNMI=2,1，配合主动查询）
+    storeMode: true,
+    async loadStore() {
+      try {
+        const r = await apiFetch('/api/sms/store');
+        if (r.ok) this.storeMode = !!(await r.json()).store;
+      } catch (e) {}
+    },
+    async saveStore() {
+      const r = await postOp('/api/sms/store', { store: !!this.storeMode },
+                             '短信接收模式已切换');
+      if (!r) {
+        await this.loadStore();   // 保存失败：回滚开关
+        return;
+      }
+      this.loadQueryStatus();
+    },
+    async loadQueryStatus() {
+      try {
+        const r = await apiFetch('/api/sms/query', { cache: 'no-store' });
+        if (r.ok) this.queryStatus = await r.json();
+      } catch (e) {}
+    },
+    queryPorts() { return (this.queryStatus.ports || []).filter(p => p.enabled); },
+    // 兜底轮询周期文案（后端实时值）
+    safetyText() {
+      const sec = this.queryStatus.safetySec || 60;
+      return sec < 120 ? (sec + ' 秒') : (Math.round(sec / 60) + ' 分钟');
+    },
+    queryStateText(q) {
+      if (q.running) return '查询中';
+      if (q.pending) return '待查询';
+      return '空闲';
+    },
+    // 触发查询：port=0 表示所有启用模组；查询由后端任务异步执行
+    async startQuery(port) {
+      if (this.queryBusy) return;
+      if (port && !this.queryPort) return;
+      const r = await postOp('/api/sms/query', port ? { port: port } : {}, '已触发查询');
+      if (!r) return;
+      this.queryBusy = true;
+      this.pollQuery();
+    },
+    // 轮询查询状态直到无端口在执行（超时上限 ~30s）
+    pollQuery() {
+      clearTimeout(this._qTimer);
+      let count = 0;
+      const tick = async () => {
+        await this.loadQueryStatus();
+        const running = (this.queryStatus.ports || []).some(p => p.enabled && p.running);
+        if (!running && count > 0) { this.queryBusy = false; return; }
+        if (++count > 30) { this.queryBusy = false; return; }
+        this._qTimer = setTimeout(tick, 1000);
+      };
+      tick();
+    },
+
+    // ---- 定时主动查询 ----
+    poll: { enabled: false, mode: 1, intervalH: 24, daily: '04:00', safetySec: 60 },
+    pollSaving: false,
+    async loadPoll() {
+      try {
+        const r = await apiFetch('/api/sms/poll');
+        if (r.ok) {
+          const j = await r.json();
+          this.poll.enabled = !!j.enabled;
+          this.poll.mode = j.mode;
+          this.poll.intervalH = j.intervalH || 24;
+          this.poll.safetySec = j.safetySec || 60;
+          const hh = String(j.hour == null ? 4 : j.hour).padStart(2, '0');
+          const mm = String(j.minute == null ? 0 : j.minute).padStart(2, '0');
+          this.poll.daily = hh + ':' + mm;
+        }
+      } catch (e) {}
+    },
+    // 仅保存兜底轮询周期（不影响定时查询日程）
+    async saveSafety() {
+      if (this.pollSaving) return;
+      this.pollSaving = true;
+      try {
+        const r = await postOp('/api/sms/poll',
+                               { safetySec: Number(this.poll.safetySec) || 60 },
+                               '兜底轮询周期已保存');
+        if (r) this.loadPoll();
+      } finally {
+        this.pollSaving = false;
+      }
+    },
+    async savePoll() {
+      if (this.pollSaving) return;
+      const parts = String(this.poll.daily || '00:00').split(':');
+      const hh = parseInt(parts[0], 10) || 0;
+      const mm = parseInt(parts[1], 10) || 0;
+      this.pollSaving = true;
+      try {
+        const r = await postOp('/api/sms/poll', {
+          enabled: !!this.poll.enabled,
+          mode: Number(this.poll.mode),
+          intervalH: Number(this.poll.intervalH) || 24,
+          hour: hh,
+          minute: mm,
+          safetySec: Number(this.poll.safetySec) || 60,
+        }, '定时查询配置已保存');
+        if (r) this.loadPoll();
+      } finally {
+        this.pollSaving = false;
+      }
     },
   };
 }

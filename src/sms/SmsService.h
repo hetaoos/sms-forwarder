@@ -88,6 +88,37 @@ class SmsService {
   // 永久阻塞；无启用通信模组时返回 true。
   bool modemsSettled() const;
 
+  // ---------------- 主动查询短信（通信模组存储兜底）----------------
+  // 通信模组以 CNMI=2,1 接收时短信落在通信模组侧（本机收不到 +CMT 直投），
+  // 由专职查询任务读回：AT+CMGL 列索引 -> AT+CMGR 读 PDU -> 复用收信处理链
+  // 落盘 + 推送 -> 成功后 AT+CMGD 删除通信模组侧副本。
+  // 请求异步执行（不阻塞调用方）；通信模组未就绪时请求保留，就绪后自动补跑。
+  bool requestQuery(uint8_t port);
+  // 对所有启用的通信模组各发起一次查询
+  void requestQueryAll();
+  // 查询状态 JSON（Web 展示）：各端口待查/执行中标记 + 上次查询结果
+  String queryStatusJson() const;
+
+  // ---------------- 定时主动查询（排程）----------------
+  // 到点后由 tick() 置待查标记，查询任务异步执行——主循环内绝不做阻塞 AT。
+  // 模式复用排程约定：cfg::kSchedModeInterval(1=固定间隔) / cfg::kSchedModeDaily(0=每日定点)。
+  bool pollEnabled() const { return _pollEnabled; }
+  uint8_t pollMode() const { return _pollMode; }
+  uint16_t pollIntervalH() const { return _pollIntervalH; }
+  uint16_t pollDailyMin() const { return _pollDailyMin; }
+  // 应用定时查询配置并落盘；可含 enabled / mode / intervalH / hour / minute
+  // 以及 safetySec（兜底轮询周期，秒，30-3600）
+  bool applyPollConfig(JsonObjectConst o);
+  // 兜底轮询周期（毫秒）：常开，与 +CMTI 自动上报互为补充
+  uint32_t safetyPollMs() const { return _safetyPollMs; }
+
+  // ---------------- 短信接收模式（CNMI）----------------
+  // true = 存储模式（CNMI=2,1，短信落通信模组侧并上报 +CMTI 索引，配合主动查询）；
+  // false = 直投模式（CNMI=2,2，新短信直接投递给设备）。
+  // 切换后落盘保存，并由查询任务把新的 CNMI 热下发给已就绪的通信模组。
+  bool storeMode() const { return _cnmiStore; }
+  bool setStoreMode(bool on);
+
   // 时间戳供给：设备已同步时间时返回纪元秒，否则返回开机秒数。
   // 由 App 注入 TimeSync 的实现；未注入时退化为开机秒数。
   // 短信记录时间戳统一经此获取（前端按 >=1.6e9 区分真实时间/开机时长）。
@@ -253,7 +284,13 @@ class SmsService {
     uint32_t cmdPauseUntil = 0;  // 暂停其他后台指令的绝对时刻；短信发送前标记、每收到短信延长（见使用处）
     bool needReinit = false;   // 运行时检测到通信模组重启 -> 重新开始初始化
     bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
-    bool simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
+    bool     simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
+
+    // ---- 主动查询（通信模组存储兜底）----
+    bool    queryPending = false;    // 有待执行的存储查询（+CMTI / 定时 / 手动触发）
+    bool    queryRunning = false;    // 查询任务正在处理本端口
+    uint32_t queryLastFound = 0;    // 上次查询发现的存量条数
+    uint32_t queryLastHandled = 0;  // 上次查询落盘处理的条数
 
     // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
     bool     callPending = false;        // RING 已到：等待号码或通话结束
@@ -313,7 +350,42 @@ class SmsService {
   bool sendPduPart(uint8_t port, const SmsPduPart &part, String &err);
 
   // 处理一条收到的 PDU（解码 + 重组 + 落盘）
-  void handleCmt(uint8_t port, const String &pduHex);
+  // 返回值决定通信模组侧副本能否删除（存储模式查询链路据此决定是否发 AT+CMGD）
+  enum class CmtOutcome : uint8_t {
+    kKeep,    // 保留：解码失败 / 长短信未收齐 / 落盘失败 -> 下轮查询重试
+    kDelete,  // 可删：已落盘 / 命中黑名单丢弃 / 管理员命令已消费
+  };
+  CmtOutcome handleCmt(uint8_t port, const String &pduHex);
+
+  // 处理一条已解码的短信（长短信分段在此重组）；调用方须持有 _codecMutex
+  CmtOutcome processDecodedLocked(uint8_t port, const String &sender,
+                                  const String &ts, const String &text,
+                                  const int *concat);
+
+  // 当前 CNMI 配置串：存储模式（2,1，落存储 + 上报 +CMTI 索引）/ 直投模式（2,2）
+  const char *cnmiCmd() const {
+    return _cnmiStore ? "AT+CNMI=2,1,0,0,0" : "AT+CNMI=2,2,0,0,0";
+  }
+
+  // ---------------- 主动查询任务（通信模组存储兜底）----------------
+  // 专职任务：轮询各端口的待查标记 -> 阻塞 AT 读回模组存储 -> 复用收信处理链
+  // -> 成功后删除模组侧副本。查询失败不删除任何内容，下轮重试。
+  static void queryTaskEntry(void *arg);
+  void queryTask();
+  // 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
+  bool queryPort(uint8_t port);
+  // 解析 AT+CMGL 响应中的短信索引列表
+  static void parseSmsIndexes(const String &resp, std::vector<int> &out);
+  // 从 AT+CMGR 响应中提取 PDU 十六进制串（无有效 PDU 返回空串）
+  static String extractPduHex(const String &resp);
+  // 去重表：命中（TTL 内同键）返回 true；仅在落盘成功后登记
+  bool dedupHit(const String &key);
+  void dedupAdd(const String &key);
+
+  // 判断定时查询是否到期；到期仅置待查标记（真正的 AT 由查询任务执行）
+  void pollSchedule();
+  // 解析并应用定时查询配置字段（不落盘；载入与设置共用）
+  void setPollFields(JsonObjectConst o);
 
   // 设置 SIM 就绪态并检测运行时切换（插卡/拔卡通知）。
   // 开机首次就绪（everReady=false）与通信模组重启后的重新就绪（未通知过拔出）
@@ -380,6 +452,31 @@ class SmsService {
   };
   static void sendTaskEntry(void *arg);
   void sendTask();
+
+  // ---------------- 主动查询（通信模组存储兜底）----------------
+  TaskHandle_t _queryTask = nullptr;    // 查询任务句柄
+  SemaphoreHandle_t _codecMutex = nullptr;  // 保护 PDU 解码（pdulib 实例非线程安全）与重组槽位
+  bool _cnmiStore = true;               // true = CNMI=2,1（落存储 + +CMTI 索引）；false = 2,2 直投
+  bool _cnmiDirty = false;              // 存储模式切换后待热下发 CNMI（由查询任务执行）
+  bool _deleteAfterRead = true;         // 查询处理成功后删除通信模组侧副本
+  // 去重表（环形）：键 = 发送方|时间戳|正文长度|正文 CRC，防删除失败后重复落盘
+  struct DedupItem {
+    String   key;
+    uint32_t ms = 0;
+  };
+  DedupItem _dedup[cfg::kSmsDedupSlots];
+  uint8_t   _dedupNext = 0;             // 环形写指针
+  uint32_t  _queryLastMs = 0;           // 上次查询完成时刻
+  uint32_t  _safetyLastMs = 0;          // 上次兜底轮询触发时刻（+CMTI 丢失时的第二重保险）
+  uint32_t  _safetyPollMs = cfg::kSmsSafetyPollMs;  // 兜底轮询周期（毫秒，可在配置页调整）
+
+  // ---------------- 定时主动查询（排程）----------------
+  bool     _pollEnabled = false;                        // 总开关（默认关）
+  uint8_t  _pollMode = cfg::kSchedModeInterval;         // 0=每日定点 1=固定间隔
+  uint16_t _pollIntervalH = cfg::kSchedIntervalHDefault;// 间隔模式周期（小时）
+  uint16_t _pollDailyMin = 0;                           // 每日定点（分钟，0..1439）
+  uint32_t _pollBaseMs = 0;                             // 间隔模式基线（开机 millis）
+  uint32_t _pollLastDay = 0;                            // 上次每日触发天序号（持久化防重复）
 
   SerialBridge &_bridge;    // AT 串口桥（send 通道）
   SmsStore _store;          // 文件存储
