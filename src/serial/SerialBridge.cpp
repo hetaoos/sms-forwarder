@@ -220,7 +220,8 @@ void SerialBridge::stashUrc(Port &p, const String &resp) {
     if (resp[i] == '+') {
       if (matchAt(resp, i, "+CMT:") || matchAt(resp, i, "+CMTI:") ||
           matchAt(resp, i, "+CDS:") || matchAt(resp, i, "+CLIP:") ||
-          matchAt(resp, i, "+CLCC:") || matchAt(resp, i, "+CRING:")) {
+          matchAt(resp, i, "+CLCC:") || matchAt(resp, i, "+CRING:") ||
+          matchAt(resp, i, "+CEREG:") || matchAt(resp, i, "+CREG:")) {
         idx = i;
         break;
       }

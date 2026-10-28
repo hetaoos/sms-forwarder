@@ -38,7 +38,7 @@ uint32_t textHash(const String &s) {
 
 }  // namespace
 
-// 网络注册状态码 -> 可读文本（AT+CREG/CEREG 第二字段）
+// 网络注册状态码 -> 可读文本
 static const char *regText(int stat) {
   switch (stat) {
     case 0:  return "未注册";
@@ -49,6 +49,104 @@ static const char *regText(int stat) {
     case 5:  return "已注册(漫游)";
     default: return "未知";
   }
+}
+
+// 注册状态解析结果：stat = 网络注册状态码；act = 接入技术（仅 CEREG 有）
+struct RegInfo {
+  int stat = -1;
+  int act  = -1;
+};
+
+// 严格整数判断：整串均为十进制数字且落在 [lo,hi] 内
+static bool regIntIn(const String &s, int lo, int hi) {
+  if (!s.length()) return false;
+  long v = 0;
+  for (int i = 0; i < (int)s.length(); i++) {
+    char c = s[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + (c - '0');
+    if (v > hi) return false;
+  }
+  return v >= lo;
+}
+
+// 解析一行 +CEREG:/+CREG: 中的 stat 与 act。
+// 同一前缀有两种行格式，字段位置不同：
+//   查询响应 AT+CEREG?  -> "+CEREG: <n>,<stat>[,<tac>,<ci>,<act>]"  stat 第 2 段
+//   主动上报 URC        -> "+CEREG: <stat>[,<tac>,<ci>,<act>]"        stat 第 1 段
+// 早期实现一律取第 2 段：解析 URC 时把 <tac> 当成 stat（十六进制串 -> 0），
+// 于是 regText(0) 得到「未注册」，而 act 恰好取到末段 LTE(7)，
+// 出现「未注册 · LTE」这种自相矛盾的显示。本函数按字段个数与取值范围
+// （stat 0..5、act 0..7、tac/ci 为十六进制串）自动判别格式。
+// 成功返回 true；act 可能为 -1（该行未给出接入技术）。
+static bool parseRegLine(const String &line, const char *prefix, RegInfo &out) {
+  int idx = line.indexOf(prefix);
+  if (idx < 0) return false;
+  String rest = line.substring(idx + (int)strlen(prefix));
+  rest.trim();
+  if (!rest.length()) return false;
+
+  String f[8];
+  int n = 0, start = 0;
+  while (n < 8) {
+    int c = rest.indexOf(',', start);
+    String seg = (c < 0) ? rest.substring(start) : rest.substring(start, c);
+    seg.trim();
+    seg.replace("\"", "");
+    f[n++] = seg;
+    if (c < 0) break;
+    start = c + 1;
+  }
+  if (!n) return false;
+
+  int stat = -1, act = -1;
+  if (n == 1) {
+    // URC 精简格式：只有 stat
+    if (!regIntIn(f[0], 0, 5)) return false;
+    stat = f[0].toInt();
+  } else if (n == 2) {
+    // 查询响应（<n>,<stat>）
+    if (!regIntIn(f[1], 0, 5)) return false;
+    stat = f[1].toInt();
+  } else {
+    // 多字段：URC(<stat>,<tac>,<ci>,<act>[,<ct>,<rc>]) 或
+    // 查询响应(<n>,<stat>,<tac>,<ci>,<act>[,...])。
+    // 用取值范围区分：tac/ci 是十六进制串，不是 0..7 的小整数。
+    bool urcOk = regIntIn(f[0], 0, 5) && (n < 4 || regIntIn(f[3], 0, 7));
+    bool qryOk = regIntIn(f[1], 0, 5) && (n < 5 || regIntIn(f[4], 0, 7));
+    if (urcOk && !qryOk) {
+      stat = f[0].toInt();
+      if (n >= 4) act = f[3].toInt();
+    } else if (qryOk) {
+      stat = f[1].toInt();
+      if (n >= 5) act = f[4].toInt();
+    } else {
+      return false;
+    }
+  }
+  out.stat = stat;
+  out.act = act;
+  return true;
+}
+
+// 从整段 AT 响应中解析注册状态：逐行尝试，取最后一个可解析的 +prefix 行
+// （命令响应位于响应窗口末尾，窗口内混入的 URC 排在前面）。
+static bool parseRegResp(const String &resp, const char *prefix, RegInfo &out) {
+  bool ok = false;
+  int pos = 0;
+  while (pos <= (int)resp.length()) {
+    int nl = resp.indexOf('\n', pos);
+    String line = (nl >= 0) ? resp.substring(pos, nl) : resp.substring(pos);
+    pos = (nl >= 0) ? nl + 1 : (int)resp.length() + 1;
+    line.trim();
+    if (!line.startsWith(prefix)) continue;
+    RegInfo ri;
+    if (parseRegLine(line, prefix, ri)) {
+      out = ri;
+      ok = true;
+    }
+  }
+  return ok;
 }
 
 // 运营商识别（AT+COPS 可能是长名或数字形式）-> 短代码 CMCC/CUCC/CTCC/CBN
@@ -114,7 +212,11 @@ void SmsService::begin() {
   // 主动查询任务（通信模组存储兜底）：独立任务执行阻塞式 AT 查询，
   // 不占用抽数任务（URC 解析）与主循环的时间片；优先级低于发送任务。
   if (_codecMutex) {
-    xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 8192, this, 3, &_queryTask);
+    if (xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 8192, this, 3, &_queryTask) != pdPASS) {
+      _log.addf(LogLevel::kError, "sms", "主动查询任务创建失败，短信只能等 +CMTI 后手动查询");
+    } else {
+      _log.addf(LogLevel::kInfo, "sms", "主动查询任务已启动");
+    }
   } else {
     _log.addf(LogLevel::kWarn, "sms", "编解码互斥量创建失败，主动查询不可用");
   }
@@ -235,21 +337,18 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     // 注册状态 URC（AT+CEREG=3 / AT+CREG=1 已开启主动上报）：仅在就绪态驱动展示与运营商刷新，
     // 替代周期性 AT+CEREG?/CREG? 查询。模组状态变化即上报，无需轮询。
     if (m.initState == ModemInitState::kReady) {
-      int stat = -1;
-      if (line.startsWith("+CEREG:"))     stat = parseRegStat(line, "+CEREG:");
-      else if (line.startsWith("+CREG:"))  stat = parseRegStat(line, "+CREG:");
-      if (stat >= 0) {
+      const char *regPfx = nullptr;
+      if (line.startsWith("+CEREG:"))     regPfx = "+CEREG:";
+      else if (line.startsWith("+CREG:"))  regPfx = "+CREG:";
+      RegInfo ri;
+      if (regPfx && parseRegLine(line, regPfx, ri)) {
+        int stat = ri.stat;
         if (stat != m.lastRegStat) {        // 任意注册状态变化都刷新运营商（家网/漫游/搜网切换）
           m.operRefreshPending = true;
           m.lastRegStat = stat;
         }
         m.reg = regText(stat);
-        int commas = 0;
-        for (int k = 0; k < line.length(); k++) if (line[k] == ',') commas++;
-        if (commas >= 3) {                  // 含 act 字段时才取（否则末段是 stat 非 act）
-          int lc = line.lastIndexOf(',');
-          if (lc >= 0) m.act = (uint8_t)line.substring(lc + 1).toInt();
-        }
+        if (ri.act >= 0) m.act = (uint8_t)ri.act;  // 该行未给出 act 时保留原值
         consumed = true;
         continue;
       }
@@ -282,6 +381,21 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     // 查询进行中同样置位：查询期间到达的新短信本轮未必读到，留给下一轮。
     if (line.startsWith("+CMTI:")) {
       m.queryPending = true;
+      // +CMTI 形如 +CMTI: "SM",3 —— 末尾数字即该短信在模组存储中的索引，
+      // 记下来可直接 AT+CMGR 读回，不必依赖 AT+CMGL 列表（部分模组不支持该命令）
+      int ci = line.lastIndexOf(',');
+      int cidx = 0;
+      if (ci >= 0) {
+        for (int k = ci + 1; k < (int)line.length(); k++) {
+          char c = line[k];
+          if (c >= '0' && c <= '9') cidx = cidx * 10 + (c - '0');
+          else if (cidx > 0) break;
+        }
+      }
+      if (cidx > 0) m.queryIndex = cidx;
+      _log.addf(LogLevel::kInfo, "sms",
+                "通信模组 %u 收到 +CMTI 索引通知（索引 %d），已置待查标记",
+                (unsigned)port, cidx);
       consumed = true;
       continue;
     }
@@ -1340,17 +1454,6 @@ const char *SmsService::initStateName(ModemInitState s) {
   return "unknown";
 }
 
-// 解析注册状态响应中的 stat（第二字段）；无 stat 或失败返回 -1
-int SmsService::parseRegStat(const String &resp, const char *prefix) {
-  int idx = resp.indexOf(prefix);
-  if (idx < 0) return -1;
-  int c1 = resp.indexOf(',', idx);
-  if (c1 < 0) return -1;  // 仅 +CEREG: <n> 无 stat，视为不完整
-  int c2 = resp.indexOf(',', c1 + 1);
-  String statStr = c2 < 0 ? resp.substring(c1 + 1) : resp.substring(c1 + 1, c2);
-  return statStr.toInt();
-}
-
 // 通信模组初始化状态机：由 SerialBridge 抽数任务每端口轮询调用（抽数任务上下文）。
 // 全程非阻塞——用 trySend，端口忙（正在发短信）立即跳过；受 nextPollMs 节流，
 // 单步 AT 最多持端口锁 ~1.5s。故障/未连接通信模组只在自身端口空转，不波及另一通信模组、
@@ -1494,12 +1597,16 @@ void SmsService::pollInit(uint8_t port) {
       if (!at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) {
         busy = true;
       } else {
-        stat = parseRegStat(resp, "+CEREG:");
-        if (stat < 0) {
-          if (at("AT+CREG?", cfg::kSmsCmdTimeoutMs))
-            stat = parseRegStat(resp, "+CREG:");
-          else
+        RegInfo ri;
+        if (parseRegResp(resp, "+CEREG:", ri)) {
+          stat = ri.stat;
+        } else {
+          // CEREG 无可解析结果：退回 CREG（端口忙则跳过本轮，不推进计数）
+          if (!at("AT+CREG?", cfg::kSmsCmdTimeoutMs)) {
             busy = true;
+          } else if (parseRegResp(resp, "+CREG:", ri)) {
+            stat = ri.stat;
+          }
         }
       }
       if (busy) return;
@@ -1684,17 +1791,17 @@ void SmsService::pollInit(uint8_t port) {
       // 注册 URC 仅在状态变化时上报；故显式查询一次填充 m.reg/m.act，之后由 URC 增量维护。
       // 端口忙（at 返回 false）则保持 regSynced=false，下个 tick 重试。
       if (!m.regSynced) {
-        int st = -1;
+        RegInfo ri;
+        bool ok = false;
         if (at("AT+CEREG?", cfg::kSmsCmdTimeoutMs)) {
-          st = parseRegStat(resp, "+CEREG:");
-          if (st < 0 && at("AT+CREG?", cfg::kSmsCmdTimeoutMs))
-            st = parseRegStat(resp, "+CREG:");
+          ok = parseRegResp(resp, "+CEREG:", ri);
+          if (!ok && at("AT+CREG?", cfg::kSmsCmdTimeoutMs))
+            ok = parseRegResp(resp, "+CREG:", ri);
         }
-        if (st >= 0) {
-          m.lastRegStat = st;
-          m.reg = regText(st);
-          int commas = 0; for (int k = 0; k < resp.length(); k++) if (resp[k] == ',') commas++;
-          if (commas >= 3) { int lc = resp.lastIndexOf(','); if (lc >= 0) m.act = (uint8_t)resp.substring(lc + 1).toInt(); }
+        if (ok) {
+          m.lastRegStat = ri.stat;
+          m.reg = regText(ri.stat);
+          if (ri.act >= 0) m.act = (uint8_t)ri.act;
           m.regSynced = true;
         }
       }
@@ -1964,12 +2071,30 @@ bool SmsService::queryPort(uint8_t port) {
   }
   std::vector<int> idxs;
   parseSmsIndexes(gl.resp, idxs);
+  // +CMTI 通知里带来的索引最可靠（直接指向那条短信），优先读取；
+  // AT+CMGL 列表作为补充：用于捞回 URC 丢失时模组侧残留的短信。
+  if (m.queryIndex > 0) {
+    bool dup = false;
+    for (int v : idxs) if (v == m.queryIndex) { dup = true; break; }
+    if (!dup) idxs.insert(idxs.begin(), m.queryIndex);
+    m.queryIndex = 0;
+  }
   if (idxs.empty()) {
     m.queryLastFound = 0;
     m.queryLastHandled = 0;
     _queryLastMs = millis();
+    // 插桩：索引为空时打印模组原始响应（区分「不支持该命令」与「确实无短信」），节流 5 分钟一次
+    if (millis() - m.queryLogMs >= 300000) {
+      m.queryLogMs = millis();
+      _log.addf(LogLevel::kInfo, "sms",
+                "通信模组 %u AT+CMGL=0 未解析到索引（响应前 100 字：%s）",
+                (unsigned)port, gl.resp.substring(0, 100).c_str());
+    }
     return true;  // 无存量：正常结束
   }
+  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 待读取短信索引 %u 个（%s）",
+            (unsigned)port, (unsigned)idxs.size(),
+            gl.resp.indexOf("+CMGL:") >= 0 ? "含列表" : "仅 +CMTI 索引");
 
   // 3) 逐条读出 PDU 并解码（解码需持有编解码锁：pdulib 实例非线程安全）
   struct Stored {
@@ -1988,15 +2113,30 @@ bool SmsService::queryPort(uint8_t port) {
     snprintf(cmd, sizeof(cmd), "AT+CMGR=%d", idx);
     SerialBridge::Result gr = _bridge.send(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf,
                                            cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
-    if (!gr.ok) continue;
+    if (!gr.ok) {
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u AT+CMGR=%d 发送失败", (unsigned)port, idx);
+      continue;
+    }
     String pdu = extractPduHex(gr.resp);
-    if (!pdu.length()) continue;  // 读不到内容：跳过，不删除
+    if (!pdu.length()) {
+      // 插桩：读不到 PDU 时打印模组原始响应（定位命令不被支持 / 响应格式异常）
+      _log.addf(LogLevel::kWarn, "sms",
+                "通信模组 %u AT+CMGR=%d 未取到 PDU（响应前 100 字：%s）",
+                (unsigned)port, idx, gr.resp.substring(0, 100).c_str());
+      continue;  // 读不到内容：跳过，不删除
+    }
     Stored s;
     s.idx = idx;
     xSemaphoreTake(_codecMutex, portMAX_DELAY);
     bool ok = _codec.decode(pdu, s.sender, s.ts, s.text, s.concat);
     xSemaphoreGive(_codecMutex);
-    if (!ok) continue;
+    if (!ok) {
+      // 插桩：解码失败时打印 PDU 头部（定位 pdulib 与该 PDU 的兼容性）
+      _log.addf(LogLevel::kWarn, "sms",
+                "通信模组 %u 索引 %d 的 PDU 解码失败（PDU 前 60 字：%s）",
+                (unsigned)port, idx, pdu.substring(0, 60).c_str());
+      continue;
+    }
     msgs.push_back(s);
   }
   m.queryLastFound = (uint32_t)msgs.size();

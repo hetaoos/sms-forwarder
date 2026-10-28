@@ -291,6 +291,8 @@ class SmsService {
     bool    queryRunning = false;    // 查询任务正在处理本端口
     uint32_t queryLastFound = 0;    // 上次查询发现的存量条数
     uint32_t queryLastHandled = 0;  // 上次查询落盘处理的条数
+    int     queryIndex = 0;         // +CMTI 通知的短信索引（>0 表示已知确切位置，无需依赖列表）
+    uint32_t queryLogMs = 0;        // 「无存量」提示的节流时间戳（避免每轮刷屏）
 
     // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
     bool     callPending = false;        // RING 已到：等待号码或通话结束
@@ -304,7 +306,7 @@ class SmsService {
     // ---- 就绪后遥测（周期轮询，供 UI 展示）----
     int8_t  csq = -1;          // 信号质量 0..31（99=未知），-1 表示未查询
     String  oper;               // 运营商名称（AT+COPS? 长格式）
-    uint8_t act = 0;           // 接入技术（AT+CREG/CEREG 末字段：0 GSM,2 UTRAN,4 E-UTRAN...）
+    uint8_t  act = 0;           // 接入技术（AT+CEREG 的 act 字段：0 GSM,2 UTRAN,4/5 E-UTRAN,7 LTE）
     String  reg;               // 网络注册状态文本（已注册/搜索中/未注册...）
     bool    simReady = false;  // SIM 卡是否就绪（AT+CPIN? READY）
     String  imei;              // 通信模组 IMEI（就绪后查一次）
@@ -332,9 +334,6 @@ class SmsService {
   // 状态机每轮驱动（由 SerialBridge 抽数任务轮询回调调用，运行于抽数任务上下文，
   // 非阻塞：内部用 trySend，端口忙即跳过；受 nextPollMs 节流）；port 越界忽略
   void pollInit(uint8_t port);
-
-  // 解析注册状态响应中的 stat 字段（+CEREG:/+CREG: 第二字段），失败返回 -1
-  static int parseRegStat(const String &resp, const char *prefix);
 
   // 初始化态 -> 可读字符串（SSE/JSON 用）
   static const char *initStateName(ModemInitState s);
