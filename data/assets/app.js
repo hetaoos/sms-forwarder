@@ -726,13 +726,16 @@ function pageSerial() {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
     cmd: '', localHist: [], localIdx: -1,
     filter: 'all',             // 类型过滤：all / 0(用户) / 1(后台) / 2(上报)
+    portFilter: 'all',         // 串口过滤：all / 1(串口1) / 2(串口2)
     autoScroll: true,          // 自动滚动到最新（用户上移滚动条较多时自动取消，默认开启）
     atStats: {},               // GET /api/at/stats（存储位置/容量等）
     // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
     get entries() {
       const all = Alpine.store('live').at;
-      if (this.filter === 'all') return all;
-      return all.filter(e => String(e.type) === this.filter);
+      const byType = this.filter === 'all'
+        ? all : all.filter(e => String(e.type) === this.filter);
+      if (this.portFilter === 'all') return byType;
+      return byType.filter(e => String(e.port) === this.portFilter);
     },
     get stats() { return Alpine.store('live').stats; },
     async init() {
@@ -803,7 +806,7 @@ function pageSerial() {
         }
       } else {
         Alpine.store('live').at.push(
-          { id: '-', port: '-', cmd: cmd, resp: '请求失败，详见右上角提示' });
+          { id: '-', port: this.port, cmd: cmd, resp: '请求失败，详见右上角提示' });
       }
       this.cmd = '';
     },

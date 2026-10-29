@@ -30,11 +30,22 @@
         <input type="checkbox" x-model="autoScroll" @change="onAutoScrollChange()"> 自动滚动
       </label>
     </h3>
-    <div class="seg" style="margin:-2px 0 12px">
-      <button class="seg-btn" :class="{on: filter==='all'}" @click="filter='all'">全部</button>
-      <button class="seg-btn" :class="{on: filter==='0'}" @click="filter='0'">用户命令</button>
-      <button class="seg-btn" :class="{on: filter==='1'}" @click="filter='1'">后台命令</button>
-      <button class="seg-btn" :class="{on: filter==='2'}" @click="filter='2'">主动上报</button>
+    <div class="bar" style="margin:-2px 0 12px;gap:16px">
+      <div class="fld"><label>类型</label>
+        <div class="seg">
+          <button class="seg-btn" :class="{on: filter==='all'}" @click="filter='all'">全部</button>
+          <button class="seg-btn" :class="{on: filter==='0'}" @click="filter='0'">用户命令</button>
+          <button class="seg-btn" :class="{on: filter==='1'}" @click="filter='1'">后台命令</button>
+          <button class="seg-btn" :class="{on: filter==='2'}" @click="filter='2'">主动上报</button>
+        </div>
+      </div>
+      <div class="fld"><label>串口</label>
+        <div class="seg">
+          <button class="seg-btn" :class="{on: portFilter==='all'}" @click="portFilter='all'">全部</button>
+          <button class="seg-btn" :class="{on: portFilter==='1'}" @click="portFilter='1'">串口1</button>
+          <button class="seg-btn" :class="{on: portFilter==='2'}" @click="portFilter='2'">串口2</button>
+        </div>
+      </div>
     </div>
     <div class="console" x-ref="console">
       <template x-for="e in entries" :key="e.id">
