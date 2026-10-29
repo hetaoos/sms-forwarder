@@ -7,7 +7,7 @@
 
 #include <math.h>
 
-#include "util/DeviceId.h"    // Device::id()：统一的设备唯一 ID
+#include "utils/DeviceId.h"    // Device::id()：统一的设备唯一 ID
 
 // ReadyMail 通过宏裁剪协议实现，必须在 include 之前打开 SMTP。
 // ENABLE_DEBUG 不打开：它会把整段 SMTP 会话打到串口，噪音过大。

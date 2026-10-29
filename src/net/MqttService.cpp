@@ -21,7 +21,7 @@
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
-#include "util/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
+#include "utils/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
 // ── 通信模组级状态 ─────────────────────────────────────────────
 // esp-mqtt 的 config 只保存指针，不会拷贝字符串，因此 URI/ID/Will/账号等

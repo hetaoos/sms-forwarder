@@ -16,7 +16,7 @@
 #include "sms/SmsStore.h"        // 今日短信统计
 #include "app/SystemService.h"  // 定时重启配置回显（单例）
 #include "time/TimeSync.h"
-#include "util/DeviceId.h"   // Device::id()：与 MQTT / 推送 / 邮件一致的设备唯一 ID
+#include "utils/DeviceId.h"   // Device::id()：与 MQTT / 推送 / 邮件一致的设备唯一 ID
 
 // MQTT 推送连接状态（仅编译期开启 MQTT 时引用其类定义）
 #if defined(ENABLE_MQTT) && ENABLE_MQTT
