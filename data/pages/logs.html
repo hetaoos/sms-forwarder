@@ -16,9 +16,9 @@
   <!-- 存储信息 -->
   <div class="stats">
     <div class="stat"><div class="k">当前条数</div>
-      <div class="v" x-text="(stats.total == null ? '-' : stats.total) + ' 条'"></div></div>
+      <div class="v" x-text="fmtCount(stats.total)"></div></div>
     <div class="stat"><div class="k">缓冲容量</div>
-      <div class="v" x-text="(stats.max == null ? '-' : stats.max) + ' 条'"></div></div>
+      <div class="v" x-text="fmtCount(stats.max)"></div></div>
     <div class="stat"><div class="k">占用</div><div class="v" x-text="fmtBytes(stats.bytes)"></div></div>
     <div class="stat"><div class="k">存储位置</div>
       <div class="v" style="font-size:15px" x-text="storeText()"></div></div>
@@ -66,7 +66,7 @@
     <!-- 分页 -->
     <div class="pager" x-show="total > 0">
       <div class="pager-info">
-        <span x-text="'共 ' + total + ' 条'"></span>
+        <span x-text="'共 ' + fmtCount(total)"></span>
         <span class="pager-sep">·</span>
         <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
       </div>

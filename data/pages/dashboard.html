@@ -11,7 +11,7 @@
   <div class="stats">
     <div class="stat"><div class="k">当前时间</div>
       <div class="v"><span x-text="st.timeSynced ? st.time.split(' ')[1] : '未同步'"></span>
-        <div class="sub" x-show="st.timeSynced" x-text="st.time.split(' ')[0]"></div></div></div>
+        <div class="sub" x-show="st.timeSynced" x-text="st.time ? st.time.split(' ')[0] : ''"></div></div></div>
     <div class="stat"><div class="k">运行时间</div><div class="v" x-text="fmt(st.uptime || 0)"></div></div>
     <div class="stat"><div class="k">WiFi</div>
       <div class="v"><span x-text="st.ssid || '-'"></span>
@@ -107,9 +107,9 @@
   <div class="grid cols2">
     <!-- 短信存储 -->
     <div class="card">
-      <h3>短信存储 <span class="sub" x-text="'上限 ' + (smsstats.max || 0) + ' 条'"></span></h3>
+      <h3>短信存储 <span class="sub" x-text="'上限 ' + fmtCount(smsstats.max)"></span></h3>
       <div class="row"><span class="k">已存短信</span>
-        <span class="v" x-text="(smsstats.total || 0) + ' 条'"></span></div>
+        <span class="v" x-text="fmtCount(smsstats.total)"></span></div>
       <div class="row"><span class="k">存储占用</span>
         <span class="v" x-text="fmtBytes(smsstats.used) + ' / ' + fmtBytes(smsstats.fsTotal)"></span></div>
       <div class="row"><span class="k">最新短信</span>

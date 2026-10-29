@@ -1,14 +1,23 @@
 <div x-data="pageEmail()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>邮件通知</h2>
+      <h2>邮件通知 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
       <p class="page-desc">通过 SMTP 发送通知邮件（统一 HTML 卡片模板，验证码高亮），保存后立即生效，重启后仍有效</p>
     </div>
-    <button class="btn ghost sm" @click="load()">刷新</button>
+    <div class="bar">
+      <span class="badge info">服务器与通知类型需点保存生效</span>
+      <button class="btn ghost sm" @click="load()" :disabled="loading">刷新</button>
+    </div>
+  </div>
+
+  <div class="loading" x-show="loading && !loaded">正在加载邮件配置…</div>
+
+  <div class="form-err" x-show="err" style="margin:0 0 14px">
+    <span class="ico">!</span><span x-text="err"></span>
   </div>
 
   <!-- SMTP 服务器配置 -->
-  <div class="card">
+  <div class="card" x-show="loaded">
     <h3>SMTP 服务器</h3>
     <!-- 总开关：停用后一切邮件都不发（含定时在线通知），已保存配置保留 -->
     <div class="bar" style="margin-bottom:4px">
@@ -20,6 +29,7 @@
             x-text="cfg.enabled ? '已启用' : '已停用'"></span>
       <span class="badge" :class="configured ? 'ok' : 'warn'"
             x-text="configured ? '配置完整' : '配置不完整'"></span>
+      <span class="badge info">总开关即时生效</span>
     </div>
     <div class="hint" x-show="!cfg.enabled" style="margin:0 0 12px">
       已停用：短信 / SIM / 启动 / 定时在线通知都不会发送，待发邮件被丢弃；
@@ -27,19 +37,24 @@
     </div>
     <form @submit.prevent="save()">
       <div class="grid cols2">
-        <div class="field"><label>SMTP 服务器</label>
+        <div class="field"><label>SMTP 服务器 <span style="color:var(--danger)">*</span></label>
           <input class="inp" x-model="cfg.server" placeholder="smtp.qq.com"
+                 :class="{'input-error': cfg.enabled && !(cfg.server||'').trim()}"
                  maxlength="64" autocomplete="off"></div>
         <div class="field"><label>端口（仅隐式 TLS，如 465）</label>
-          <input class="inp" x-model="cfg.port" type="number" min="1" max="65535"></div>
-        <div class="field"><label>发件邮箱（同时作为登录账号）</label>
+          <input class="inp" x-model="cfg.port" type="number" min="1" max="65535"
+                 @change="cfg.port = Math.min(65535, Math.max(1, Number(cfg.port)||465))"></div>
+        <div class="field"><label>发件邮箱（同时作为登录账号） <span style="color:var(--danger)">*</span></label>
           <input class="inp" x-model="cfg.user" placeholder="user@qq.com"
+                 :class="{'input-error': cfg.enabled && !(cfg.user||'').trim()}"
                  maxlength="64" autocomplete="off"></div>
-        <div class="field"><label>SMTP 授权码</label>
+        <div class="field"><label>SMTP 授权码 <span style="color:var(--danger)">*</span></label>
           <input class="inp" x-model="cfg.pass" type="password" autocomplete="new-password"
+                 :class="{'input-error': cfg.enabled && !hasPass && !(cfg.pass||'').trim()}"
                  maxlength="64" :placeholder="hasPass ? '已保存（留空则不修改）' : '请输入授权码'"></div>
-        <div class="field"><label>收件邮箱</label>
+        <div class="field"><label>收件邮箱 <span style="color:var(--danger)">*</span></label>
           <input class="inp" x-model="cfg.sendTo" placeholder="me@example.com"
+                 :class="{'input-error': cfg.enabled && !(cfg.sendTo||'').trim()}"
                  maxlength="128" autocomplete="off"></div>
       </div>
       <div class="bar" style="margin-top:14px">
@@ -48,6 +63,7 @@
         <button class="btn ghost" type="button"
                 :disabled="testing || !configured || !cfg.enabled"
                 @click="test()" x-text="testing ? '发送中…' : '发送测试邮件'"></button>
+        <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       </div>
     </form>
     <div class="hint">
@@ -57,7 +73,7 @@
   </div>
 
   <!-- 通知类型 -->
-  <div class="card">
+  <div class="card" x-show="loaded">
     <h3>通知类型</h3>
     <p class="hint" style="margin:0 0 10px">
       勾选的事件会各自发送一封 HTML 邮件；关闭后不影响短信存储、SSE 与其它功能。
@@ -76,6 +92,7 @@
     </div>
     <div class="bar" style="margin-top:10px">
       <button class="btn sm" :disabled="saving" @click="save()">保存通知类型</button>
+      <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       <span class="hint" style="margin:0">当前掩码：<b x-text="'0x' + cfg.notifyTypes.toString(16).toUpperCase()"></b></span>
     </div>
 
@@ -100,18 +117,22 @@
       </div>
       <div class="bar" style="margin-top:10px" x-show="isInterval()">
         <div class="field" style="width:150px"><label>间隔（小时，1-720）</label>
-          <input class="inp" x-model="cfg.intervalH" type="number" min="1" max="720"></div>
+          <input class="inp" x-model="cfg.intervalH" type="number" min="1" max="720"
+                 @change="cfg.intervalH = Math.min(720, Math.max(1, Number(cfg.intervalH)||24))"></div>
         <span class="hint" style="margin:0">开机后每满一个周期发送一次</span>
       </div>
       <div class="bar" style="margin-top:10px" x-show="!isInterval()">
         <div class="field" style="width:110px"><label>小时（0-23）</label>
-          <input class="inp" x-model="cfg.schedHour" type="number" min="0" max="23"></div>
+          <input class="inp" x-model="cfg.schedHour" type="number" min="0" max="23"
+                 @change="cfg.schedHour = Math.min(23, Math.max(0, Number(cfg.schedHour)||0))"></div>
         <div class="field" style="width:110px"><label>分钟（0-59）</label>
-          <input class="inp" x-model="cfg.schedMinute" type="number" min="0" max="59"></div>
+          <input class="inp" x-model="cfg.schedMinute" type="number" min="0" max="59"
+                 @change="cfg.schedMinute = Math.min(59, Math.max(0, Number(cfg.schedMinute)||0))"></div>
         <span class="hint" style="margin:0">依赖时间同步（NTP / SIM），未同步时不触发</span>
       </div>
       <div class="bar" style="margin-top:12px">
         <button class="btn sm" :disabled="saving" @click="save()">保存排程</button>
+        <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       </div>
     </div>
   </div>

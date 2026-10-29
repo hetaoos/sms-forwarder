@@ -80,6 +80,30 @@ function fmtBytes(b) {
 }
 const fmt = fmtUptime;  // 模板里用的短名
 
+/* ---- 时间格式化（全站统一，各页面不再各写一套）----
+ * ts：纪元秒；小于阈值视为「开机后秒数」，显示为开机时长 */
+function fmtDateTime(ts) {
+  if (!ts) return '-';
+  if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
+  const d = new Date(ts * 1000);
+  const p = n => (n < 10 ? '0' : '') + n;
+  return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+// 列表用短时间：MM-DD HH:mm（详情与日志用完整格式）
+function fmtDateShort(ts) {
+  if (!ts) return '-';
+  if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
+  const d = new Date(ts * 1000);
+  const p = n => (n < 10 ? '0' : '') + n;
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+// 数量单位统一：「123 条」/「12 个」等，避免各页面手拼
+function fmtCount(n, unit) {
+  if (n == null) return '-';
+  return n + (unit || ' 条');
+}
+
 // ---- 通信模组状态 / 信号强度展示（仪表盘与短信页共用）----
 function modemName(p) { return '通信模组' + p; }
 // 显示名称：有别名时「别名（通信模组x）」，否则「通信模组x」；m 可为通信模组对象或 port 数字
@@ -167,7 +191,25 @@ function escHtml(s) {
 /* ---------- 页面清理回调（切页时停轮询/定时器） ---------- */
 let cleanups = [];
 function onCleanup(fn) { cleanups.push(fn); }
-function runCleanups() { cleanups.forEach(f => { try { f(); } catch (e) {} }); cleanups = []; }
+function runCleanups() { cleanups.forEach(f => { try { f(); } catch (e) {} }); cleanups = []; clearDirtyGuard(); }
+
+/* ---------- 未保存修改守卫 ----------
+ * 配置页在 init 时注册「是否有未保存修改」的判定函数；切页或关闭页面前提示用户，
+ * 避免改了一半的表单被静默丢弃。保存成功后由页面自行清标记。
+ * 一个页面可能含多个独立组件（如系统设置页的账号 / 令牌 / 定时重启），
+ * 因此守卫为列表语义：任一守卫报告「有修改」即触发提示。 */
+let dirtyGuards = [];
+function setDirtyGuard(fn) { dirtyGuards.push(fn); }
+function clearDirtyGuard() { dirtyGuards = []; }
+function hasDirty() {
+  return dirtyGuards.some(f => { try { return !!f(); } catch (e) { return false; } });
+}
+// 配置快照：按指定字段生成稳定字符串（仅取「需点保存才生效」的字段）
+function snapOf(obj, keys) {
+  const o = {};
+  for (const k of keys) o[k] = obj ? obj[k] : undefined;
+  return JSON.stringify(o);
+}
 
 /* ---------- 请求封装：401 -> 登录页 ---------- */
 let currentUser = 'admin';
@@ -190,13 +232,51 @@ async function postJson(path, obj) {
   });
 }
 
+/* ---------- 后端错误文案中文化 ----------
+ * 固件侧 error 字段保持英文（REST 接口同时供第三方客户端调用，不改契约），
+ * Web 端统一在这里翻译成中文再展示。 */
+const ERR_ZH = {
+  'unauthorized': '登录已失效，请重新登录',
+  'bad credentials': '用户名或密码错误',
+  'too many sessions': '登录会话过多，请稍后再试',
+  'api token disabled': 'API 访问令牌未启用',
+  'not found': '接口不存在',
+  'invalid json': '请求格式错误',
+  'invalid port': '通信模组序号无效',
+  'invalid phone': '手机号格式不正确',
+  'invalid index': '序号无效',
+  'invalid move': '排序参数无效',
+  'invalid preset index': '颜色预设序号无效',
+  'missing body': '缺少请求内容',
+  'missing num': '缺少号码',
+  'missing id or all': '缺少短信 ID',
+  'missing enabled or alias': '缺少启用状态或别名',
+  'key required': '缺少按键参数',
+  'unknown key': '未知的按键',
+  'pass required': '缺少密码',
+  'ssid required': '请填写 WiFi 名称',
+  'record not found': '记录不存在',
+  'save failed': '保存失败',
+  'save failed (max 5)': '保存失败（最多 5 条配置）',
+  'config save failed': '配置保存失败',
+  'store disabled': '短信存储未启用',
+  'log ring not ready': '日志缓冲区未就绪',
+  'at history not ready': 'AT 历史缓冲区未就绪',
+};
+// 翻译一条后端错误描述；未收录的原文原样返回（便于排查新问题）
+function zhError(msg) {
+  if (!msg) return '';
+  const s = String(msg);
+  return ERR_ZH[s] || s;
+}
+
 // 读取 JSON 错误响应中的 error 字段；非 JSON 时回退到状态码
 async function errText(r) {
   try {
     const j = await r.json();
-    return j.error || ('HTTP ' + r.status);
+    return zhError(j.error) || ('请求失败（HTTP ' + r.status + '）');
   } catch (e) {
-    return 'HTTP ' + r.status;
+    return '请求失败（HTTP ' + r.status + '）';
   }
 }
 
@@ -333,7 +413,7 @@ function fallbackPolling() {
 function connectSSE() {
   if (!window.EventSource) {
     setConn('offline');
-    toast('Browser does not support real-time push, switched to polling', 'warn');
+    toast('浏览器不支持实时推送，已切换为轮询', 'warn');
     fallbackPolling();
     return;
   }
@@ -365,7 +445,7 @@ function connectSSE() {
         if (r.status === 401) { goLogin(); return; }
       } catch (e) {}
       setConn('offline');
-      toast('Real-time push connection failed, switched to polling', 'warn');
+      toast('实时推送连接失败，已切换为轮询', 'warn');
       fallbackPolling();
     } else {
       setConn('reconnecting');   // 其余情况浏览器会自动重连
@@ -406,20 +486,51 @@ function toast(msg, type, duration) {
 }
 function confirmDialog(title, text, danger) {
   return new Promise(resolve => {
+    const prev = document.activeElement;      // 关闭后把焦点还给触发元素
     const ov = document.createElement('div');
     ov.className = 'modal-mask';
+    ov.setAttribute('role', 'dialog');
+    ov.setAttribute('aria-modal', 'true');
     ov.innerHTML = '<div class="modal"><h3>' + escHtml(title) + '</h3><p>' + escHtml(text) +
       '</p><div class="modal-btns"><button class="btn ghost" data-a="0">取消</button>' +
       '<button class="btn' + (danger ? ' danger' : '') + '" data-a="1">确定</button></div></div>';
     document.body.appendChild(ov);
+    const btns = [ov.querySelector('[data-a="0"]'), ov.querySelector('[data-a="1"]')].filter(Boolean);
+    const done = v => {
+      ov.remove();
+      try { if (prev && prev.focus) prev.focus(); } catch (e) {}
+      resolve(v);
+    };
+    // 焦点落在「取消」上：默认动作是「不执行」，更安全
+    if (btns[0]) btns[0].focus();
+    // 焦点陷阱：Tab 在两个按钮之间循环，不逸出对话框
+    ov.addEventListener('keydown', e => {
+      if (e.key !== 'Tab' || btns.length < 2) return;
+      const i = btns.indexOf(document.activeElement);
+      e.preventDefault();
+      btns[(i + (e.shiftKey ? -1 : 1) + btns.length) % btns.length].focus();
+    });
     ov.addEventListener('click', e => {
       const btn = e.target.closest('button');
       if (!btn && e.target !== ov) return;
-      ov.remove();
-      resolve(!!btn && btn.dataset.a === '1');
+      done(!!btn && btn.dataset.a === '1');
     });
   });
 }
+
+/* ESC 关闭最上层弹窗：取文档中最后一个可见的 .modal-mask 并模拟点击遮罩。
+ * Alpine 弹窗（发送短信 / 详情）由 @click.self 关闭；确认框遮罩等同「取消」。 */
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  const masks = document.querySelectorAll('.modal-mask');
+  for (let i = masks.length - 1; i >= 0; i--) {
+    const m = masks[i];
+    if (getComputedStyle(m).display === 'none') continue;   // 隐藏的弹窗跳过
+    m.click();
+    e.preventDefault();
+    return;
+  }
+});
 
 /* ---------- 菜单配置（新增页面：加一条 + 放一个 pages/<id>.html） ---------- */
 const MENU = [
@@ -483,9 +594,9 @@ function renderShell() {
     html += '<div class="menu-group">' + g.group + '</div>';
     for (const it of g.items) {
       if (it.hidden) continue;  // 隐藏项（如 AT 调试）不进主菜单，仅可经直达链接访问
-      html += '<div class="menu-item" data-id="' + it.id + '">' + ICONS[it.icon] +
+      html += '<button type="button" class="menu-item" data-id="' + it.id + '">' + ICONS[it.icon] +
               '<span>' + it.title + '</span>' + (it.todo ? '<span class="todo">规划中</span>' : '') +
-              '</div>';
+              '</button>';
     }
   }
   html += '</nav>';
@@ -501,6 +612,9 @@ function renderShell() {
 function setActiveMenu(id) {
   document.querySelectorAll('.menu-item').forEach(el =>
     el.classList.toggle('active', el.dataset.id === id));
+  const cur = document.querySelector('.menu-item.active');
+  if (cur) cur.setAttribute('aria-current', 'page');
+  else document.querySelectorAll('.menu-item').forEach(el => el.removeAttribute('aria-current'));
   $('#pageTitle').textContent = (findMenu(id) || {}).title || '页面';
 }
 function openSidebar() { $('#sidebar').classList.add('open'); $('#mask').classList.add('show'); }
@@ -522,7 +636,17 @@ async function logout() {
 }
 
 /* ---------- Hash 路由 ---------- */
+let currentPageId = '';       // 当前已加载的页面（未保存守卫取消时用于回退 hash）
 async function route() {
+  // 离开前检查未保存修改：用户确认才放行，否则退回原页面
+  if (hasDirty()) {
+    const ok = await confirmDialog('未保存的修改',
+      '当前页面有未保存的修改，离开将丢失。确定离开吗？', true);
+    if (!ok) {
+      if (currentPageId) history.replaceState(null, '', '#/' + currentPageId);
+      return;
+    }
+  }
   runCleanups();
   const id = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
   const item = findMenu(id);
@@ -544,6 +668,7 @@ async function route() {
     return;
   }
   view.innerHTML = html;
+  currentPageId = id;
   setActiveMenu(id);
   // 片段内含 x-data 组件（pageXxx 全局函数）时初始化 Alpine 子树
   if (/x-data\s*=/.test(html) && window.Alpine) window.Alpine.initTree(view);
@@ -564,8 +689,19 @@ async function bootstrap() {
   $('#mask').addEventListener('click', closeSidebar);
   // 主题：按钮交互 + 同步图标/文案（data-theme 已由 head early script 抢先设置）
   $('#themeBtn').addEventListener('click', cycleTheme);
+  // 页面内任意位置触发退出登录（如系统设置页的入口，移动端顶栏按钮已隐藏）
+  document.addEventListener('click', e => {
+    const t = e.target && e.target.closest ? e.target.closest('[data-action="logout"]') : null;
+    if (t) { e.preventDefault(); logout(); }
+  });
   applyTheme();
   window.addEventListener('hashchange', route);
+  // 关闭/刷新页面时同样提示未保存修改（浏览器原生提示框）
+  window.addEventListener('beforeunload', e => {
+    if (!hasDirty()) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
   if (!location.hash) location.hash = '#/dashboard';
   connectSSE();     // SSE 连接（外壳级单例，跨页面共享）
   renderConnDot();  // 连接灯初态；后续状态变化由 setConn 驱动
@@ -606,17 +742,8 @@ function pageDashboard() {
       if (!m.configured) return '未配置';
       return m.connected ? '已连接' : (m.error ? '连接失败' : '连接中');
     },
-    // 时间格式化：纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则按开机时长
-    fmtTs(ts) {
-      if (!ts) return '-';
-      if (ts >= 1600000000) {
-        const d = new Date(ts * 1000);
-        const p = n => (n < 10 ? '0' : '') + n;
-        return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-               p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-      }
-      return '开机 ' + fmtUptime(ts);
-    },
+    // 时间格式化：全站统一（纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则按开机时长）
+    fmtTs(ts) { return fmtDateTime(ts); },
     timeSrcText() {
       return { ntp: 'NTP', sim: 'SIM NITZ', nvs: '上次保存', none: '未同步' }[this.st.timeSrc] || '未同步';
     },
@@ -672,6 +799,7 @@ function pageSched() {
     weekdays: 0,        // 位掩码 bit0=周日…bit6=周六；0=每天
     saving: false,
     loaded: false,
+    _snap: '',            // 已保存配置快照（用于未保存检测）
     // 星期选项（展示顺序：周一→周日，对应位见 bit）
     days: [
       { bit: 1, name: '周一' }, { bit: 2, name: '周二' }, { bit: 3, name: '周三' },
@@ -696,23 +824,44 @@ function pageSched() {
       this.intervalH = s.intervalH || 24;
       this.weekdays = s.weekdays || 0;
       this.loaded = true;
+      this.markClean();
+      setDirtyGuard(() => this.dirty);
       return true;
     },
     dayOn(bit) { return (this.weekdays & (1 << bit)) !== 0; },
     toggleDay(bit) { this.weekdays = this.weekdays ^ (1 << bit); },
 
+    // 未保存检测
+    markClean() {
+      this._snap = JSON.stringify({
+        e: this.enabled, m: this.mode, d: this.daily, h: this.intervalH, w: this.weekdays,
+      });
+    },
+    get dirty() {
+      const now = JSON.stringify({
+        e: this.enabled, m: this.mode, d: this.daily, h: this.intervalH, w: this.weekdays,
+      });
+      return !!this._snap && this._snap !== now;
+    },
+
     async save() {
       if (!this.loaded || this.saving) return;
+      // 校验：固定间隔模式限制 1~720 小时
+      if (Number(this.mode) === 1) {
+        const h = Number(this.intervalH);
+        if (!(h >= 1 && h <= 720)) { toast('间隔小时需在 1~720 之间', 'err'); return; }
+      }
       this.saving = true;
       try {
         // 独立接口：仅保存配置，不重启设备（定时重启按新计划即时生效）
-        await postOp('/api/sched', {
+        const r = await postOp('/api/sched', {
           enabled: !!this.enabled,
           mode: this.mode,
           daily: this.daily,
           intervalH: Number(this.intervalH) || 24,
           weekdays: this.weekdays,
         }, '定时重启配置已保存');
+        if (r) this.markClean();
       } finally {
         this.saving = false;
       }
@@ -937,6 +1086,11 @@ function pageWifi() {
     apErr(msg) { this.apHint = msg; this.apIsErr = true; },
     apBusy(msg) { this.apHint = msg; this.apIsErr = false; },
     async saveAp() {
+      const p = this.apPass || '';
+      if (p.length && (p.length < 8 || p.length > 63)) {
+        this.apErr('热点密码需 8~63 字符（留空 = 开放热点）');
+        return;
+      }
       this.apSaving = true;
       this.apBusy('正在保存…');
       const r = await postOp('/api/wifi/appass', { pass: this.apPass });
@@ -1193,11 +1347,20 @@ function pageAuth() {
     user: '', newUser: '', newPass: '', oldPass: '',
     saving: false, done: false,
     hint: '', isErr: false, errField: '',
+    _snap: '',            // 已加载值快照（用于未保存检测）
     async init() {
       try {
         const r = await apiFetch('/api/auth');
         if (r.ok) { const j = await r.json(); this.user = j.user || ''; this.newUser = this.user; }
       } catch (e) {}
+      this.markClean();
+      setDirtyGuard(() => this.dirty);
+    },
+    // 未保存检测：新用户名 / 新密码 / 当前密码任一被改动即视为未保存
+    markClean() { this._snap = JSON.stringify({ u: this.newUser, p: '', o: '' }); },
+    get dirty() {
+      const now = JSON.stringify({ u: this.newUser, p: this.newPass, o: this.oldPass });
+      return !!this._snap && this._snap !== now;
     },
     async save() {
       if (this.done) return;
@@ -1280,6 +1443,7 @@ function pageApiToken() {
   return {
     enabled: false, token: '', tokenShown: false,
     loaded: false, saving: false,
+    _snap: '',            // 已保存开关状态快照（用于未保存检测）
     // 拉取当前令牌配置（开关 + 令牌），启用后据此刷新显示
     async refresh() {
       try {
@@ -1294,7 +1458,12 @@ function pageApiToken() {
     async init() {
       await this.refresh();
       this.loaded = true;
+      this.markClean();
+      setDirtyGuard(() => this.dirty);
     },
+    // 未保存检测：仅开关状态需要保存
+    markClean() { this._snap = String(this.enabled); },
+    get dirty() { return !!this._snap && this._snap !== String(this.enabled); },
     // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
     get tokenMasked() {
       const t = this.token || '';
@@ -1339,7 +1508,7 @@ function pageApiToken() {
           body: JSON.stringify({ enabled: this.enabled })
         });
         if (!r.ok) toast('✕ 保存失败（' + r.status + '）', 'err');
-        else { await this.refresh(); toast('已保存', 'ok'); }
+        else { await this.refresh(); this.markClean(); toast('已保存', 'ok'); }
       } catch (e) {
         toast('✕ 请求失败', 'err');
       }
@@ -1420,6 +1589,11 @@ function pageSms() {
       this.sendPort = this.defaultSendPort();
       this.sendHint = ''; this.sendErr = false;
       this.sendOpen = true;
+      // 打开后聚焦号码输入框，便于直接输入
+      this.$nextTick(() => {
+        const el = this.$refs && this.$refs.phoneInput;
+        if (el && el.focus) el.focus();
+      });
     },
     closeSend() { this.sendOpen = false; },
     async send() {
@@ -1520,7 +1694,7 @@ function pageSms() {
           this.stats = j;
           // 存储不可用时在页面顶部常驻提示（否则只会看到「暂无记录」）
           this.storeErr = j.ok ? ''
-              : ('短信记录存储不可用（' + (j.error || 'unknown') +
+              : ('短信记录存储不可用（' + (zhError(j.error) || '未知原因') +
                  '）：收发不受影响，但记录不会保存，请检查串口日志中的 [fs]/[sms] 输出');
         }
       } catch (e) {}
@@ -1550,17 +1724,9 @@ function pageSms() {
     },
     showDetail(m) { this.detail = m; },
 
-    fmtTs(ts) {
-      return ts >= 1600000000 ? new Date(ts * 1000).toLocaleString()
-                              : '开机 ' + fmtUptime(ts);
-    },
+    fmtTs(ts) { return fmtDateTime(ts); },
     // 列表用短时间：MM-DD HH:mm（跨年也看不出，详情里有完整时间）
-    fmtShort(ts) {
-      if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
-      const d = new Date(ts * 1000);
-      const p = n => (n < 10 ? '0' : '') + n;
-      return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-    },
+    fmtShort(ts) { return fmtDateShort(ts); },
     preview(s) { return s.length > 80 ? s.slice(0, 80) + '…' : s; },
     // 按通信模组号取显示名（含别名）：记录 / 详情里通信模组号字段为 modem，需回查别名
     modemLabelOf(port) {
@@ -1576,8 +1742,13 @@ function pageSms() {
 function pageAdmin() {
   return {
     admins: [], adminEnabled: false, adminSaving: false, adminHint: '', adminErr: false,
+    loaded: false,
+    _snap: '',               // 已保存号码列表快照（用于未保存检测）
 
-    init() { this.loadAdmin(); },
+    init() {
+      this.loadAdmin();
+      this.$watch('admins', () => { this.adminErr = false; });
+    },
 
     async loadAdmin() {
       try {
@@ -1586,10 +1757,38 @@ function pageAdmin() {
           const data = await r.json();
           this.admins = (data.phones || []).map(p => (p || '').toString());
           this.adminEnabled = !!data.enabled;
+          this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
       } catch (e) {}
     },
+
+    // 未保存检测：号码列表变化即视为未保存（启用开关随保存一并写入）
+    markClean() { this._snap = JSON.stringify(this.admins); },
+    get dirty() {
+      return !!this._snap && this._snap !== JSON.stringify(this.admins);
+    },
+
+    // 保存前校验：号码非空、格式合法（数字与 + 号，最多 20 位）
+    validate() {
+      for (let i = 0; i < this.admins.length; i++) {
+        const p = (this.admins[i] || '').trim();
+        if (!p) return '第 ' + (i + 1) + ' 个号码为空（请填写或删除该行）';
+        if (!/^\+?[0-9]{3,20}$/.test(p))
+          return '第 ' + (i + 1) + ' 个号码格式不正确：' + p;
+      }
+      return '';
+    },
+
     async saveAdmin() {
+      const bad = this.validate();
+      if (bad) {
+        this.adminErr = true;
+        this.adminHint = bad;
+        toast(bad, 'err');
+        return;
+      }
       this.adminSaving = true;
       this.adminErr = false;
       this.adminHint = '';
@@ -1606,6 +1805,7 @@ function pageAdmin() {
       if (r && r.phones) {
         this.admins = r.phones.map(p => (p || '').toString());
         this.adminEnabled = !!r.enabled;
+        this.markClean();
       } else if (!r) {
         this.adminErr = true;
         this.adminHint = '保存失败（号码格式错误或超出上限）';
@@ -1619,6 +1819,10 @@ function pageModem() {
   return {
     modems: [],
     aliasDraft: {},            // 各通信模组别名草稿（按 port 暂存输入）
+    loaded: false,
+    err: '',                 // 校验错误（定时查询表单）
+    _snapPoll: '',            // 定时查询日程快照
+    _snapSafety: '',          // 兜底轮询周期快照
     init() {
       // SSE 推送通信模组状态（含遥测）时同步
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
@@ -1628,6 +1832,7 @@ function pageModem() {
       this.loadQueryStatus();
       this.loadStore();
       this.loadPoll();
+      this.$watch('poll', () => { this.err = ''; });
     },
     applyPorts(list) {
       this.modems = list || [];
@@ -1792,24 +1997,67 @@ function pageModem() {
           const hh = String(j.hour == null ? 4 : j.hour).padStart(2, '0');
           const mm = String(j.minute == null ? 0 : j.minute).padStart(2, '0');
           this.poll.daily = hh + ':' + mm;
+          this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
       } catch (e) {}
     },
+
+    // ---- 未保存检测：定时日程与兜底周期各自独立 ----
+    markCleanPoll() {
+      const p = this.poll;
+      this._snapPoll = JSON.stringify({ e: p.enabled, m: p.mode, h: p.intervalH, d: p.daily });
+    },
+    markCleanSafety() { this._snapSafety = String(this.poll.safetySec); },
+    markClean() { this.markCleanPoll(); this.markCleanSafety(); },
+    get dirtySchedule() {
+      const p = this.poll;
+      const now = JSON.stringify({ e: p.enabled, m: p.mode, h: p.intervalH, d: p.daily });
+      return !!this._snapPoll && this._snapPoll !== now;
+    },
+    get dirtySafety() {
+      return !!this._snapSafety && this._snapSafety !== String(this.poll.safetySec);
+    },
+    get dirty() { return this.dirtySchedule || this.dirtySafety; },
+
     // 仅保存兜底轮询周期（不影响定时查询日程）
     async saveSafety() {
       if (this.pollSaving) return;
+      const sec = Number(this.poll.safetySec);
+      if (!(sec >= 30 && sec <= 3600)) {
+        this.err = '兜底轮询周期需在 30~3600 秒之间';
+        toast(this.err, 'err');
+        return;
+      }
       this.pollSaving = true;
       try {
         const r = await postOp('/api/sms/poll',
-                               { safetySec: Number(this.poll.safetySec) || 60 },
+                               { safetySec: sec },
                                '兜底轮询周期已保存');
-        if (r) this.loadPoll();
+        if (r) { this.poll.safetySec = sec; this.markCleanSafety(); }
       } finally {
         this.pollSaving = false;
       }
     },
+
+    // 定时查询表单校验
+    validate() {
+      if (Number(this.poll.mode) === 1) {
+        const h = Number(this.poll.intervalH);
+        if (!(h >= 1 && h <= 720)) return '间隔小时需在 1~720 之间';
+      } else {
+        if (!/^\d{1,2}:\d{2}$/.test(String(this.poll.daily || '')))
+          return '每日时间格式应为 HH:MM';
+      }
+      return '';
+    },
+
     async savePoll() {
       if (this.pollSaving) return;
+      const bad = this.validate();
+      this.err = bad;
+      if (bad) { toast(bad, 'err'); return; }
       const parts = String(this.poll.daily || '00:00').split(':');
       const hh = parseInt(parts[0], 10) || 0;
       const mm = parseInt(parts[1], 10) || 0;
@@ -1823,7 +2071,7 @@ function pageModem() {
           minute: mm,
           safetySec: Number(this.poll.safetySec) || 60,
         }, '定时查询配置已保存');
-        if (r) this.loadPoll();
+        if (r) { this.markCleanPoll(); this.markCleanSafety(); }
       } finally {
         this.pollSaving = false;
       }
@@ -1855,8 +2103,18 @@ function pageEmail() {
     saving: false,
     testing: false,
     types: TYPES,
-    init() { this.load(); },
+    loading: false,           // 首屏加载中
+    loaded: false,
+    err: '',                 // 校验错误
+    _snap: '',               // 已保存快照（用于未保存检测）
+
+    init() {
+      this.load();
+      this.$watch('cfg', () => { this.err = ''; });
+    },
+
     async load() {
+      this.loading = true;
       try {
         const r = await apiFetch('/api/email');
         if (r.ok) {
@@ -1875,9 +2133,30 @@ function pageEmail() {
           this.cfg.pass = '';
           this.configured = !!j.configured;
           this.hasPass = !!j.hasPass;
+          this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
-      } catch (e) {}
+      } catch (e) {} finally { this.loading = false; }
     },
+
+    // 未保存检测：只比对「需点保存才生效」的字段（总开关即时生效，不计入）
+    markClean() {
+      const c = this.cfg;
+      this._snap = JSON.stringify({
+        s: c.server, p: c.port, u: c.user, w: c.sendTo, n: c.notifyTypes,
+        m: c.schedMode, h: c.schedHour, mi: c.schedMinute, i: c.intervalH,
+      });
+    },
+    get dirty() {
+      const c = this.cfg;
+      const now = JSON.stringify({
+        s: c.server, p: c.port, u: c.user, w: c.sendTo, n: c.notifyTypes,
+        m: c.schedMode, h: c.schedHour, mi: c.schedMinute, i: c.intervalH,
+      });
+      return !!this._snap && this._snap !== now;
+    },
+
     // 总开关：只翻转启用位（不动其余配置），停用时设备丢弃待发邮件
     async toggleEnabled() {
       const on = !!this.cfg.enabled;
@@ -1898,7 +2177,33 @@ function pageEmail() {
     },
     onlineOn() { return this.isOn(8); },
     isInterval() { return Number(this.cfg.schedMode) === 1; },
+
+    // 保存前校验：启用邮件时服务器 / 账号 / 收件地址 / 授权码必须齐全
+    validate() {
+      const c = this.cfg;
+      if (!c.enabled) return '';   // 已停用时允许留空（配置可稍后再填）
+      if (!(c.server || '').trim()) return '请填写 SMTP 服务器地址';
+      const port = Number(c.port);
+      if (!port || port < 1 || port > 65535) return 'SMTP 端口需在 1~65535 之间';
+      if (!(c.user || '').trim()) return '请填写发件邮箱（同时作为登录账号）';
+      if (!this.hasPass && !(c.pass || '').trim()) return '请填写 SMTP 授权码';
+      if (!(c.sendTo || '').trim()) return '请填写收件邮箱';
+      if (this.onlineOn() && !this.isInterval()) {
+        const h = Number(c.schedHour), mi = Number(c.schedMinute);
+        if (!(h >= 0 && h <= 23)) return '定时小时需在 0~23 之间';
+        if (!(mi >= 0 && mi <= 59)) return '定时分钟需在 0~59 之间';
+      }
+      if (this.onlineOn() && this.isInterval()) {
+        const ih = Number(c.intervalH);
+        if (!(ih >= 1 && ih <= 720)) return '间隔小时需在 1~720 之间';
+      }
+      return '';
+    },
+
     async save() {
+      const bad = this.validate();
+      this.err = bad;
+      if (bad) { toast(bad, 'err'); return; }
       this.saving = true;
       try {
         const r = await postOp('/api/email', {
@@ -1919,6 +2224,7 @@ function pageEmail() {
           this.configured = !!j.configured;
           this.hasPass = !!j.hasPass;
           this.cfg.pass = '';
+          this.markClean();
         }
       } finally {
         this.saving = false;
@@ -1961,7 +2267,15 @@ function pageMqtt() {
     testing: false,
     connected: false,        // MQTT 实时连接状态（load 兜底，SSE 优先）
     types: TYPES,
-    init() { this.load(); },
+    loading: false,           // 首屏加载中
+    loaded: false,
+    err: '',                 // 校验错误
+    _snap: '',               // 已保存快照（用于未保存检测）
+
+    init() {
+      this.load();
+      this.$watch('cfg', () => { this.err = ''; });
+    },
     // 实时连接状态：优先取 SSE status.mqtt（实时推送），否则用 load() 兜底值
     get live() {
       const s = Alpine.store('live').status;
@@ -1987,6 +2301,7 @@ function pageMqtt() {
       return this.connConnected() ? '已连接' : (this.connError() ? '连接失败' : '连接中');
     },
     async load() {
+      this.loading = true;
       try {
         const r = await apiFetch('/api/mqtt');
         if (r.ok) {
@@ -2004,8 +2319,28 @@ function pageMqtt() {
           this.configured = !!j.configured;
           this.hasPass = !!j.hasPass;
           this.connected = !!j.connected;   // 兜底值，实时连接状态优先取 SSE
+          this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
-      } catch (e) {}
+      } catch (e) {} finally { this.loading = false; }
+    },
+
+    // 未保存检测：只比对「需点保存才生效」的字段（总开关即时生效，不计入）
+    markClean() {
+      const c = this.cfg;
+      this._snap = JSON.stringify({
+        sc: c.scheme, sv: c.server, u: c.user, ci: c.clientId, tp: c.topicPrefix,
+        ka: c.keepAlive, se: c.subscribeEnabled, n: c.notifyTypes,
+      });
+    },
+    get dirty() {
+      const c = this.cfg;
+      const now = JSON.stringify({
+        sc: c.scheme, sv: c.server, u: c.user, ci: c.clientId, tp: c.topicPrefix,
+        ka: c.keepAlive, se: c.subscribeEnabled, n: c.notifyTypes,
+      });
+      return !!this._snap && this._snap !== now;
     },
     // 总开关：只翻转启用位（不动其余配置），停用时销毁客户端停止连接
     async toggleEnabled() {
@@ -2025,7 +2360,26 @@ function pageMqtt() {
       this.cfg.notifyTypes = this.isOn(bit)
         ? (this.cfg.notifyTypes & ~bit) : (this.cfg.notifyTypes | bit);
     },
+    // 保存前校验：启用 MQTT 时服务器地址必填；若带端口则需在 1~65535
+    validate() {
+      const c = this.cfg;
+      if (!c.enabled) return '';   // 已停用时允许留空
+      const sv = (c.server || '').trim();
+      if (!sv) return '请填写 Broker 服务器地址（地址:端口）';
+      const m = sv.match(/:(\d{1,5})$/);
+      if (m) {
+        const port = Number(m[1]);
+        if (!port || port < 1 || port > 65535) return 'Broker 端口需在 1~65535 之间';
+      }
+      const ka = Number(c.keepAlive);
+      if (!(ka >= 1 && ka <= 3600)) return '保活间隔需在 1~3600 秒之间';
+      return '';
+    },
+
     async save() {
+      const bad = this.validate();
+      this.err = bad;
+      if (bad) { toast(bad, 'err'); return; }
       this.saving = true;
       try {
         const r = await postOp('/api/mqtt', {
@@ -2045,6 +2399,7 @@ function pageMqtt() {
           this.configured = !!j.configured;
           this.hasPass = !!j.hasPass;
           this.cfg.pass = '';              // 清空密码框（已保存则不回显）
+          this.markClean();
         }
       } finally { this.saving = false; }
     },
@@ -2066,15 +2421,24 @@ function pageMqtt() {
 function pagePush() {
   return {
     loaded: false,
+    loading: false,           // 首屏加载中
+    err: '',                 // 校验错误（表单级提示）
     cfg: { enabled: false, strategy: 0 },
     channels: [],
     types: [],
     saving: false,
     testing: false,
+    _snap: '',               // 已保存配置快照（用于未保存检测）
 
-    init() { this.load(); },
+    init() {
+      this.load();
+      // 任何编辑后清掉上一次的校验提示，避免过期错误误导
+      this.$watch('channels', () => { this.err = ''; });
+      this.$watch('cfg.strategy', () => { this.err = ''; });
+    },
 
     async load() {
+      this.loading = true;
       try {
         const r = await apiFetch('/api/push/types');
         if (r.ok) { const j = await r.json(); this.types = j.types || []; }
@@ -2098,8 +2462,16 @@ function pagePush() {
             hasKey4: !!c.hasKey4, hasKey5: !!c.hasKey5,
           }));
           this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
-      } catch (e) {}
+      } catch (e) {} finally { this.loading = false; }
+    },
+
+    // 未保存检测：只比对「需点保存才生效」的部分（总开关为即时生效，不计入）
+    markClean() { this._snap = JSON.stringify({ s: this.cfg.strategy, c: this.channels }); },
+    get dirty() {
+      return !!this._snap && this._snap !== JSON.stringify({ s: this.cfg.strategy, c: this.channels });
     },
 
     typeMeta(t) {
@@ -2144,6 +2516,13 @@ function pagePush() {
       const hk = 'hasKey' + f.name.slice(3);
       return f.secret && ch[hk] && !ch[f.name];
     },
+    // 必填项缺失 → 输入框红框（未保存前即可见）
+    fieldInvalid(ch, f) {
+      if (!f.required || !ch.enabled) return false;
+      if ((ch[f.name] || '').toString().trim()) return false;
+      if (f.secret && ch['hasKey' + f.name.slice(3)]) return false;
+      return true;
+    },
 
     onTypeChange(i) {
       // 切换类型后重置字段与掩码标记，避免残留误导
@@ -2172,7 +2551,25 @@ function pagePush() {
       else { this.cfg.enabled = !on; }
     },
 
+    // 保存前校验：启用的通道必填项不能为空（密钥项已保存视为已填，留空即不修改）
+    validate() {
+      for (let i = 0; i < this.channels.length; i++) {
+        const ch = this.channels[i];
+        if (!ch.enabled) continue;
+        const m = this.typeMeta(ch.type);
+        for (const f of (m.required || [])) {
+          if ((ch[f] || '').toString().trim()) continue;
+          if (m.secretField === f && ch['hasKey' + f.slice(3)]) continue;
+          return '第 ' + (i + 1) + ' 个通道缺少必填项「' + this.fieldLabel(f) + '」';
+        }
+      }
+      return '';
+    },
+
     async save() {
+      const bad = this.validate();
+      this.err = bad;
+      if (bad) { toast(bad, 'err'); return; }
       this.saving = true;
       try {
         const payload = {
@@ -2204,6 +2601,7 @@ function pagePush() {
             const sec = this.typeMeta(this.channels[i].type).secretField;
             if (sec) this.channels[i][sec] = '';
           }
+          this.markClean();     // 已保存，解除未保存标记
         }
       } finally { this.saving = false; }
     },
@@ -2308,7 +2706,7 @@ function pageLogs() {
           const j = await r.json();
           this.stats = j;
           this.statsErr = j.ok ? ''
-              : ('日志缓冲不可用（' + (j.error || 'unknown') + '）：请检查串口输出中的 [log] 日志');
+              : ('日志缓冲不可用（' + (zhError(j.error) || '未知原因') + '）：请检查串口输出中的 [log] 日志');
         }
       } catch (e) {}
     },
@@ -2342,17 +2740,8 @@ function pageLogs() {
     levelText(l) { return LEVELS[l] || '信息'; },
     levelClass(l) { return l >= 3 ? 'err' : l === 2 ? 'warn' : l === 0 ? '' : 'info'; },
     msgClass(l) { return l >= 3 ? 'lv-err' : l === 2 ? 'lv-warn' : ''; },
-    // 时间格式化与仪表盘一致：纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则开机时长
-    fmtTs(ts) {
-      if (!ts) return '-';
-      if (ts >= 1600000000) {
-        const d = new Date(ts * 1000);
-        const p = n => (n < 10 ? '0' : '') + n;
-        return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-               p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-      }
-      return '开机 ' + fmtUptime(ts);
-    },
+    // 时间格式化与全站一致（纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则开机时长）
+    fmtTs(ts) { return fmtDateTime(ts); },
   };
 }
 
@@ -2367,8 +2756,16 @@ function pageBlacklist() {
     testing: false,
     testNum: '',
     testRes: null,
+    loading: false,           // 首屏加载中
+    loaded: false,
+    err: '',                 // 校验错误
+    _snap: '',               // 已保存快照（用于未保存检测）
 
-    init() { this.load(); },
+    init() {
+      this.load();
+      this.$watch('cfg.list', () => { this.err = ''; });
+      this.$watch('cfg.action', () => { this.err = ''; });
+    },
 
     // 规整后端条目为前端可用的数字字段（mode / scope）
     _norm(e) {
@@ -2382,6 +2779,7 @@ function pageBlacklist() {
     },
 
     async load() {
+      this.loading = true;
       try {
         const r = await apiFetch('/api/blacklist');
         if (r.ok) {
@@ -2389,8 +2787,17 @@ function pageBlacklist() {
           this.cfg.enabled = !!j.enabled;
           this.cfg.action = j.action ?? 0;
           this.cfg.list = (j.list || []).map(e => this._norm(e));
+          this.loaded = true;
+          this.markClean();
+          setDirtyGuard(() => this.dirty);
         }
-      } catch (e) {}
+      } catch (e) {} finally { this.loading = false; }
+    },
+
+    // 未保存检测：只比对「需点保存才生效」的部分（总开关即时生效，不计入）
+    markClean() { this._snap = JSON.stringify({ a: this.cfg.action, l: this.cfg.list }); },
+    get dirty() {
+      return !!this._snap && this._snap !== JSON.stringify({ a: this.cfg.action, l: this.cfg.list });
     },
 
     // 总开关：只翻转启用位（不动规则与动作）
@@ -2413,7 +2820,26 @@ function pageBlacklist() {
     },
     delRule(i) { this.cfg.list.splice(i, 1); },
 
+    // 启用中的规则号码为空 → 红框提示
+    ruleInvalid(r) {
+      return !!(r.enabled && !(r.pattern || '').toString().trim());
+    },
+
+    // 保存前校验：启用的规则必须有号码（且不能只填空白）
+    validate() {
+      for (let i = 0; i < this.cfg.list.length; i++) {
+        const e = this.cfg.list[i];
+        if (!e.enabled) continue;
+        if (!(e.pattern || '').toString().trim())
+          return '第 ' + (i + 1) + ' 条规则的号码为空（停用该规则或填写号码）';
+      }
+      return '';
+    },
+
     async save() {
+      const bad = this.validate();
+      this.err = bad;
+      if (bad) { toast(bad, 'err'); return; }
       this.saving = true;
       try {
         const r = await postOp('/api/blacklist', {
@@ -2432,6 +2858,7 @@ function pageBlacklist() {
           this.cfg.enabled = !!j.enabled;
           this.cfg.action = j.action ?? 0;
           this.cfg.list = (j.list || []).map(e => this._norm(e));
+          this.markClean();
         }
       } finally { this.saving = false; }
     },
@@ -2588,7 +3015,7 @@ function pageTools() {
         let data = {};
         try { data = await r.json(); } catch (e) {}
         if (!r.ok) {
-          toast('✕ 导入失败：' + (data.error || ('HTTP ' + r.status)), 'err', 6000);
+          toast('✕ 导入失败：' + (zhError(data.error) || ('请求失败（HTTP ' + r.status + '）')), 'err', 6000);
           this.importing = false;
           return;
         }

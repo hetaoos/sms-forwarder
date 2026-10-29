@@ -1,10 +1,17 @@
 <div x-data="pageModem()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>通信模组</h2>
+      <h2>通信模组 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
       <p class="page-desc">查看与设置通信模组状态、信号强度、运营商、注册与号码</p>
     </div>
-    <button class="btn ghost sm" @click="loadPorts()">刷新</button>
+    <div class="bar">
+      <span class="badge info">别名 / 开关即时生效，查询设置需点保存</span>
+      <button class="btn ghost sm" @click="loadPorts()">刷新</button>
+    </div>
+  </div>
+
+  <div class="form-err" x-show="err" style="margin:0 0 14px">
+    <span class="ico">!</span><span x-text="err"></span>
   </div>
 
   <div class="grid cols2">
@@ -100,9 +107,10 @@
 
     <div class="bar" style="margin-top:10px;align-items:flex-end">
       <div class="field" style="max-width:180px"><label>兜底轮询周期（秒，30-3600）</label>
-        <input type="number" min="30" max="3600" step="10" x-model.number="poll.safetySec">
-      </div>
+        <input type="number" min="30" max="3600" step="10" x-model.number="poll.safetySec"
+               :class="{'input-error': poll.safetySec < 30 || poll.safetySec > 3600}"></div>
       <button class="btn ghost" @click="saveSafety()" :disabled="pollSaving">保存周期</button>
+      <span class="dirty-dot" x-show="dirtySafety">周期未保存</span>
       <span class="hint">自动上报（+CMTI）丢失时，按此周期主动下发指令补拉，防止漏短信。</span>
     </div>
 
@@ -159,7 +167,8 @@
 
       <div x-show="poll.mode == 1" style="margin-top:12px">
         <div class="field"><label>间隔（小时，1-720）</label>
-          <input type="number" min="1" max="720" x-model.number="poll.intervalH">
+          <input type="number" min="1" max="720" x-model.number="poll.intervalH"
+                 :class="{'input-error': poll.intervalH < 1 || poll.intervalH > 720}">
         </div>
       </div>
 
@@ -172,6 +181,7 @@
       <div class="bar" style="margin-top:14px">
         <button type="submit" class="btn" :disabled="pollSaving"
                 x-text="pollSaving ? '保存中…' : '保存配置'"></button>
+        <span class="dirty-dot" x-show="dirtySchedule">有未保存的修改</span>
       </div>
     </form>
   </div>

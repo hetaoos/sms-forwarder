@@ -59,7 +59,7 @@
     <!-- 分页 -->
     <div class="pager" x-show="total > 0">
       <div class="pager-info">
-        <span x-text="'共 ' + total + ' 条'"></span>
+        <span x-text="'共 ' + fmtCount(total)"></span>
         <span class="pager-sep">·</span>
         <span x-text="'第 ' + page + ' / ' + pageCount + ' 页'"></span>
       </div>
@@ -80,9 +80,9 @@
 
   <!-- 发送短信对话框 -->
   <div class="modal-mask" x-show="sendOpen" @click.self="closeSend()" style="display:none">
-    <div class="modal send-modal">
+    <div class="modal send-modal" role="dialog" aria-modal="true" aria-labelledby="sendModalTitle">
       <div class="modal-head">
-        <h3>发送短信</h3>
+        <h3 id="sendModalTitle">发送短信</h3>
         <button class="modal-close" @click="closeSend()" aria-label="关闭">×</button>
       </div>
 
@@ -98,7 +98,7 @@
 
       <div class="field">
         <label>对方号码</label>
-        <input class="inp" placeholder="如 13800138000 或 +86138..." x-model="phone">
+        <input class="inp" x-ref="phoneInput" placeholder="如 13800138000 或 +86138..." x-model="phone">
       </div>
 
       <div class="field">
@@ -118,8 +118,8 @@
 
   <!-- 详情对话框 -->
   <div class="modal-mask" x-show="detail" @click.self="detail = null" style="display:none">
-    <div class="modal">
-      <h3>短信详情</h3>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detailModalTitle">
+      <h3 id="detailModalTitle">短信详情</h3>
       <template x-if="detail">
         <div class="form">
           <div class="row"><span class="k">时间</span><span class="v" x-text="fmtTs(detail.ts)"></span></div>

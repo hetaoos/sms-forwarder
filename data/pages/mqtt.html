@@ -1,14 +1,23 @@
 <div x-data="pageMqtt()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>MQTT 推送</h2>
+      <h2>MQTT 推送 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
       <p class="page-desc">连接标准 MQTT Broker，事件以 JSON 发布，并支持订阅命令主题做远程控制。保存后立即生效，重启后仍有效</p>
     </div>
-    <button class="btn ghost sm" @click="load()">刷新</button>
+    <div class="bar">
+      <span class="badge info">服务器与通知类型需点保存生效</span>
+      <button class="btn ghost sm" @click="load()" :disabled="loading">刷新</button>
+    </div>
+  </div>
+
+  <div class="loading" x-show="loading && !loaded">正在加载 MQTT 配置…</div>
+
+  <div class="form-err" x-show="err" style="margin:0 0 14px">
+    <span class="ico">!</span><span x-text="err"></span>
   </div>
 
   <!-- MQTT Broker 配置 -->
-  <div class="card">
+  <div class="card" x-show="loaded">
     <h3>MQTT Broker</h3>
     <!-- 总开关：停用后一切事件都不发布、命令不订阅，已保存配置保留 -->
     <div class="bar" style="margin-bottom:4px">
@@ -21,6 +30,7 @@
       <span class="badge" :class="configured ? 'ok' : 'warn'"
             x-text="configured ? '配置完整' : '配置不完整'"></span>
       <span class="badge" :class="connClass()" x-text="connText()"></span>
+      <span class="badge info">总开关即时生效</span>
     </div>
     <div class="hint" x-show="!cfg.enabled" style="margin:0 0 12px">
       已停用：短信 / SIM / 启动 / 上线 / 日志事件都不会发布，命令订阅停止；
@@ -31,7 +41,7 @@
     </div>
     <form @submit.prevent="save()">
       <div class="grid cols2">
-        <div class="field" style="grid-column:1/-1"><label>服务器（地址:端口）</label>
+        <div class="field" style="grid-column:1/-1"><label>服务器（地址:端口） <span style="color:var(--danger)">*</span></label>
           <div class="bar" style="margin-top:0">
             <select class="inp" style="max-width:150px" x-model="cfg.scheme">
               <option value="mqtt">mqtt://</option>
@@ -40,6 +50,7 @@
               <option value="wss">wss://</option>
             </select>
             <input class="inp" style="flex:1;min-width:160px" x-model="cfg.server"
+                   :class="{'input-error': cfg.enabled && !(cfg.server||'').trim()}"
                    placeholder="broker.emqx.io:1883" maxlength="128" autocomplete="off">
           </div>
         </div>
@@ -56,7 +67,8 @@
           <input class="inp" x-model="cfg.topicPrefix" placeholder="smsf"
                  maxlength="32" autocomplete="off"></div>
         <div class="field"><label>保活间隔（秒，1-3600）</label>
-          <input class="inp" x-model="cfg.keepAlive" type="number" min="1" max="3600"></div>
+          <input class="inp" x-model="cfg.keepAlive" type="number" min="1" max="3600"
+                 @change="cfg.keepAlive = Math.min(3600, Math.max(1, Number(cfg.keepAlive)||60))"></div>
       </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--muted);margin-top:14px">
         <input type="checkbox" x-model="cfg.subscribeEnabled"> 订阅命令主题（远程控制）
@@ -67,6 +79,7 @@
         <button class="btn ghost" type="button"
                 :disabled="testing || !configured || !cfg.enabled"
                 @click="test()" x-text="testing ? '发布中…' : '发布测试消息'"></button>
+        <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       </div>
     </form>
     <div class="hint">
@@ -80,7 +93,7 @@
   </div>
 
   <!-- 通知类型 -->
-  <div class="card">
+  <div class="card" x-show="loaded">
     <h3>事件通知类型</h3>
     <p class="hint" style="margin:0 0 10px">
       勾选的事件会各自发布一条 JSON 报文；关闭后不影响短信存储、SSE 与其它功能。
@@ -99,6 +112,7 @@
     </div>
     <div class="bar" style="margin-top:10px">
       <button class="btn sm" :disabled="saving" @click="save()">保存通知类型</button>
+      <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       <span class="hint" style="margin:0">当前掩码：<b x-text="'0x' + cfg.notifyTypes.toString(16).toUpperCase()"></b></span>
     </div>
   </div>

@@ -3,6 +3,10 @@
     <h2>系统设置</h2>
     <p class="page-desc">管理登录账号；修改后立即生效，重启后仍有效</p>
   </div>
+  <div class="bar">
+    <span class="badge info">各项需点各自的「保存」按钮生效</span>
+    <button class="btn ghost sm" type="button" data-action="logout">退出登录</button>
+  </div>
 </div>
 
 <!-- 管理账号（已实现） -->
@@ -25,6 +29,7 @@
       <div class="field"><label>&nbsp;</label>
         <button type="submit" class="btn" :disabled="saving" x-text="saving ? '保存中…' : '保存修改'"></button></div>
     </div>
+    <div class="dirty-dot" x-show="dirty" style="margin-top:8px">有未保存的修改（离开页面会提示）</div>
   </form>
   <!-- 错误条：红底 + 图标，与右上角 toast 双通道展示 -->
   <div class="form-err" x-show="isErr" x-cloak>
@@ -43,6 +48,7 @@
     <div class="bar" style="margin-top:12px;align-items:center">
       <label class="chk"><input type="checkbox" x-model="enabled"> <span>启用 API 访问令牌</span></label>
       <button type="submit" class="btn" :disabled="saving || !loaded" x-text="saving ? '保存中…' : '保存'"></button>
+      <span class="dirty-dot" x-show="dirty">开关未保存</span>
     </div>
   </form>
   <div class="row" style="margin-top:14px"><span class="k">令牌</span>
@@ -87,7 +93,8 @@
 
       <div x-show="mode == 1" style="margin-top:12px">
         <div class="field"><label>间隔（小时，1-720）</label>
-          <input type="number" min="1" max="720" x-model.number="intervalH">
+          <input type="number" min="1" max="720" x-model.number="intervalH"
+                 :class="{'input-error': intervalH < 1 || intervalH > 720}">
         </div>
       </div>
 
@@ -105,6 +112,7 @@
 
       <div class="bar" style="margin-top:14px">
         <button type="submit" class="btn" :disabled="saving || !loaded" x-text="saving ? '保存中…' : '保存配置'"></button>
+        <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
       </div>
     </form>
     <div class="hint" style="margin-top:8px">配置保存后立即生效，设备不会重启；定时重启将按新计划执行。</div>

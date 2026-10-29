@@ -1,12 +1,15 @@
 <div x-data="pageAdmin()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>管理员</h2>
+      <h2>管理员 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
       <p class="page-desc">授权手机号经短信下发命令，远程控制设备（代发 / 重启 / PING 等）</p>
+    </div>
+    <div class="bar">
+      <span class="badge info">号码列表需点「保存」生效</span>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" x-show="loaded">
     <div class="bar" style="margin-bottom:10px">
       <h3 style="margin:0">授权号码</h3>
       <span class="badge" :class="(!adminEnabled ? 'info' : (admins.filter(v=>v).length ? 'ok' : 'warn'))"
@@ -25,7 +28,8 @@
       <template x-for="(p, i) in admins" :key="i">
         <div class="adm-row">
           <input class="inp" style="flex:1;min-width:160px" placeholder="管理员手机号，如 13800138000"
-                 x-model="admins[i]" maxlength="20" autocomplete="off">
+                 x-model="admins[i]" maxlength="20" autocomplete="off"
+                 :class="{'input-error': admins[i] && !/^\+?[0-9]{3,20}$/.test(admins[i].trim())}">
           <button class="btn ghost sm" @click="admins.splice(i,1)" aria-label="删除">删除</button>
         </div>
       </template>
@@ -35,6 +39,7 @@
               :disabled="admins.length >= 5">+ 添加号码</button>
       <button class="btn" :disabled="adminSaving" @click="saveAdmin()"
               x-text="adminSaving ? '保存中…' : '保存（上限 5 个）'"></button>
+      <span class="dirty-dot" x-show="dirty">有未保存的修改</span>
     </div>
     <div class="form-err" x-show="adminErr" x-text="adminHint"></div>
     <div class="hint" style="margin-top:8px">
