@@ -232,7 +232,7 @@ String LogStore::statsJson() const {
   JsonDocument doc;
   if (!_buf) {
     doc["ok"] = false;
-    doc["error"] = "log ring not ready";
+    doc["error"] = "日志缓冲区未就绪";
     String out;
     serializeJson(doc, out);
     return out;

@@ -688,7 +688,7 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
   SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs,
                                         AtHistory::Type::kCmd);
   if (!r.ok) {
-    err = "invalid port";
+    err = "通信模组序号无效";
     return r;
   }
   // 还原短信关键配置（仅通信模组就绪时）；初始化进行中由状态机负责下发，无需此处干预
@@ -1882,7 +1882,7 @@ bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) 
   }
   auto r = _bridge.sendSmsPdu(port, cfg::kUartBaud, part.tpduLen, part.hex, err);
   if (!r.ok) {
-    if (!err.length()) err = "invalid port";
+    if (!err.length()) err = "通信模组序号无效";
     return false;
   }
   return err.length() == 0;  // sendSmsPdu 用 err 表达失败原因（含通信模组响应）

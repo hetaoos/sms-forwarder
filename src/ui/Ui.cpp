@@ -257,7 +257,7 @@ void Ui::buildBoot() {
   lv_obj_set_width(logo, kScreenW);
   lv_obj_set_height(logo, 49);   // Logo 字体行高
 
-  lv_obj_t *ttl = newLabel(_scrBoot, 3, C_TEXT, "SMS Forwarder", LV_TEXT_ALIGN_CENTER);
+  lv_obj_t *ttl = newLabel(_scrBoot, 3, C_TEXT, "短信转发器", LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(ttl, 0, 164);
   lv_obj_set_width(ttl, kScreenW);
 
@@ -277,7 +277,7 @@ void Ui::buildBoot() {
   lv_bar_set_value(bar, 0, LV_ANIM_OFF);
   _bootBar = bar;
 
-  lv_obj_t *hint = newLabel(_scrBoot, 3, C_HINT, "Starting...", LV_TEXT_ALIGN_CENTER);
+  lv_obj_t *hint = newLabel(_scrBoot, 3, C_HINT, "正在启动…", LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(hint, 0, 208);
   lv_obj_set_width(hint, kScreenW);
 }
@@ -498,7 +498,7 @@ void Ui::buildPopup() {
   lv_label_set_long_mode(_popBody, LV_LABEL_LONG_MODE_WRAP);
 
   // 正文超出容器时会被裁掉，提示 OK 可以在可滚动文本页里看全文
-  lv_obj_t *foot = newLabel(_scrPopup, 1, C_HINT, "OK看全文  任意键返回",
+  lv_obj_t *foot = newLabel(_scrPopup, 1, C_HINT, "确定看全文  任意键返回",
                             LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(foot, 0, kFootTop + 2);
   lv_obj_set_width(foot, kScreenW);
@@ -755,13 +755,13 @@ int Ui::textViewUpdate(const char *title, const char *text, int scroll) {
     lv_label_set_text(_svText, text ? text : "");
     lv_obj_set_y(_svText, -scroll * lineH);
     lv_label_set_text(_svFoot,
-                      ("U/D滚动 BACK返回  " + String(scroll + 1) + "/" + String(lines))
+                      ("上下滚动 返回退出  " + String(scroll + 1) + "/" + String(lines))
                           .c_str());
   } else {
     // 内容没变但滚动位置可能变了：只挪文本与页脚计数
     lv_obj_set_y(_svText, -scroll * lineH);
     lv_label_set_text(_svFoot,
-                      ("U/D滚动 BACK返回  " + String(scroll + 1) + "/" + String(lines))
+                      ("上下滚动 返回退出  " + String(scroll + 1) + "/" + String(lines))
                           .c_str());
   }
   return scroll;

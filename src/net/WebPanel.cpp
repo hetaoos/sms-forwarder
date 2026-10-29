@@ -76,7 +76,7 @@ void sendFile(AsyncWebServerRequest *req, const char *path, const char *mime) {
     req->send(resp);
     return;
   }
-  sendErr(req, 404, "not found");
+  sendErr(req, 404, "文件不存在");
 }
 
 // 从 Cookie 头中解析指定名称的值；不存在返回空串
@@ -858,7 +858,7 @@ void WebPanel::handleAuthMiddleware(AsyncWebServerRequest *req, ArMiddlewareNext
     return;
   }
   if (url.startsWith("/api/") && !authorized(req)) {
-    sendErr(req, 401, "unauthorized");
+    sendErr(req, 401, "未授权");
     return;
   }
   next();
@@ -877,20 +877,20 @@ void WebPanel::handleLoginPage(AsyncWebServerRequest *req) {
 void WebPanel::handleLogin(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["user"].is<const char *>() ||
       !json["pass"].is<const char *>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String user = json["user"].as<String>();
   String pass = json["pass"].as<String>();
   if (!_auth.check(user, pass)) {
-    sendErr(req, 401, "bad credentials");
+    sendErr(req, 401, "用户名或密码错误");
     return;
   }
   String sid = genSecret();
   String token = genSecret();
   if (!storeAdd(_sessions, _sessionCount, sid) ||
       !storeAdd(_tokens, _tokenCount, token)) {
-    sendErr(req, 500, "too many sessions");
+    sendErr(req, 500, "登录会话过多，请稍后再试");
     return;
   }
   String cookie = String(cfg::kCookieName) + "=" + sid +
@@ -919,7 +919,7 @@ void WebPanel::handleLogout(AsyncWebServerRequest *req) {
 
 void WebPanel::handleSession(AsyncWebServerRequest *req) {
   if (!authorized(req)) {
-    sendErr(req, 401, "unauthorized");
+    sendErr(req, 401, "未授权");
     return;
   }
   JsonDocument doc;
@@ -930,7 +930,7 @@ void WebPanel::handleSession(AsyncWebServerRequest *req) {
 
 // ---- API 令牌 / 账号 ----
 void WebPanel::handleTokenGet(AsyncWebServerRequest *req) {
-  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+  if (!authorized(req)) { sendErr(req, 401, "未授权"); return; }
   JsonDocument doc;
   doc["ok"] = true;
   doc["enabled"] = _apiTokenEnabled;
@@ -939,9 +939,9 @@ void WebPanel::handleTokenGet(AsyncWebServerRequest *req) {
 }
 
 void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
-  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
+  if (!authorized(req)) { sendErr(req, 401, "未授权"); return; }
   if (!json.is<JsonObject>() || !json["enabled"].is<bool>()) {
-    sendErr(req, 400, "invalid json"); return;
+    sendErr(req, 400, "请求格式错误"); return;
   }
   _apiTokenEnabled = json["enabled"].as<bool>();
   if (_apiTokenEnabled && _apiToken.length() != 32) _apiToken = genSecret();
@@ -950,8 +950,8 @@ void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
 }
 
 void WebPanel::handleTokenReset(AsyncWebServerRequest *req) {
-  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
-  if (!_apiTokenEnabled) { sendErr(req, 403, "api token disabled"); return; }
+  if (!authorized(req)) { sendErr(req, 401, "未授权"); return; }
+  if (!_apiTokenEnabled) { sendErr(req, 403, "API 访问令牌未启用"); return; }
   String t = resetApiToken();
   JsonDocument doc;
   doc["ok"] = true;
@@ -970,7 +970,7 @@ void WebPanel::handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["user"].is<const char *>() ||
       !json["pass"].is<const char *>() ||
       !json["passOld"].is<const char *>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String user = json["user"].as<String>();
@@ -1005,13 +1005,13 @@ void WebPanel::handleRgbGet(AsyncWebServerRequest *req) {
 
 void WebPanel::handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   int c;
   if (jsonInt(json["c"], c)) {
     if (c < 0 || c >= RgbLed::count()) {
-      sendErr(req, 400, "invalid preset index");
+      sendErr(req, 400, "颜色预设序号无效");
       return;
     }
     _led.set((uint8_t)c);
@@ -1046,7 +1046,7 @@ void WebPanel::handleAtSend(AsyncWebServerRequest *req) {
   String err;
   auto result = _sms.sendAt(port, baud, cmd, (SerialBridge::Eol)eol, timeout, err);
   if (!result.ok) {
-    sendErr(req, 400, err.length() ? err.c_str() : "invalid port");
+    sendErr(req, 400, err.length() ? err.c_str() : "通信模组序号无效");
     return;
   }
   sendJson(req, _bridge.entryJson(result.id));  // 直接回该条记录 JSON
@@ -1071,7 +1071,7 @@ void WebPanel::handleAtStats(AsyncWebServerRequest *req) {
 void WebPanel::handleAtReset(AsyncWebServerRequest *req) {
   uint8_t port = paramInt(req, "port", 0);
   if (port < 1 || port > 2) {
-    sendErr(req, 400, "invalid port");
+    sendErr(req, 400, "通信模组序号无效");
     return;
   }
   _bridge.reset(port);
@@ -1167,7 +1167,7 @@ void WebPanel::handleScreenGet(AsyncWebServerRequest *req) {
   size_t len = 0;
   uint8_t *buf = _display.takeScreenJpg(len);
   if (!buf || len == 0) {
-    req->send(503, "text/plain", "framebuffer unavailable");
+    req->send(503, "text/plain", "帧缓冲不可用");
     return;
   }
   // shared_ptr + free 删除器：与 ps_malloc 配对；可拷贝以存入 std::function，
@@ -1189,7 +1189,7 @@ void WebPanel::handleScreenGet(AsyncWebServerRequest *req) {
 
 void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   bool on;
@@ -1214,7 +1214,7 @@ void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
 // 远程按键注入：把 Web 端的 UP/DOWN/OK/BACK 当作物理按键驱动设备 UI
 void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["key"].is<const char *>()) {
-    sendErr(req, 400, "key required");
+    sendErr(req, 400, "缺少按键参数");
     return;
   }
   String k = json["key"].as<String>();
@@ -1229,7 +1229,7 @@ void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
   else if (k == "up") key = KeyId::kUp;
   else if (k == "down") key = KeyId::kDown;
   else if (k == "back") key = KeyId::kBack;
-  if (key == KeyId::kCount) { sendErr(req, 400, "unknown key"); return; }
+  if (key == KeyId::kCount) { sendErr(req, 400, "未知的按键"); return; }
   KeyInject::instance().push(key, ev);
   sendOk(req);
 }
@@ -1280,8 +1280,8 @@ void WebPanel::handleSystemReset(AsyncWebServerRequest *req) {
 // 定时重启：仅保存配置（即时生效），不重启设备。
 // 请求体可整体为 sched 对象，或 { "sched": {...} }（与通用导入一致）。
 void WebPanel::handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json) {
-  if (!authorized(req)) { sendErr(req, 401, "unauthorized"); return; }
-  if (!json.is<JsonObject>()) { sendErr(req, 400, "invalid json"); return; }
+  if (!authorized(req)) { sendErr(req, 401, "未授权"); return; }
+  if (!json.is<JsonObject>()) { sendErr(req, 400, "请求格式错误"); return; }
   JsonObject o = json["sched"].is<JsonObject>() ? json["sched"].as<JsonObject>()
                                                 : json.as<JsonObject>();
   if (!SystemService::instance().importFrom(o)) {
@@ -1326,7 +1326,7 @@ void WebPanel::handleWifiList(AsyncWebServerRequest *req) {
 
 void WebPanel::handleWifiSave(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["ssid"].is<const char *>()) {
-    sendErr(req, 400, "ssid required");
+    sendErr(req, 400, "请填写 WiFi 名称");
     return;
   }
   String ssid = json["ssid"].as<String>();
@@ -1335,11 +1335,11 @@ void WebPanel::handleWifiSave(AsyncWebServerRequest *req, JsonVariant &json) {
   bool connect = true;
   jsonBool(json["connect"], connect);  // 缺省 true
   if (!ssid.length()) {
-    sendErr(req, 400, "ssid required");
+    sendErr(req, 400, "请填写 WiFi 名称");
     return;
   }
   if (!_wifi.save(ssid, pass, connect)) {
-    sendErr(req, 500, "save failed (max 5)");
+    sendErr(req, 500, "保存失败（最多 5 条配置）");
     return;
   }
   sendOk(req);
@@ -1348,11 +1348,11 @@ void WebPanel::handleWifiSave(AsyncWebServerRequest *req, JsonVariant &json) {
 void WebPanel::handleWifiDelete(AsyncWebServerRequest *req, JsonVariant &json) {
   int index;
   if (!json.is<JsonObject>() || !jsonInt(json["index"], index)) {
-    sendErr(req, 400, "invalid index");
+    sendErr(req, 400, "序号无效");
     return;
   }
   if (!_wifi.remove((uint8_t)index)) {
-    sendErr(req, 400, "invalid index");
+    sendErr(req, 400, "序号无效");
     return;
   }
   sendOk(req);
@@ -1362,11 +1362,11 @@ void WebPanel::handleWifiMove(AsyncWebServerRequest *req, JsonVariant &json) {
   int from, to;
   if (!json.is<JsonObject>() || !jsonInt(json["from"], from) ||
       !jsonInt(json["to"], to)) {
-    sendErr(req, 400, "invalid move");
+    sendErr(req, 400, "排序参数无效");
     return;
   }
   if (from < 0 || to < 0 || !_wifi.move((uint8_t)from, (uint8_t)to)) {
-    sendErr(req, 400, "invalid move");
+    sendErr(req, 400, "排序参数无效");
     return;
   }
   sendOk(req);
@@ -1374,14 +1374,14 @@ void WebPanel::handleWifiMove(AsyncWebServerRequest *req, JsonVariant &json) {
 
 void WebPanel::handleWifiConnect(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["ssid"].is<const char *>()) {
-    sendErr(req, 400, "ssid required");
+    sendErr(req, 400, "请填写 WiFi 名称");
     return;
   }
   String ssid = json["ssid"].as<String>();
   String pass = json["pass"].is<const char *>()
                     ? json["pass"].as<String>() : String();
   if (!ssid.length()) {
-    sendErr(req, 400, "ssid required");
+    sendErr(req, 400, "请填写 WiFi 名称");
     return;
   }
   _wifi.requestConnect(ssid, pass);
@@ -1399,7 +1399,7 @@ void WebPanel::handleWifiApGet(AsyncWebServerRequest *req) {
 // AP 配网热点密码：修改并落盘；{"pass":""} 设为开放热点
 void WebPanel::handleWifiApPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["pass"].is<const char *>()) {
-    sendErr(req, 400, "pass required");
+    sendErr(req, 400, "请填写密码");
     return;
   }
   String pass = json["pass"].as<String>();
@@ -1464,12 +1464,12 @@ void WebPanel::handleSmsDelete(AsyncWebServerRequest *req) {
     return;
   }
   if (!req->hasParam("id")) {
-    sendErr(req, 400, "missing id or all");
+    sendErr(req, 400, "缺少短信 ID");
     return;
   }
   uint32_t id = (uint32_t)paramInt(req, "id", 0);
   if (!_sms.store().deleteOne(id)) {
-    sendErr(req, 404, "record not found");
+    sendErr(req, 404, "记录不存在");
     return;
   }
   sendOk(req);
@@ -1479,26 +1479,26 @@ void WebPanel::handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json)
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "invalid port");
+    sendErr(req, 400, "通信模组序号无效");
     return;
   }
   bool changed = false;
   if (json["enabled"].is<bool>()) {
     if (!_sms.setModemEnabled((uint8_t)port, json["enabled"].as<bool>())) {
-      sendErr(req, 500, "config save failed");
+      sendErr(req, 500, "配置保存失败");
       return;
     }
     changed = true;
   }
   if (json["alias"].is<const char *>()) {
     if (!_sms.setModemAlias((uint8_t)port, json["alias"].as<String>())) {
-      sendErr(req, 500, "config save failed");
+      sendErr(req, 500, "配置保存失败");
       return;
     }
     changed = true;
   }
   if (!changed) {
-    sendErr(req, 400, "missing enabled or alias");
+    sendErr(req, 400, "缺少启用状态或别名");
     return;
   }
   String modems = _sms.modemsJson();   // 先落本地变量，保证 serialized() 指针在序列化时仍有效
@@ -1512,7 +1512,7 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "invalid port");
+    sendErr(req, 400, "通信模组序号无效");
     return;
   }
   if (!_sms.reinitPort((uint8_t)port)) {
@@ -1536,7 +1536,7 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       !json["phone"].is<const char *>() ||
       !json["content"].is<const char *>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String phone = json["phone"].as<String>();
@@ -1640,31 +1640,31 @@ void WebPanel::handleSmsAdminGet(AsyncWebServerRequest *req) {
 // 号码校验优先于开关，避免号码非法却改了开关状态。
 void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   bool hasEnabled = json["enabled"].is<bool>();
   bool hasPhones = json["phones"].is<JsonArray>();
   if (!hasEnabled && !hasPhones) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (hasPhones) {
     std::vector<String> phones;
     for (JsonVariantConst v : json["phones"].as<JsonArray>()) {
       if (!v.is<const char *>()) {
-        sendErr(req, 400, "invalid phone");
+        sendErr(req, 400, "手机号格式不正确");
         return;
       }
       phones.push_back(v.as<String>());
     }
     if (!_sms.setAdminPhones(phones)) {
-      sendErr(req, 400, "invalid phone");
+      sendErr(req, 400, "手机号格式不正确");
       return;
     }
   }
   if (hasEnabled && !_sms.setAdminEnabled(json["enabled"].as<bool>())) {
-    sendErr(req, 500, "save failed");
+    sendErr(req, 500, "保存失败");
     return;
   }
   JsonDocument doc;
@@ -1685,7 +1685,7 @@ void WebPanel::handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json) 
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "invalid port");
+    sendErr(req, 400, "通信模组序号无效");
     return;
   }
   String host = json["host"].is<const char *>()
@@ -1756,14 +1756,14 @@ void WebPanel::handleSmsPingGet(AsyncWebServerRequest *req) {
 // JSON {"port":n?}：给出端口则只查该端口，缺省则对所有启用模组各查一次。
 void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   int port = 0;
   if (json["port"].is<int>()) {
     port = json["port"].as<int>();
     if (port < 1 || port > cfg::kSmsMaxModems) {
-      sendErr(req, 400, "invalid port");
+      sendErr(req, 400, "通信模组序号无效");
       return;
     }
   }
@@ -1805,7 +1805,7 @@ void WebPanel::handleSmsPollGet(AsyncWebServerRequest *req) {
 // 定时主动查询配置：保存 JSON {"enabled","mode","intervalH","hour","minute","safetySec"}
 void WebPanel::handleSmsPollPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !_sms.applyPollConfig(json.as<JsonObjectConst>())) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   JsonDocument doc;
@@ -1830,11 +1830,11 @@ void WebPanel::handleSmsStoreGet(AsyncWebServerRequest *req) {
 // 切换短信接收模式：JSON {"store":bool}（true=存储模式，false=直投模式）
 void WebPanel::handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["store"].is<bool>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_sms.setStoreMode(json["store"].as<bool>())) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   JsonDocument doc;
@@ -1851,11 +1851,11 @@ void WebPanel::handleEmailGet(AsyncWebServerRequest *req) {
 void WebPanel::handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
   bool on = true;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_email.setEnabled(on)) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _email.configJson());
@@ -1886,7 +1886,7 @@ void WebPanel::handleEmailTest(AsyncWebServerRequest *req) {
 
 void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String server = json["server"] | "";
@@ -1920,7 +1920,7 @@ void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
 
   if (!_email.saveConfig(server, (uint16_t)port, user, pass, sendTo,
                          (uint32_t)notifyTypes, sched, enabled)) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _email.configJson());
@@ -1934,11 +1934,11 @@ void WebPanel::handleMqttGet(AsyncWebServerRequest *req) {
 void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
   bool on = false;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_mqtt.setEnabled(on)) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _mqtt.configJson());
@@ -1969,7 +1969,7 @@ void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
 
 void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String scheme = json["scheme"] | "mqtt";
@@ -1990,7 +1990,7 @@ void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!_mqtt.saveConfig(scheme, server, user, pass, clientId,
                          topicPrefix, (uint16_t)keepAlive, subscribeEnabled,
                          (uint32_t)notifyTypes, enabled)) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _mqtt.configJson());
@@ -2012,11 +2012,11 @@ void WebPanel::handlePushTypes(AsyncWebServerRequest *req) {
 void WebPanel::handlePushEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
   bool on = false;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_push.setEnabled(on)) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _push.configJson());
@@ -2043,11 +2043,11 @@ void WebPanel::handlePushTest(AsyncWebServerRequest *req) {
 
 void WebPanel::handlePushPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_push.saveFromJson(json.as<JsonObject>())) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _push.configJson());
@@ -2061,12 +2061,12 @@ void WebPanel::handleBlackGet(AsyncWebServerRequest *req) {
 void WebPanel::handleBlackEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
   bool on = false;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   _blacklist.setEnabled(on);
   if (!_blacklist.saveConfig()) {
-    sendErr(req, 500, "config save failed");
+    sendErr(req, 500, "配置保存失败");
     return;
   }
   sendJson(req, _blacklist.configJson());
@@ -2074,7 +2074,7 @@ void WebPanel::handleBlackEnabled(AsyncWebServerRequest *req, JsonVariant &json)
 
 void WebPanel::handleBlackPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   if (!_blacklist.saveFromJson(json.as<JsonObject>())) {
@@ -2088,7 +2088,7 @@ void WebPanel::handleBlackPost(AsyncWebServerRequest *req, JsonVariant &json) {
 void WebPanel::handleBlackTest(AsyncWebServerRequest *req) {
   String num = stringParam(req, "num");
   if (!num.length()) {
-    sendErr(req, 400, "missing num");
+    sendErr(req, 400, "缺少号码");
     return;
   }
   // 忽略总开关逐条测试（供前端调试规则）
@@ -2142,7 +2142,7 @@ void WebPanel::handleOtaStartBody(AsyncWebServerRequest *req, uint8_t *data, siz
 // 启动在线升级：解析 tag，交给后台任务下载并写入 OTA 分区
 void WebPanel::handleOtaStart(AsyncWebServerRequest *req) {
   if (!req->_tempObject) {
-    sendErr(req, 400, "missing body");
+    sendErr(req, 400, "缺少请求内容");
     return;
   }
   String body = *((String *)req->_tempObject);
@@ -2151,7 +2151,7 @@ void WebPanel::handleOtaStart(AsyncWebServerRequest *req) {
   delete (String *)req->_tempObject;
   req->_tempObject = nullptr;
   if (err || !doc["tag"].is<const char *>()) {
-    sendErr(req, 400, "invalid json");
+    sendErr(req, 400, "请求格式错误");
     return;
   }
   String tag = doc["tag"].as<String>();
@@ -2278,7 +2278,7 @@ void WebPanel::handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data
 // 导入：请求收尾后解析整份 JSON，逐节写入各通信模组并落盘，最后延迟重启生效
 void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (!req->_tempObject) {
-    sendErr(req, 400, "missing body");
+    sendErr(req, 400, "缺少请求内容");
     return;
   }
   String body = *((String *)req->_tempObject);
@@ -2418,7 +2418,7 @@ void WebPanel::handleCoredumpExport(AsyncWebServerRequest *req) {
     return;
   }
 
-  _log.addf(LogLevel::kInfo, "http", "导出 coredump: used=%u bytes, part=%s",
+  _log.addf(LogLevel::kInfo, "http", "导出 coredump：已用=%u 字节，分区=%s",
             static_cast<unsigned>(used), part->label);
 
   AsyncWebServerResponse *resp = req->beginChunkedResponse(
@@ -2476,5 +2476,5 @@ void WebPanel::handleCoredumpClear(AsyncWebServerRequest *req) {
 
 // ---- 兜底 404 ----
 void WebPanel::handleNotFound(AsyncWebServerRequest *req) {
-  sendErr(req, 404, "not found");
+  sendErr(req, 404, "接口不存在");
 }

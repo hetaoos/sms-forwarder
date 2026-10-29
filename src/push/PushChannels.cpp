@@ -188,7 +188,7 @@ bool PushChannels::sendPostJson(const PushChannel& ch, const String& sender, con
     serializeJson(doc, body);
   }
 
-  _log.addf(LogLevel::kInfo, "pushch", "POST JSON to %s", ch.url.c_str());
+  _log.addf(LogLevel::kInfo, "pushch", "POST JSON 请求: %s", ch.url.c_str());
   int code = ts.session->http()->POST(body);
   return isResponseSuccessful(ts.session.get(), code);
 }
@@ -205,7 +205,7 @@ bool PushChannels::sendBark(const PushChannel& ch, const String& sender, const P
   String body;
   serializeJson(doc, body);
 
-  _log.addf(LogLevel::kInfo, "pushch", "Bark to %s", ch.url.c_str());
+  _log.addf(LogLevel::kInfo, "pushch", "Bark 推送: %s", ch.url.c_str());
   int code = ts.session->http()->POST(body);
   return isResponseSuccessful(ts.session.get(), code);
 }
@@ -217,7 +217,7 @@ bool PushChannels::sendGet(const PushChannel& ch, const String& sender, const Pu
   url += "&message=" + urlEncode(message.content);
   url += "&timestamp=" + urlEncode(timestamp);
 
-  _log.addf(LogLevel::kInfo, "pushch", "GET %s", url.c_str());
+  _log.addf(LogLevel::kInfo, "pushch", "GET 请求: %s", url.c_str());
   TlsSession ts = request(url);
   if (!ts) return false;
   int code = ts.session->http()->GET();
@@ -249,7 +249,7 @@ bool PushChannels::sendDingtalk(const PushChannel& ch, const String& sender, con
   String body;
   serializeJson(doc, body);
 
-  _log.addf(LogLevel::kInfo, "pushch", "DingTalk: %s", body.c_str());
+  _log.addf(LogLevel::kInfo, "pushch", "钉钉: %s", body.c_str());
   int code = ts.session->http()->POST(body);
   return isResponseSuccessful(ts.session.get(), code);
 }
@@ -265,7 +265,7 @@ bool PushChannels::sendPushPlus(const PushChannel& ch, const String& sender, con
     if (ch.key2 == "wechat" || ch.key2 == "extension" || ch.key2 == "app") {
       channelValue = ch.key2;
     } else {
-      _log.addf(LogLevel::kWarn, "pushch", "Invalid PushPlus channel '%s'. Using default 'wechat'.", ch.key2.c_str());
+      _log.addf(LogLevel::kWarn, "pushch", "PushPlus 通道类型 '%s' 无效，已回退为默认 'wechat'。", ch.key2.c_str());
     }
   }
 
@@ -428,7 +428,7 @@ bool PushChannels::sendMailgun(const PushChannel& ch, const String& sender, cons
 
   String from = ch.key4;
   from.trim();
-  if (from.length() == 0) from = "SMS Notification <sms@" + domain + ">";
+  if (from.length() == 0) from = "短信通知 <sms@" + domain + ">";
 
   String sms = message.raw.length() > 0 ? message.raw : message.content;
   String defSubject, defHtml, defText;

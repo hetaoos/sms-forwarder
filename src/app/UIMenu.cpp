@@ -321,11 +321,11 @@ void UIMenu::render() {
   String foot;
   if (n > 0) {
     foot += String(_cursor + 1) + "/" + String(n) + " ";
-    if (pg.id == PageId::kRgb) foot += "OK切换  " + String(_snap.rgbName);
-    else if (pg.id == PageId::kToolbox) foot += "OK执行 BACK返回";
-    else foot += "OK进入 BACK返回";
+    if (pg.id == PageId::kRgb) foot += "确定切换  " + String(_snap.rgbName);
+    else if (pg.id == PageId::kToolbox) foot += "确定执行 返回退出";
+    else foot += "确定进入 返回退出";
   } else {
-    foot += "U/D滚动 BACK返回";
+    foot += "上下滚动 返回退出";
   }
 
   // 底部进度条（调节类页面）
@@ -850,7 +850,7 @@ void UIMenu::pollToolbox() {
       // 发现新版本：不自动升级，展示入口等用户确认（见 kOtaUpgrade）
       _toolPhase = ToolPhase::kFound;
       _toolNewVer = st.latestVersion;
-      _toolMsg = "发现新版本，按 OK 升级";
+      _toolMsg = "发现新版本，按确定键升级";
     } else {
       _toolPhase = ToolPhase::kIdle;
       _toolNewVer = "";   // 确实没有新版本，收回升级入口

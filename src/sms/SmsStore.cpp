@@ -256,7 +256,7 @@ String SmsStore::statsJson() {
   JsonDocument doc;
   if (!_enabled) {
     doc["ok"] = false;
-    doc["error"] = "store disabled";
+    doc["error"] = "短信存储未启用";
   } else {
     size_t total = userfs::totalBytes();
     size_t used = userfs::usedBytes();

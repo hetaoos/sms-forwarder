@@ -233,10 +233,11 @@ async function postJson(path, obj) {
 }
 
 /* ---------- 后端错误文案中文化 ----------
- * 固件侧 error 字段保持英文（REST 接口同时供第三方客户端调用，不改契约），
- * Web 端统一在这里翻译成中文再展示。 */
+ * 固件侧 error 字段已改为中文输出；此表保留英文键，
+ * 用于兼容尚未升级的旧固件，未收录的原文原样返回（便于排查新问题）。 */
 const ERR_ZH = {
   'unauthorized': '登录已失效，请重新登录',
+  '未授权': '登录已失效，请重新登录',
   'bad credentials': '用户名或密码错误',
   'too many sessions': '登录会话过多，请稍后再试',
   'api token disabled': 'API 访问令牌未启用',
@@ -253,7 +254,7 @@ const ERR_ZH = {
   'missing enabled or alias': '缺少启用状态或别名',
   'key required': '缺少按键参数',
   'unknown key': '未知的按键',
-  'pass required': '缺少密码',
+  'pass required': '请填写密码',
   'ssid required': '请填写 WiFi 名称',
   'record not found': '记录不存在',
   'save failed': '保存失败',
@@ -366,10 +367,10 @@ function renderConnDot() {
 // 顶栏连接指示灯文案
 function connTitle() {
   const c = Alpine.store('live').conn;
-  return { online: 'Real-time push: connected',
-           reconnecting: 'Real-time push: reconnecting...',
-           connecting: 'Real-time push: connecting...',
-           offline: 'Real-time push: disconnected (polling fallback)' }[c] || '';
+  return { online: '实时推送：已连接',
+           reconnecting: '实时推送：正在重连…',
+           connecting: '实时推送：正在连接…',
+           offline: '实时推送：已断开（已降级为轮询）' }[c] || '';
 }
 
 // REST 兜底快照：SSE 建立时补拉一次（断线期记录也借此补齐），

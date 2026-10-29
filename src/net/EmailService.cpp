@@ -884,7 +884,7 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   }
 
   SMTPMessage msg;
-  msg.headers.add(rfc822_from, String("SMS Notification <" + user + ">"));
+  msg.headers.add(rfc822_from, String("短信通知 <" + user + ">"));
   msg.headers.add(rfc822_to, sendTo);
   msg.headers.add(rfc822_subject, subject);
   // 有 HTML 就只发 HTML（单部分 text/html），否则退回纯文本。

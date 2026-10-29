@@ -374,7 +374,7 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
                                               int tpduLen, const String &pduHex,
                                               String &err) {
   if (port < 1 || port > 2) {
-    err = "invalid port";
+    err = "通信模组序号无效";
     return Result{false, (uint32_t)-1, String()};
   }
   lockPort(port - 1);

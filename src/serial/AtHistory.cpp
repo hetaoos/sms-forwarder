@@ -112,7 +112,7 @@ String AtHistory::statsJson() const {
   JsonDocument doc;
   if (!_buf) {
     doc["ok"] = false;
-    doc["error"] = "at history not ready";
+    doc["error"] = "AT 历史缓冲区未就绪";
   } else {
     doc["ok"] = true;
     doc["total"] = (unsigned)(_end - _start);
