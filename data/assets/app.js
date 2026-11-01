@@ -15,6 +15,8 @@ const $ = (s, r) => (r || document).querySelector(s);
  * system 模式下若浏览器不支持 matchMedia 或 prefers-color-scheme，回落浅色。 */
 const THEME_KEY = 'smsf-theme';
 const SEND_PORT_KEY = 'smsf-send-port';   // 发送短信对话框“上次使用的通信模组”
+const SEND_PHONE_KEY = 'smsf-send-phone'; // 发送短信对话框“上次输入/接收的对方号码”
+const SMS_QUERY_KEY = 'smsf-sms-query';   // 短信列表查询条件（筛选/搜索/每页条数）
 const themeMql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
 function themeMode() {
@@ -1548,9 +1550,15 @@ function pageSms() {
     detail: null,
 
     init() {
+      // 恢复上次保存的查询条件（筛选/搜索/每页条数），避免重新打开页面丢失
+      this.loadQuery();
       // SSE 驱动：新短信 -> 刷新列表（无筛选时）；通信模组配置 -> 同步开关
       this.$watch('$store.live.sms', () => { if (!this.q) this.reload(); });
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
+      // 查询条件变化时落盘，重开页面可还原
+      this.$watch('q', () => this.saveQuery());
+      this.$watch('portFilter', () => this.saveQuery());
+      this.$watch('pageSize', () => this.saveQuery());
       const live = Alpine.store('live');
       if (live.smsports.length) this.applyPorts(live.smsports);
       else this.loadPorts();
@@ -1588,6 +1596,8 @@ function pageSms() {
     openSend() {
       // 默认选中：上次使用的通信模组（仍可用）或第一个启用的通信模组
       this.sendPort = this.defaultSendPort();
+      // 恢复上次保存的对方号码，避免重复输入
+      try { this.phone = localStorage.getItem(SEND_PHONE_KEY) || ''; } catch (e) {}
       this.sendHint = ''; this.sendErr = false;
       this.sendOpen = true;
       // 打开后聚焦号码输入框，便于直接输入
@@ -1597,6 +1607,13 @@ function pageSms() {
       });
     },
     closeSend() { this.sendOpen = false; },
+    savePhone() {
+      try { localStorage.setItem(SEND_PHONE_KEY, this.phone || ''); } catch (e) {}
+    },
+    clearPhone() {
+      this.phone = '';
+      try { localStorage.removeItem(SEND_PHONE_KEY); } catch (e) {}
+    },
     async send() {
       const phone = this.phone.trim();
       if (!phone) { this.sendFail('请输入对方号码'); return; }
@@ -1701,6 +1718,24 @@ function pageSms() {
       } catch (e) {}
     },
     search() { this.page = 1; this.reload(); },
+    // 查询条件本地持久化：重开页面自动还原（仅 q / portFilter / pageSize，page 归 1）
+    loadQuery() {
+      try {
+        const s = JSON.parse(localStorage.getItem(SMS_QUERY_KEY) || 'null');
+        if (s && typeof s === 'object') {
+          if (typeof s.q === 'string') this.q = s.q;
+          if (Number.isFinite(s.portFilter)) this.portFilter = s.portFilter;
+          if ([10, 20, 50].includes(s.pageSize)) this.pageSize = s.pageSize;
+        }
+      } catch (e) {}
+    },
+    saveQuery() {
+      try {
+        localStorage.setItem(SMS_QUERY_KEY, JSON.stringify({
+          q: this.q || '', portFilter: this.portFilter, pageSize: this.pageSize,
+        }));
+      } catch (e) {}
+    },
     changePageSize() { this.page = 1; this.reload(); },
     gotoPage(p) { if (p < 1 || p > this.pageCount) return; this.page = p; this.reload(); },
     get pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },

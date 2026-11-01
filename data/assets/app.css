@@ -317,6 +317,9 @@ input.mono{font-family:var(--mono)}
   font-variant-numeric:tabular-nums}
 .send-modal .inp, .send-modal .field input, .send-modal .field select,
 .send-modal .field textarea{width:100%}
+.send-modal .field .inp-group{display:flex;gap:8px;align-items:stretch}
+.send-modal .field .inp-group .inp{flex:1;width:auto}
+.send-modal .field .inp-group .btn{flex:none}
 .send-modal .modal-btns{margin-top:18px;gap:12px}
 .send-modal .modal-btns .btn{flex:1}
 

@@ -98,7 +98,10 @@
 
       <div class="field">
         <label>对方号码</label>
-        <input class="inp" x-ref="phoneInput" placeholder="如 13800138000 或 +86138..." x-model="phone">
+        <div class="inp-group">
+          <input class="inp" x-ref="phoneInput" placeholder="如 13800138000 或 +86138..." x-model="phone" @input="savePhone()">
+          <button class="btn ghost sm" type="button" @click="clearPhone()" x-show="phone" title="清除号码">清除</button>
+        </div>
       </div>
 
       <div class="field">
