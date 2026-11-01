@@ -46,6 +46,10 @@ class SerialBridge {
   // 创建互斥量并启动串口抽数任务（重复调用无副作用）
   void begin();
 
+  // 注入时间戳供给（转发给 AT 历史环形缓冲）：已同步返回纪元秒，否则开机秒数。
+  // 须在 begin() 之后调用，使串口调试日志带上时间（与短信/运行日志一致）。
+  void setTimeProvider(std::function<uint32_t()> fn) { _hist.setTimeProvider(fn); }
+
   // 阻塞式：写命令后在 timeoutMs 内收集响应，必定记入 AT 历史（含后台命令）。
   // port：串口号 1-2；baud：波特率；cmd：命令文本；eol：行尾符；timeoutMs：收集超时；
   // type：来源类型，默认 kCmd（Web 控制台用户命令）；后台/内部流量传 kBg。

@@ -52,6 +52,7 @@
         <div class="entry">
           <div class="meta">
             <span class="tag" :class="typeBadge(e.type)" x-text="typeLabel(e.type)"></span>
+            <span class="ts" x-text="fmtTs(e.ts)"></span>
             <span x-text="'#' + e.id + ' · 串口' + e.port"></span>
           </div>
           <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>

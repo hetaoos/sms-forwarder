@@ -53,6 +53,7 @@ void AtHistory::add(uint8_t port, Type type, const String &cmd, const String &re
   uint32_t id = _end++;
   Entry &e = _buf[id % _max];
   e.id = id;
+  e.ts = _timeFn ? _timeFn() : (uint32_t)(millis() / 1000);
   e.port = port;
   e.type = (uint8_t)type;
   copyTrunc(e.cmd, sizeof(e.cmd), cmd.c_str());
@@ -72,6 +73,7 @@ String AtHistory::entryJson(uint32_t id) const {
   if (!e) return String("{}");   // 未找到记录时返回空对象 "{}"
   JsonDocument doc;
   doc["id"] = e->id;
+  doc["ts"] = e->ts;     // 时间戳：纪元秒（已同步）或开机秒数（前端按 <1.6e9 显示「开机 X」）
   doc["port"] = e->port;
   doc["type"] = e->type;  // 来源类型：0 用户命令 / 1 后台命令 / 2 主动上报
   doc["cmd"] = e->cmd;   // 直接赋值，ArduinoJson 自动转义特殊字符
@@ -98,6 +100,7 @@ String AtHistory::toJson(int32_t afterId, size_t limit) const {
     if (!e) continue;
     JsonObject o = arr.add<JsonObject>();
     o["id"] = e->id;
+    o["ts"] = e->ts;     // 时间戳：纪元秒（已同步）或开机秒数
     o["port"] = e->port;
     o["type"] = e->type;  // 来源类型
     o["cmd"] = e->cmd;   // 自动转义

@@ -93,6 +93,8 @@ bool App::begin() {
   _ui.setAccountUserFn([this]() { return _panel.webUser(); });
   _ui.setAccountResetFn([this]() { return _panel.resetWebPassword(); });
   _bridge.begin();                     // 启动串口抽数任务
+  // AT 历史带上时间：已同步用纪元秒，未同步退回开机秒数（与短信/运行日志一致）
+  _bridge.setTimeProvider([this] { return _time.epochOrUptime(); });
   // 短信 URC 消费钩子：抽数任务归档 +CMT 等通信模组自发数据前交给短信服务
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
     return _sms.onUnsolicited(port, text);

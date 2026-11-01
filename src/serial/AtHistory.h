@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <functional>
 
 #include "app/Config.h"
 
@@ -27,11 +28,17 @@ class AtHistory {
   // 一条 AT 交互/上报记录（定长结构，按槽位原地写入）
   struct Entry {
     uint32_t id;                           // 全局自增 ID（不回绕，取模映射到槽位）
+    uint32_t ts = 0;                       // 时间戳：纪元秒（时钟已同步）或开机秒数
     uint8_t port;                          // 来源串口号（1/2）
     uint8_t type;                          // 来源类型，见 Type
     char cmd[cfg::kAtHistoryCmdMax];       // 命令内容；空 = 串口自发上报（type=kUrc）
     char resp[cfg::kAtHistoryRespMax];     // 响应内容
   };
+
+  // 时间戳供给（与短信/日志一致）：已同步返回纪元秒，否则开机秒数；
+  // 未注入时退化为开机秒数（millis()/1000）。须在 begin() 之后、add() 之前注入。
+  using TimeProviderFn = std::function<uint32_t()>;
+  void setTimeProvider(TimeProviderFn fn) { _timeFn = fn; }
 
   // 分配环形缓冲：max 为条数上限（0 或越界取 cfg::kAtHistoryRingSize）。
   // PSRAM 优先（按上限给足）；失败退化为内部堆并按 kAtHistoryRingSizeNoPsram
@@ -82,4 +89,5 @@ class AtHistory {
   uint32_t _start = 0;     // 最旧条目 id
   uint32_t _end = 0;       // 下一个可用 id（即已写入总数）
   bool _psram = false;     // 缓冲是否成功分配到 PSRAM
+  TimeProviderFn _timeFn;  // 时间戳供给（未注入时用开机秒数）
 };
