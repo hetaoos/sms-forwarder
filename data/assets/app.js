@@ -1007,6 +1007,8 @@ function pageSerial() {
       if (this.atStats.psram) return '';
       return '未使用外部 PSRAM，AT 历史容量较小，功能不受影响';
     },
+    // 时间格式化：全站统一（纪元秒 -> "YYYY-MM-DD HH:mm:ss"；否则按开机时长）
+    fmtTs(ts) { return fmtDateTime(ts); },
     fmt, fmtBytes,
   };
 }
