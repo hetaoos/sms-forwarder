@@ -280,6 +280,10 @@ constexpr uint16_t kSmsStoreMax = 1000;       // 短信存储条数上限（FIFO
 constexpr uint8_t kSmsConcatSlots = 5;        // 并发长短信重组槽位
 constexpr uint8_t kSmsConcatMaxParts = 20;    // 单条长短信最多分段
 constexpr uint32_t kSmsConcatTimeoutMs = 30000;  // 长短信重组超时（收到最后一段后 30s）
+// SIM 存储里残缺长短信的收敛窗口：同一组分段等待这么久仍收不齐，就按「不完整
+// 长短信」把已收到的分段入库并删除 SIM 副本，避免僵尸分段永久占满 SIM。
+// 比重组槽超时宽一档，给 +CMTI 分批上报的分段留出到达时间。
+constexpr uint32_t kSmsConcatStuckMs = 60000;
 constexpr uint32_t kSmsCmgsPromptMs = 5000;      // AT+CMGS= 后等 '>' 提示符的上限
 constexpr uint32_t kSmsSendTimeoutMs = 30000;     // 单段 CMGS 发送超时（PDU 响应收集上限）
 constexpr uint32_t kSmsRecvPauseMs = 2000;        // 收到短信后延长暂停窗口的量（避免与短信处理交织）

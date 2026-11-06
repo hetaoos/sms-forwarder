@@ -301,6 +301,17 @@ class SmsService {
     uint32_t queryRetryAfterMs = 0; // 删除失败后的补删重试时刻（节流，避免 AT 风暴）
     uint32_t queryLogMs = 0;        // 「无存量」提示的节流时间戳（避免每轮刷屏）
 
+    // 残缺长短信滞留跟踪：SIM 上缺失分段永远等不到时，重组槽每 30s 被清一次，
+    // 查询链路会无限重复「读回 -> 等分段 -> 不删」。这里按 (发送方|参考号|总段数)
+    // 记录首次发现时刻，超过 cfg::kSmsConcatStuckMs 仍收不齐就把已收到的分段
+    // 按「不完整长短信」入库，然后删除整组 SIM 副本；saved 防止删除失败时重复入库。
+    struct StuckGroup {
+      String   key;
+      uint32_t firstMs = 0;
+      bool     saved = false;
+    };
+    StuckGroup stuckGroups[cfg::kSmsConcatSlots];
+
     // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
     bool     callPending = false;        // RING 已到：等待号码或通话结束
     bool     callDispatch = false;       // 有来电待派发（tick 消费后清位）

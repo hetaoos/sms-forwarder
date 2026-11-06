@@ -2208,6 +2208,8 @@ bool SmsService::queryPort(uint8_t port) {
   // 5) 逐组处理：按分段序号升序喂入收信处理链，长短信在最后一段到齐时才落盘。
   //    处理成功的组立刻逐条 AT+CMGD 删除 SIM 侧副本；删除失败会随下轮的
   //    「已读」列表被重新捞回来补删（去重表保证不会重复落盘 / 重复推送）。
+  //    残缺长短信（缺失分段已不在 SIM 上）永远收不齐，等过滞留窗口后收敛为
+  //    「不完整长短信」入库再删除，避免僵尸分段无限占满 SIM。
   uint32_t handled = 0, deleted = 0, delFailed = 0;
   uint8_t delFailStreak = 0;  // 连续失败时不再逐条重试，避免模组异常时长时间占端口
   auto deleteStored = [&](int idx) {
@@ -2236,10 +2238,67 @@ bool SmsService::queryPort(uint8_t port) {
               lastResp.length() ? lastResp.c_str() : "无响应");
     return false;
   };
+  auto groupKeyOf = [&](const std::vector<int> &grp) {
+    const Stored &h = msgs[grp[0]];
+    if (h.concat[2] <= 1) return String();
+    return String(h.sender + "|" + (unsigned)h.concat[0] + "|" + (unsigned)h.concat[2]);
+  };
+  auto findStuck = [&](const String &key) -> ModemState::StuckGroup * {
+    if (!key.length()) return nullptr;
+    for (auto &g : m.stuckGroups) if (g.key == key) return &g;
+    return nullptr;
+  };
+  auto clearStuck = [&](const String &key) {
+    if (!key.length()) return;
+    for (auto &g : m.stuckGroups) {
+      if (g.key == key) { g.key = String(); g.firstMs = 0; g.saved = false; }
+    }
+  };
+  auto addStuck = [&](const String &key) {
+    if (!key.length() || findStuck(key)) return;
+    for (auto &g : m.stuckGroups) {
+      if (!g.key.length()) { g.key = key; g.firstMs = millis(); g.saved = false; return; }
+    }
+    ModemState::StuckGroup *oldest = &m.stuckGroups[0];  // 表满：覆盖最早的一组
+    for (auto &g : m.stuckGroups) if (g.firstMs < oldest->firstMs) oldest = &g;
+    oldest->key = key;
+    oldest->firstMs = millis();
+    oldest->saved = false;
+  };
+  // 收敛后清掉重组槽里的同组残留，避免后续同 ref 的新长短信被旧分段污染
+  auto clearConcatSlots = [&](const Stored &h) {
+    xSemaphoreTake(_codecMutex, portMAX_DELAY);
+    for (uint8_t k = 0; k < cfg::kSmsConcatSlots; k++) {
+      SmsConcatSlot &sl = _concat[k];
+      if (sl.inUse && sl.sender == h.sender && sl.ref == (uint16_t)h.concat[0] &&
+          sl.total == (uint8_t)h.concat[2]) sl.inUse = false;
+    }
+    xSemaphoreGive(_codecMutex);
+  };
+  auto deleteGroup = [&](const std::vector<int> &grp) {
+    if (!_deleteAfterRead) return false;  // 未删：保留滞留标记，避免重复入库
+    bool all = true;
+    for (int i : grp) {
+      if (deleteStored(msgs[i].idx)) deleted++;
+      else { delFailed++; all = false; }
+    }
+    return all;
+  };
+
   for (auto &grp : groups) {
     std::sort(grp.begin(), grp.end(), [&](int a, int b) {
       return msgs[a].concat[1] < msgs[b].concat[1];
     });
+    const Stored &h = msgs[grp[0]];
+    const String gkey = groupKeyOf(grp);
+    ModemState::StuckGroup *st = findStuck(gkey);
+
+    // 已按「不完整长短信」入库：本轮只补删 SIM 副本，不再重复落盘 / 推送
+    if (st && st->saved) {
+      if (deleteGroup(grp)) clearStuck(gkey);
+      continue;
+    }
+
     CmtOutcome last = CmtOutcome::kKeep;
     for (int i : grp) {
       Stored &s = msgs[i];
@@ -2248,13 +2307,57 @@ bool SmsService::queryPort(uint8_t port) {
       xSemaphoreGive(_codecMutex);
     }
     // 整组可删的条件：序号最大的一段处理成功（长短信只有最后一段到齐才会落盘）
-    if (last != CmtOutcome::kDelete) continue;
-    handled++;
-    if (!_deleteAfterRead) continue;
-    for (int i : grp) {
-      if (deleteStored(msgs[i].idx)) deleted++;
-      else delFailed++;
+    if (last == CmtOutcome::kDelete) {
+      clearStuck(gkey);
+      handled++;
+      deleteGroup(grp);
+      continue;
     }
+
+    // 未收齐：普通短信（落盘失败等）保留副本下轮重试；长短信进入滞留跟踪，
+    // 给 +CMTI 分批上报的分段留出到达窗口，超时仍残缺才收敛。
+    if (!gkey.length()) continue;
+    addStuck(gkey);
+    st = findStuck(gkey);
+    if (!st || millis() - st->firstMs < cfg::kSmsConcatStuckMs) continue;
+
+    const int totalSegs = h.concat[2] > (int)cfg::kSmsConcatMaxParts
+                              ? (int)cfg::kSmsConcatMaxParts : h.concat[2];
+    String partial;
+    for (int seg = 1; seg <= totalSegs; seg++) {
+      String segText;
+      bool found = false;
+      for (int i : grp) {
+        if (msgs[i].concat[1] == seg) { segText = msgs[i].text; found = true; break; }
+      }
+      partial += found ? segText : (String("[缺失分段") + seg + "]");
+    }
+    String content = String("[长短信不完整 ") + (unsigned)grp.size() + "/" +
+                     (unsigned)h.concat[2] + " 段]" + partial;
+    uint32_t epoch = SmsCodec::sctsToEpoch(h.ts);
+    SmsMessage msg;
+    msg.incoming = true;
+    msg.phone = h.sender;
+    msg.content = content;
+    msg.ts = epoch ? epoch : nowTs();
+    msg.modem = port;
+    uint32_t id = _store.add(msg);
+    if (!id) {
+      _log.addf(LogLevel::kWarn, "sms",
+                "通信模组 %u 残缺长短信 ref=%u 入库失败，保留 SIM 副本下轮重试",
+                (unsigned)port, (unsigned)h.concat[0]);
+      continue;
+    }
+    lock(); _lastSmsId = id; unlock();
+    if (_onSms) _onSms(h.sender, content, msg.ts, (int8_t)port);
+    _log.addf(LogLevel::kWarn, "sms",
+              "通信模组 %u 长短信 ref=%u 等待超时仍未收齐（%u/%u 段），已按不完整内容入库 #%u 并删除 SIM 副本",
+              (unsigned)port, (unsigned)h.concat[0], (unsigned)grp.size(),
+              (unsigned)h.concat[2], (unsigned)id);
+    st->saved = true;  // 删除失败时下一轮只补删，不重复入库
+    clearConcatSlots(h);
+    handled++;
+    if (deleteGroup(grp)) clearStuck(gkey);
   }
   m.queryLastHandled = handled;
   m.queryLastDeleted = deleted;
