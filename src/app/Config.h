@@ -161,12 +161,12 @@ constexpr uint8_t kSchedModeInterval = 1;  // 固定间隔（intervalH 小时）
 constexpr uint32_t kMailDailyWindowSec = 600;
 
 // ---------------- 外部串口（AT 通信模组）----------------
-// 串口1：TX -> 通信模组 RX，RX <- 通信模组 TX
-constexpr int8_t kUart1Tx = 17;    // 串口1 TX 引脚
-constexpr int8_t kUart1Rx = 18;    // 串口1 RX 引脚
-// 串口2
-constexpr int8_t kUart2Tx = 41;    // 串口2 TX 引脚
-constexpr int8_t kUart2Rx = 40;    // 串口2 RX 引脚
+// 模组1：TX -> 通信模组 RX，RX <- 通信模组 TX
+constexpr int8_t kUart1Tx = 17;    // 模组1 TX 引脚
+constexpr int8_t kUart1Rx = 18;    // 模组1 RX 引脚
+// 模组2
+constexpr int8_t kUart2Tx = 41;    // 模组2 TX 引脚
+constexpr int8_t kUart2Rx = 40;    // 模组2 RX 引脚
 constexpr uint32_t kUartBaud = 115200;  // 串口默认波特率
 
 // ---------------- ST7789 240x320 ----------------
@@ -261,7 +261,7 @@ constexpr uint8_t  kLogTagMax = 24;           // 标签字段长度（含 '\0'�
 constexpr uint8_t  kLogMsgMax = 192;          // 正文字段长度（含 '\0'，超出截断）
 constexpr uint8_t  kLogPageSizeMax = 100;     // 分页查询每页条数上限
 
-// ---------------- AT 历史（串口日志，PSRAM 环形缓冲）----------------
+// ---------------- AT 历史（模组交互日志，PSRAM 环形缓冲）----------------
 // 与设备日志 _log 同思路：整块缓冲优先分配在 PSRAM，与 WiFi/LwIP/SSL 等
 // 内部堆使用者隔离；有 PSRAM 时容量放宽（kAtHistoryRingSize），无 PSRAM 或
 // 分配失败退化到内部堆并按 kAtHistoryRingSizeNoPsram 收紧，功能不变。
@@ -289,8 +289,10 @@ constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
 
 // ---------------- 主动查询短信（模组存储兜底）----------------
 // 通信模组以 CNMI=2,1（落存储 + 上报 +CMTI 索引）接收时短信不再直投，
-// 改由「查询任务」按需/定时把模组存储里的短信读回本机：落盘 + 推送成功后再删除
-// 模组侧副本。直投模式（CNMI=2,2）下该链路仅作兜底（+CMT 丢失时的补救）。
+// 改由「查询任务」按需/定时把模组存储里的短信读回本机：落盘 + 推送成功后立即删除
+// 模组侧副本。列表同时扫未读(CMGL=0)与已读(CMGL=1)，保证删除失败的残留能被
+// 下一轮补删，不会占满 SIM 导致收不到新短信。直投模式（CNMI=2,2）下该链路
+// 仅作兜底（+CMT 丢失时的补救）。
 constexpr uint32_t kSmsQueryPollMs = 250;        // 查询任务轮询周期（检查待查标记）
 constexpr uint32_t kSmsQueryTimeoutMs = 3000;     // 单条查询 AT 的响应收集超时
 constexpr uint32_t kSmsQueryListTimeoutMs = 8000; // AT+CMGL 列表响应收集超时（存量多时更久）
@@ -299,7 +301,7 @@ constexpr uint32_t kSmsDedupTtlMs = 600000;      // 去重有效期（10 分钟�
 constexpr uint8_t  kSmsDedupSlots = 32;          // 去重表槽位数（环形覆盖最旧）
 // 兜底轮询周期（毫秒）：与 +CMTI 自动上报互为补充——URC 丢失时按此周期
 // 主动下发 AT 指令拉取通信模组存储中的短信，防止漏收。常开，不随排程配置变化。
-// 每轮仅 AT+CPMS + AT+CMGL 两条指令（存量为空时响应很短），串口占用约 1%。
+// 每轮仅 AT+CPMS + AT+CMGL=0/1 三条指令（存量为空时响应很短），串口占用约 1%。
 constexpr uint32_t kSmsSafetyPollMs = 60000;     // 1 分钟
 
 // ---------------- 时间同步（NTP 为主，SIM NITZ 兜底）----------------

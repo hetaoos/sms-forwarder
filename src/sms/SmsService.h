@@ -90,8 +90,9 @@ class SmsService {
 
   // ---------------- 主动查询短信（通信模组存储兜底）----------------
   // 通信模组以 CNMI=2,1 接收时短信落在通信模组侧（本机收不到 +CMT 直投），
-  // 由专职查询任务读回：AT+CMGL 列索引 -> AT+CMGR 读 PDU -> 复用收信处理链
-  // 落盘 + 推送 -> 成功后 AT+CMGD 删除通信模组侧副本。
+  // 由专职查询任务读回：AT+CMGL=0/1 列索引（未读 + 已读）-> AT+CMGR 读 PDU ->
+  // 复用收信处理链落盘 + 推送 -> 成功后 AT+CMGD 删除通信模组侧副本；
+  // 删除失败会在后续查询里随「已读」列表被重新捞回补删，避免占满 SIM。
   // 请求异步执行（不阻塞调用方）；通信模组未就绪时请求保留，就绪后自动补跑。
   bool requestQuery(uint8_t port);
   // 对所有启用的通信模组各发起一次查询
@@ -156,8 +157,8 @@ class SmsService {
   // 从给定 JSON 对象导入通信模组配置并落盘；json 同 exportTo；成功返回 true
   bool importFrom(const JsonObject &o);
 
-  // ---------------- 串口调试 ----------------
-  // 经短信通信模组发送一条 AT 命令（供 Web 串口调试）。与短信收发共用同一端口锁，
+  // ---------------- 模组调试 ----------------
+  // 经短信通信模组发送一条 AT 命令（供 Web 模组调试）。与短信收发共用同一端口锁，
   // 串行无锁层面冲突；发送期间令初始化/心跳轮询让行；通信模组就绪时自动还原
   // CMGF/CNMI，防止控制台命令误改短信配置导致收发失效。返回 AT 历史记录（含响应）。
   SerialBridge::Result sendAt(uint8_t port, uint32_t baud, const String &cmd,
@@ -291,7 +292,13 @@ class SmsService {
     bool    queryRunning = false;    // 查询任务正在处理本端口
     uint32_t queryLastFound = 0;    // 上次查询发现的存量条数
     uint32_t queryLastHandled = 0;  // 上次查询落盘处理的条数
-    int     queryIndex = 0;         // +CMTI 通知的短信索引（>0 表示已知确切位置，无需依赖列表）
+    uint32_t queryLastDeleted = 0;  // 上次查询成功删除的 SIM 侧副本条数
+    // +CMTI 通知的短信索引：多条通知不能互相覆盖（被覆盖的索引会永久留在 SIM 里），
+    // 用小数组累积，查询时一次性合并进 AT+CMGL 列表。
+    static constexpr uint8_t kQueryIndexSlots = 8;
+    int     queryIndexes[kQueryIndexSlots] = {0};
+    uint8_t queryIndexCount = 0;
+    uint32_t queryRetryAfterMs = 0; // 删除失败后的补删重试时刻（节流，避免 AT 风暴）
     uint32_t queryLogMs = 0;        // 「无存量」提示的节流时间戳（避免每轮刷屏）
 
     // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
@@ -349,10 +356,11 @@ class SmsService {
   bool sendPduPart(uint8_t port, const SmsPduPart &part, String &err);
 
   // 处理一条收到的 PDU（解码 + 重组 + 落盘）
-  // 返回值决定通信模组侧副本能否删除（存储模式查询链路据此决定是否发 AT+CMGD）
+  // 返回值决定通信模组侧副本能否删除（查询链路据此决定是否发 AT+CMGD）
   enum class CmtOutcome : uint8_t {
     kKeep,    // 保留：解码失败 / 长短信未收齐 / 落盘失败 -> 下轮查询重试
-    kDelete,  // 可删：已落盘 / 命中黑名单丢弃 / 管理员命令已消费
+              // （已读列表会把它捞回，不会永久滞留 SIM）
+    kDelete,  // 可删：已落盘 / 命中黑名单丢弃 / 管理员命令已消费 / 重复短信
   };
   CmtOutcome handleCmt(uint8_t port, const String &pduHex);
 
@@ -368,12 +376,12 @@ class SmsService {
 
   // ---------------- 主动查询任务（通信模组存储兜底）----------------
   // 专职任务：轮询各端口的待查标记 -> 阻塞 AT 读回模组存储 -> 复用收信处理链
-  // -> 成功后删除模组侧副本。查询失败不删除任何内容，下轮重试。
+  // -> 成功后立即删除模组侧副本（失败重试并排队补删）。查询失败不删除任何内容，下轮重试。
   static void queryTaskEntry(void *arg);
   void queryTask();
   // 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
   bool queryPort(uint8_t port);
-  // 解析 AT+CMGL 响应中的短信索引列表
+  // 解析 AT+CMGL 响应中的短信索引列表（追加到 out，不负责去重）
   static void parseSmsIndexes(const String &resp, std::vector<int> &out);
   // 从 AT+CMGR 响应中提取 PDU 十六进制串（无有效 PDU 返回空串）
   static String extractPduHex(const String &resp);
@@ -457,7 +465,7 @@ class SmsService {
   SemaphoreHandle_t _codecMutex = nullptr;  // 保护 PDU 解码（pdulib 实例非线程安全）与重组槽位
   bool _cnmiStore = true;               // true = CNMI=2,1（落存储 + +CMTI 索引）；false = 2,2 直投
   bool _cnmiDirty = false;              // 存储模式切换后待热下发 CNMI（由查询任务执行）
-  bool _deleteAfterRead = true;         // 查询处理成功后删除通信模组侧副本
+  bool _deleteAfterRead = true;         // 查询处理成功后立即删除 SIM 侧副本（默认开；关掉会占满 SIM）
   // 去重表（环形）：键 = 发送方|时间戳|正文长度|正文 CRC，防删除失败后重复落盘
   struct DedupItem {
     String   key;

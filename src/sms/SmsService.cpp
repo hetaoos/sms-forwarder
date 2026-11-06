@@ -381,6 +381,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     // 查询进行中同样置位：查询期间到达的新短信本轮未必读到，留给下一轮。
     if (line.startsWith("+CMTI:")) {
       m.queryPending = true;
+      m.queryRetryAfterMs = 0;   // 新短信优先，不继承上次补删失败的重试节流
       // +CMTI 形如 +CMTI: "SM",3 —— 末尾数字即该短信在模组存储中的索引，
       // 记下来可直接 AT+CMGR 读回，不必依赖 AT+CMGL 列表（部分模组不支持该命令）
       int ci = line.lastIndexOf(',');
@@ -392,10 +393,26 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
           else if (cidx > 0) break;
         }
       }
-      if (cidx > 0) m.queryIndex = cidx;
+      if (cidx > 0) {
+        bool dup = false;
+        for (uint8_t k = 0; k < m.queryIndexCount; k++) {
+          if (m.queryIndexes[k] == cidx) { dup = true; break; }
+        }
+        if (!dup) {
+          // 多条 +CMTI 不能互相覆盖（被挤掉的索引会永久留在 SIM 里）；缓存满时
+          // 挤掉最旧的一个，它仍会被 AT+CMGL=0/1 全量列表捞回。
+          if (m.queryIndexCount >= ModemState::kQueryIndexSlots) {
+            for (uint8_t k = 1; k < ModemState::kQueryIndexSlots; k++) {
+              m.queryIndexes[k - 1] = m.queryIndexes[k];
+            }
+            m.queryIndexCount = ModemState::kQueryIndexSlots - 1;
+          }
+          m.queryIndexes[m.queryIndexCount++] = cidx;
+        }
+      }
       _log.addf(LogLevel::kInfo, "sms",
-                "通信模组 %u 收到 +CMTI 索引通知（索引 %d），已置待查标记",
-                (unsigned)port, cidx);
+                "通信模组 %u 收到 +CMTI 索引通知（索引 %d，待查 %u 个），已置待查标记",
+                (unsigned)port, cidx, (unsigned)m.queryIndexCount);
       consumed = true;
       continue;
     }
@@ -668,7 +685,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   return storedOk ? id : kIdSentUnstored;
 }
 
-// ---------------- 串口调试 ----------------
+// ---------------- 模组调试 ----------------
 // 经短信通信模组发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
 // 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
 // 发送前延长 cmdPauseUntil 令 pollInit 让行，避免与后台查询 AT 互相干扰。通信模组就绪后自动还原
@@ -2035,6 +2052,8 @@ void SmsService::queryTask() {
     for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
       ModemState &m = _modems[p];
       if (!m.queryPending) continue;
+      // 补删重试节流（防 AT 风暴）；差值比较兼容 millis() 回绕
+      if (m.queryRetryAfterMs && (int32_t)(m.queryRetryAfterMs - millis()) > 0) continue;
       if (!m.enabled || m.initState != ModemInitState::kReady) continue;  // 未就绪：保留标记待下次
       m.queryPending = false;
       m.queryRunning = true;
@@ -2061,40 +2080,55 @@ bool SmsService::queryPort(uint8_t port) {
               (unsigned)port, cp.resp.substring(cp.resp.indexOf("+CPMS:")).c_str());
   }
 
-  // 2) 列出全部短信索引
-  SerialBridge::Result gl = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=0",
-                                         SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
-                                         AtHistory::Type::kBg);
-  if (!gl.ok) {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败", (unsigned)port);
+  // 2) 列出短信索引：未读(0) 与 已读(1) 都要扫。
+  // AT+CMGR 会把 REC UNREAD 标记为 REC READ，所以只要某一轮删除失败 / 长短信
+  // 没拼齐 / 落盘失败，那条短信就再也不会出现在 AT+CMGL=0 里，长期占满 SIM
+  // 导致无法接收新短信。加扫已读列表可把这些残留重新捞回并补删（去重表保证
+  // 不重复落盘、不重复推送）；+CMTI 索引作为最可靠的补充直接并入。
+  auto listOk = [](const SerialBridge::Result &r) {
+    return r.ok && r.resp.indexOf("OK") >= 0;
+  };
+  SerialBridge::Result gl0 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=0",
+                                          SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                          AtHistory::Type::kBg);
+  SerialBridge::Result gl1 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=1",
+                                          SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                          AtHistory::Type::kBg);
+  bool have0 = listOk(gl0), have1 = listOk(gl1);
+  if (!have0 && !have1 && m.queryIndexCount == 0) {
+    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败（未读/已读均无响应）",
+              (unsigned)port);
     return false;
   }
-  std::vector<int> idxs;
-  parseSmsIndexes(gl.resp, idxs);
-  // +CMTI 通知里带来的索引最可靠（直接指向那条短信），优先读取；
-  // AT+CMGL 列表作为补充：用于捞回 URC 丢失时模组侧残留的短信。
-  if (m.queryIndex > 0) {
-    bool dup = false;
-    for (int v : idxs) if (v == m.queryIndex) { dup = true; break; }
-    if (!dup) idxs.insert(idxs.begin(), m.queryIndex);
-    m.queryIndex = 0;
-  }
+  std::vector<int> idxs, readIdxs;
+  if (have0) parseSmsIndexes(gl0.resp, idxs);
+  if (have1) parseSmsIndexes(gl1.resp, readIdxs);
+  const size_t nUnread = idxs.size(), nRead = readIdxs.size();
+  for (int v : readIdxs) idxs.push_back(v);
+  const uint8_t cmtiCount = m.queryIndexCount;
+  for (uint8_t k = 0; k < cmtiCount; k++) idxs.push_back(m.queryIndexes[k]);
+  m.queryIndexCount = 0;
+  std::sort(idxs.begin(), idxs.end());
+  idxs.erase(std::unique(idxs.begin(), idxs.end()), idxs.end());
   if (idxs.empty()) {
     m.queryLastFound = 0;
     m.queryLastHandled = 0;
+    m.queryLastDeleted = 0;
     _queryLastMs = millis();
     // 插桩：索引为空时打印模组原始响应（区分「不支持该命令」与「确实无短信」），节流 5 分钟一次
     if (millis() - m.queryLogMs >= 300000) {
       m.queryLogMs = millis();
       _log.addf(LogLevel::kInfo, "sms",
-                "通信模组 %u AT+CMGL=0 未解析到索引（响应前 100 字：%s）",
-                (unsigned)port, gl.resp.substring(0, 100).c_str());
+                "通信模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：%s / %s）",
+                (unsigned)port, gl0.resp.substring(0, 100).c_str(),
+                gl1.resp.substring(0, 100).c_str());
     }
     return true;  // 无存量：正常结束
   }
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 待读取短信索引 %u 个（%s）",
-            (unsigned)port, (unsigned)idxs.size(),
-            gl.resp.indexOf("+CMGL:") >= 0 ? "含列表" : "仅 +CMTI 索引");
+  _log.addf(LogLevel::kInfo, "sms",
+            "通信模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）",
+            (unsigned)port, (unsigned)idxs.size(), (unsigned)nUnread, (unsigned)nRead,
+            (unsigned)cmtiCount);
 
   // 3) 逐条读出 PDU 并解码（解码需持有编解码锁：pdulib 实例非线程安全）
   struct Stored {
@@ -2103,8 +2137,10 @@ bool SmsService::queryPort(uint8_t port) {
     int    concat[3] = {0, 0, 0};
   };
   std::vector<Stored> msgs;
+  bool truncated = false;
   for (int idx : idxs) {
     if (msgs.size() >= cfg::kSmsQueryMaxMsgs) {
+      truncated = true;
       _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 存量短信超过 %u 条，本轮仅处理前 %u 条",
                 (unsigned)port, (unsigned)cfg::kSmsQueryMaxMsgs, (unsigned)msgs.size());
       break;
@@ -2141,6 +2177,8 @@ bool SmsService::queryPort(uint8_t port) {
   }
   m.queryLastFound = (uint32_t)msgs.size();
   if (msgs.empty()) {
+    m.queryLastHandled = 0;
+    m.queryLastDeleted = 0;
     _queryLastMs = millis();
     return true;
   }
@@ -2162,8 +2200,37 @@ bool SmsService::queryPort(uint8_t port) {
     groups[g].push_back((int)i);
   }
 
-  // 5) 逐组处理：按分段序号升序喂入收信处理链，长短信在最后一段到齐时才落盘
-  uint32_t handled = 0;
+  // 5) 逐组处理：按分段序号升序喂入收信处理链，长短信在最后一段到齐时才落盘。
+  //    处理成功的组立刻逐条 AT+CMGD 删除 SIM 侧副本；删除失败会随下轮的
+  //    「已读」列表被重新捞回来补删（去重表保证不会重复落盘 / 重复推送）。
+  uint32_t handled = 0, deleted = 0, delFailed = 0;
+  uint8_t delFailStreak = 0;  // 连续失败时不再逐条重试，避免模组异常时长时间占端口
+  auto deleteStored = [&](int idx) {
+    char del[24];
+    const uint8_t attempts = delFailStreak >= 2 ? 1 : 2;
+    String lastResp;
+    for (uint8_t a = 0; a < attempts; a++) {
+      // 首次用标准写法；部分 Cat.1 模组要求显式 <delflag>，重试时补 ",0"
+      if (a == 0) snprintf(del, sizeof(del), "AT+CMGD=%d", idx);
+      else snprintf(del, sizeof(del), "AT+CMGD=%d,0", idx);
+      SerialBridge::Result dr = _bridge.send(port, cfg::kUartBaud, del, SerialBridge::kCrlf,
+                                             cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
+      if (dr.ok && dr.resp.indexOf("OK") >= 0 && dr.resp.indexOf("ERROR") < 0) {
+        delFailStreak = 0;
+        return true;
+      }
+      lastResp = dr.resp.substring(0, 60);
+      lastResp.replace("\r", " ");
+      lastResp.replace("\n", " ");
+      if (a + 1 < attempts) vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    delFailStreak++;
+    _log.addf(LogLevel::kWarn, "sms",
+              "通信模组 %u 删除短信 %d 失败（已入库，下轮查询继续补删；响应：%s）",
+              (unsigned)port, idx,
+              lastResp.length() ? lastResp.c_str() : "无响应");
+    return false;
+  };
   for (auto &grp : groups) {
     std::sort(grp.begin(), grp.end(), [&](int a, int b) {
       return msgs[a].concat[1] < msgs[b].concat[1];
@@ -2177,26 +2244,28 @@ bool SmsService::queryPort(uint8_t port) {
     }
     // 整组可删的条件：序号最大的一段处理成功（长短信只有最后一段到齐才会落盘）
     if (last != CmtOutcome::kDelete) continue;
-    if (!_deleteAfterRead) {
-      handled++;
-      continue;
-    }
-    for (int i : grp) {
-      char del[24];
-      snprintf(del, sizeof(del), "AT+CMGD=%d", msgs[i].idx);
-      SerialBridge::Result dr = _bridge.send(port, cfg::kUartBaud, del, SerialBridge::kCrlf,
-                                             cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
-      if (!dr.ok || dr.resp.indexOf("OK") < 0) {
-        _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 删除短信 %d 失败（已入库，靠去重避免重复）",
-                  (unsigned)port, msgs[i].idx);
-      }
-    }
     handled++;
+    if (!_deleteAfterRead) continue;
+    for (int i : grp) {
+      if (deleteStored(msgs[i].idx)) deleted++;
+      else delFailed++;
+    }
   }
   m.queryLastHandled = handled;
+  m.queryLastDeleted = deleted;
   _queryLastMs = millis();
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 查询完成：存量 %u 条，处理 %u 条",
-            (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled);
+  // 删除失败 / 单轮没处理完：尽快排下一轮补删（失败时带 5s 节流，防 AT 风暴）。
+  // 已清空时不额外排队，等 +CMTI 或兜底轮询即可。
+  if (delFailed || (truncated && deleted > 0)) {
+    m.queryPending = true;
+    m.queryRetryAfterMs = millis() + (delFailed ? 5000UL : 0UL);
+  } else {
+    m.queryRetryAfterMs = 0;
+  }
+  _log.addf(LogLevel::kInfo, "sms",
+            "通信模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条%s",
+            (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled, (unsigned)deleted,
+            delFailed ? "（部分删除失败，已排队补删）" : "");
   return true;
 }
 
@@ -2284,6 +2353,7 @@ String SmsService::queryStatusJson() const {
     o["running"] = _modems[p].queryRunning;
     o["lastFound"] = _modems[p].queryLastFound;
     o["lastHandled"] = _modems[p].queryLastHandled;
+    o["lastDeleted"] = _modems[p].queryLastDeleted;
   }
   String out;
   serializeJson(doc, out);

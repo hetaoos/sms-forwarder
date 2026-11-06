@@ -98,7 +98,8 @@
     </h3>
     <p class="hint">短信以 CNMI=2,1 接收时先落在通信模组侧：设备收到 +CMTI 索引通知后立即下发 AT 指令
       主动读回（AT+CMGL / AT+CMGR），另有兜底轮询每 <b x-text="safetyText()"></b> 主动拉取一次，
-      防止自动上报丢失导致漏短信。读回后自动删除通信模组侧副本，取回的短信照常落盘并推送。</p>
+      防止自动上报丢失导致漏短信。短信落盘并推送后立即删除通信模组侧副本；列表同时扫未读与已读，
+      删除失败的副本会在下一轮被捞回补删，避免占满 SIM 后收不到新短信。</p>
 
     <div class="bar" style="margin-top:10px;align-items:center">
       <label class="chk"><input type="checkbox" x-model="storeMode" @change="saveStore()">
@@ -132,7 +133,8 @@
       <template x-for="q in queryPorts()" :key="'qs'+q.port">
         <span class="badge" :class="q.running ? 'warn' : (q.pending ? 'info' : 'ok')"
               x-text="modemLabel({port:q.port}) + ' · ' + queryStateText(q) +
-                     '（发现 ' + q.lastFound + ' / 处理 ' + q.lastHandled + '）'"></span>
+                     '（发现 ' + q.lastFound + ' / 处理 ' + q.lastHandled +
+                     ' / 删除 ' + (q.lastDeleted || 0) + '）'"></span>
       </template>
     </div>
   </div>
