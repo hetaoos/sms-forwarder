@@ -638,6 +638,14 @@ void WebPanel::setupRoutes() {
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsQueryPost(req, json); });
   _server.on("/api/sms/query", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsQueryGet(req); });
 
+  // 清空指定通信模组 SIM 上的全部短信：POST {"port":n} 异步触发（查询任务执行），
+  // GET 返回清空状态（复用查询状态 JSON：各端口 clearBusy / 上次结果）。
+  _server.on("/api/sms/clear", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsClearPost(req, json); });
+  _server.on("/api/sms/clear", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    sendJson(req, _sms.queryStatusJson());
+  });
+
   // 定时主动查询配置：GET 读当前配置；POST {"enabled","mode","intervalH","hour","minute"}
   _server.on("/api/sms/poll", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPollGet(req); });
   _server.on("/api/sms/poll", HTTP_POST,
@@ -1784,9 +1792,30 @@ void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json)
   sendJsonDoc(req, doc);
 }
 
-// 主动查询状态：各端口待查/执行中标记 + 上次查询发现/处理条数。
+// 主动查询状态：各端口待查/执行中标记 + 上次查询发现/处理条数 + SIM 清空状态。
 void WebPanel::handleSmsQueryGet(AsyncWebServerRequest *req) {
   sendJson(req, _sms.queryStatusJson());
+}
+
+// 清空通信模组 SIM 短信：POST {"port":n} 触发（异步，查询任务执行阻塞式 AT）。
+void WebPanel::handleSmsClearPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "请求格式错误");
+    return;
+  }
+  int port = json["port"].is<int>() ? json["port"].as<int>() : 0;
+  if (port < 1 || port > cfg::kSmsMaxModems) {
+    sendErr(req, 400, "通信模组序号无效");
+    return;
+  }
+  if (!_sms.requestClear((uint8_t)port)) {
+    sendErr(req, 400, "通信模组未就绪或已有清空任务在执行");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["started"] = true;
+  sendJsonDoc(req, doc);
 }
 
 // 定时主动查询配置：读取开关与模式参数

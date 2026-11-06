@@ -1962,6 +1962,7 @@ function pageModem() {
     queryStatus: { storeMode: true, deleteAfterRead: true, ports: [] },
     queryPort: 0,             // 0 = 全部模组
     queryBusy: false,
+    clearBusy: 0,             // 正在清空 SIM 的模组号（0 = 无）
     _qTimer: null,
     // 短信接收模式：true = 存储模式（CNMI=2,1，配合主动查询）
     storeMode: true,
@@ -2006,15 +2007,44 @@ function pageModem() {
       this.queryBusy = true;
       this.pollQuery();
     },
-    // 轮询查询状态直到无端口在执行（超时上限 ~30s）
+    // 清空单个模组 SIM 上的全部短信（危险操作，需二次确认）
+    async startClear(port) {
+      if (this.queryBusy || this.clearBusy) return;
+      const label = modemLabel({ port: port });
+      if (!await confirmDialog('清空 SIM 短信',
+          '确定清空 ' + label + ' SIM 上的全部短信吗？包含尚未读回/转发的短信，操作不可恢复！', true)) return;
+      const r = await postOp('/api/sms/clear', { port: port }, '已开始清空 ' + label + ' 的 SIM 短信');
+      if (!r) return;
+      this.clearBusy = port;
+      this.queryBusy = true;
+      this.pollQuery();
+    },
+    clearResultText(q) {
+      if (!q.clearLastMs) return '';
+      return q.clearLastOk
+        ? '✓ 上次清空成功，删除 ' + (q.clearLastDeleted || 0) + ' 条'
+        : '✕ 上次清空失败：' + (q.clearLastErr || '未知原因');
+    },
+    // 轮询查询/清空状态直到无端口在执行（普通查询 ~30s，清空 SIM 放宽到 ~90s）
     pollQuery() {
       clearTimeout(this._qTimer);
       let count = 0;
       const tick = async () => {
         await this.loadQueryStatus();
-        const running = (this.queryStatus.ports || []).some(p => p.enabled && p.running);
-        if (!running && count > 0) { this.queryBusy = false; return; }
-        if (++count > 30) { this.queryBusy = false; return; }
+        const busy = (this.queryStatus.ports || []).some(
+          p => p.enabled && (p.running || p.clearBusy));
+        if (!busy && count > 0) {
+          this.queryBusy = false;
+          if (this.clearBusy) {
+            const q = (this.queryStatus.ports || []).find(p => p.port === this.clearBusy);
+            if (q && q.clearLastMs) toast(this.clearResultText(q), q.clearLastOk ? 'ok' : 'err');
+            this.clearBusy = 0;
+          }
+          return;
+        }
+        if (++count > (this.clearBusy ? 90 : 30)) {
+          this.queryBusy = false; this.clearBusy = 0; return;
+        }
         this._qTimer = setTimeout(tick, 1000);
       };
       tick();

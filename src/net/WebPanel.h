@@ -213,6 +213,10 @@ class WebPanel {
   void handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsQueryGet(AsyncWebServerRequest *req);
 
+  // 清空指定通信模组 SIM 上的全部短信：POST {"port":n} 触发（异步，由查询任务
+  // 执行阻塞式 AT+CMGD）；状态并入 GET /api/sms/query 的查询状态 JSON。
+  void handleSmsClearPost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // 定时主动查询配置：GET 读 / POST {"enabled","mode","intervalH","hour","minute"}
   void handleSmsPollGet(AsyncWebServerRequest *req);
   void handleSmsPollPost(AsyncWebServerRequest *req, JsonVariant &json);

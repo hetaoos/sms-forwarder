@@ -36,6 +36,23 @@ uint32_t textHash(const String &s) {
   return h;
 }
 
+// 解析 AT+CPMS="SM" 响应里的第一个 <used>（SIM 存储已用条数）；无有效值返回 -1
+int parseCpmsUsed(const String &resp) {
+  int p = resp.indexOf("+CPMS:");
+  if (p < 0) return -1;
+  int j = p + 6;
+  while (j < (int)resp.length() &&
+         (resp[j] == ' ' || resp[j] == '\r' || resp[j] == '\n')) j++;
+  int v = 0;
+  bool num = false;
+  while (j < (int)resp.length() && resp[j] >= '0' && resp[j] <= '9') {
+    v = v * 10 + (resp[j] - '0');
+    j++;
+    num = true;
+  }
+  return num ? v : -1;
+}
+
 }  // namespace
 
 // 网络注册状态码 -> 可读文本
@@ -2056,6 +2073,17 @@ void SmsService::queryTask() {
     }
     for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
       ModemState &m = _modems[p];
+      // 手动清空 SIM（Web 按钮）：阻塞式 AT 只在本任务执行；未就绪时保留标记，
+      // 清空期间跳过同端口的普通查询，避免 CMGL/CMGR 与 CMGD 交织。
+      if (m.clearPending) {
+        if (m.enabled && m.initState == ModemInitState::kReady) {
+          m.clearPending = false;
+          m.clearRunning = true;
+          clearPortSms(p);
+          m.clearRunning = false;
+        }
+        continue;
+      }
       if (!m.queryPending) continue;
       // 补删重试节流（防 AT 风暴）；差值比较兼容 millis() 回绕
       if (m.queryRetryAfterMs && (int32_t)(m.queryRetryAfterMs - millis()) > 0) continue;
@@ -2377,6 +2405,92 @@ bool SmsService::queryPort(uint8_t port) {
   return true;
 }
 
+// 手动清空 SIM：仅置标记，真正的 AT+CMGD 由查询任务执行（不阻塞 Web 任务）
+bool SmsService::requestClear(uint8_t port) {
+  if (port < 1 || port > cfg::kSmsMaxModems) return false;
+  ModemState &m = _modems[port];
+  if (!m.enabled || m.initState != ModemInitState::kReady) return false;
+  if (m.clearPending || m.clearRunning) return false;
+  m.clearPending = true;
+  return true;
+}
+
+// 清空一个通信模组 SIM 上的全部短信（查询任务上下文，允许阻塞式 AT）。
+// 首选 3GPP 标准 AT+CMGD=1,4（DelFlag=4 删除该存储区全部短信）；不支持批量删除
+// 的模组用 AT+CMGL 列出全部索引逐条 AT+CMGD 兜底。前后各查一次 CPMS，以
+// 「清空后 used == 0」作为成功判据，避免只看 OK 就误报成功。
+void SmsService::clearPortSms(uint8_t port) {
+  ModemState &m = _modems[port];
+  { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }
+
+  auto cpmsUsed = [&]() {
+    SerialBridge::Result r = _bridge.send(port, cfg::kUartBaud, "AT+CPMS=\"SM\"",
+                                          SerialBridge::kCrlf, cfg::kSmsQueryTimeoutMs,
+                                          AtHistory::Type::kBg);
+    return parseCpmsUsed(r.resp);
+  };
+  auto atOk = [](const SerialBridge::Result &r) {
+    return r.ok && r.resp.indexOf("OK") >= 0 && r.resp.indexOf("ERROR") < 0;
+  };
+
+  const int before = cpmsUsed();
+  SerialBridge::Result all = _bridge.send(port, cfg::kUartBaud, "AT+CMGD=1,4",
+                                          SerialBridge::kCrlf, cfg::kSmsQueryTimeoutMs,
+                                          AtHistory::Type::kBg);
+  const bool allOk = atOk(all);
+  int after = cpmsUsed();
+  uint32_t removedByIndex = 0;
+
+  // 批量删除不被支持 / 仍有残留：列出全部索引逐条删除兜底
+  if (!allOk || after > 0) {
+    std::vector<int> idxs;
+    SerialBridge::Result gl = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=4",
+                                           SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                           AtHistory::Type::kBg);
+    if (gl.ok) parseSmsIndexes(gl.resp, idxs);
+    if (idxs.empty()) {
+      // 部分模组不支持 CMGL=4：按四种状态分别列（0 未读 / 1 已读 / 2 待发 / 3 已发）
+      const char *lists[] = {"AT+CMGL=0", "AT+CMGL=1", "AT+CMGL=2", "AT+CMGL=3"};
+      for (const char *cmd : lists) {
+        SerialBridge::Result r = _bridge.send(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf,
+                                              cfg::kSmsQueryListTimeoutMs,
+                                              AtHistory::Type::kBg);
+        if (r.ok) parseSmsIndexes(r.resp, idxs);
+      }
+    }
+    std::sort(idxs.begin(), idxs.end());
+    idxs.erase(std::unique(idxs.begin(), idxs.end()), idxs.end());
+    for (int idx : idxs) {
+      char del[24];
+      snprintf(del, sizeof(del), "AT+CMGD=%d", idx);
+      SerialBridge::Result dr = _bridge.send(port, cfg::kUartBaud, del, SerialBridge::kCrlf,
+                                             cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
+      if (!atOk(dr)) {
+        snprintf(del, sizeof(del), "AT+CMGD=%d,0", idx);
+        dr = _bridge.send(port, cfg::kUartBaud, del, SerialBridge::kCrlf,
+                          cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
+      }
+      if (atOk(dr)) removedByIndex++;
+    }
+    if (!idxs.empty()) after = cpmsUsed();
+  }
+
+  const bool ok = (after == 0) || (after < 0 && allOk);
+  uint32_t deleted = 0;
+  if (before > 0 && after >= 0 && before > after) deleted = (uint32_t)(before - after);
+  else if (removedByIndex) deleted = removedByIndex;
+  else if (ok && before > 0) deleted = (uint32_t)before;  // CPMS 无法复核时按清空前计数
+  m.clearLastOk = ok;
+  m.clearLastDeleted = deleted;
+  m.clearLastMs = millis();
+  m.clearLastErr = ok ? String()
+                      : (after > 0 ? String("仍有 ") + after + " 条未能删除"
+                                   : String("模组未确认删除结果"));
+  _log.addf(ok ? LogLevel::kInfo : LogLevel::kWarn, "sms",
+            "通信模组 %u 清空 SIM 短信：清空前 %d 条，清空后 %d 条%s",
+            (unsigned)port, before, after, ok ? "" : "（未完成，请查看 AT 历史）");
+}
+
 // 解析 AT+CMGL 响应中的短信索引（+CMGL: <idx>,...）
 void SmsService::parseSmsIndexes(const String &resp, std::vector<int> &out) {
   int pos = 0;
@@ -2462,6 +2576,11 @@ String SmsService::queryStatusJson() const {
     o["lastFound"] = _modems[p].queryLastFound;
     o["lastHandled"] = _modems[p].queryLastHandled;
     o["lastDeleted"] = _modems[p].queryLastDeleted;
+    o["clearBusy"] = _modems[p].clearPending || _modems[p].clearRunning;
+    o["clearLastOk"] = _modems[p].clearLastOk;
+    o["clearLastDeleted"] = _modems[p].clearLastDeleted;
+    o["clearLastMs"] = _modems[p].clearLastMs;
+    o["clearLastErr"] = _modems[p].clearLastErr;
   }
   String out;
   serializeJson(doc, out);

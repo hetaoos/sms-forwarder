@@ -97,8 +97,13 @@ class SmsService {
   bool requestQuery(uint8_t port);
   // 对所有启用的通信模组各发起一次查询
   void requestQueryAll();
-  // 查询状态 JSON（Web 展示）：各端口待查/执行中标记 + 上次查询结果
+  // 查询状态 JSON（Web 展示）：各端口待查/执行中标记 + 上次查询结果 + SIM 清空状态
   String queryStatusJson() const;
+
+  // 清空指定通信模组 SIM 上的全部短信（含未读、尚未读回转发的短信）。
+  // 异步执行：仅置标记，阻塞式 AT+CMGD 由查询任务完成，不阻塞 Web 任务。
+  // port 越界 / 模组未启用 / 未就绪 / 已有清空任务在跑时返回 false。
+  bool requestClear(uint8_t port);
 
   // ---------------- 定时主动查询（排程）----------------
   // 到点后由 tick() 置待查标记，查询任务异步执行——主循环内绝不做阻塞 AT。
@@ -312,6 +317,14 @@ class SmsService {
     };
     StuckGroup stuckGroups[cfg::kSmsConcatSlots];
 
+    // ---- 手动清空 SIM 短信（Web 按钮触发，查询任务执行）----
+    bool     clearPending = false;    // 有待执行的清空请求
+    bool     clearRunning = false;    // 清空 AT 正在执行
+    bool     clearLastOk = false;     // 上次清空是否确认成功
+    uint32_t clearLastDeleted = 0;    // 上次清空删除条数
+    uint32_t clearLastMs = 0;         // 上次清空完成时刻（0 = 从未执行）
+    String   clearLastErr;            // 失败原因（成功为空）
+
     // ---- 来电检测（RING / +CLIP / +CLCC，移植自 esp32-sms-forwarding 的 Call）----
     bool     callPending = false;        // RING 已到：等待号码或通话结束
     bool     callDispatch = false;       // 有来电待派发（tick 消费后清位）
@@ -392,6 +405,8 @@ class SmsService {
   void queryTask();
   // 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
   bool queryPort(uint8_t port);
+  // 查询任务内执行：AT+CMGD=1,4 全清 -> CPMS 校验 -> 仍有残留时逐条兜底删除
+  void clearPortSms(uint8_t port);
   // 解析 AT+CMGL 响应中的短信索引列表（追加到 out，不负责去重）
   static void parseSmsIndexes(const String &resp, std::vector<int> &out);
   // 从 AT+CMGR 响应中提取 PDU 十六进制串（无有效 PDU 返回空串）

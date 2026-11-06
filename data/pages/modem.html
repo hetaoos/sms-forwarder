@@ -137,6 +137,20 @@
                      ' / 删除 ' + (q.lastDeleted || 0) + '）'"></span>
       </template>
     </div>
+
+    <div class="bar" style="margin-top:14px;align-items:flex-start;flex-wrap:wrap;gap:8px"
+         x-cloak>
+      <span class="hint" style="margin-top:0">清空 SIM 短信（不可恢复，含尚未读回 / 转发的短信）：</span>
+      <template x-for="q in queryPorts()" :key="'cs'+q.port">
+        <span class="bar" style="gap:6px">
+          <button class="btn danger" @click="startClear(q.port)"
+                  :disabled="queryBusy || q.clearBusy"
+                  x-text="modemLabel({port:q.port}) + (q.clearBusy ? ' · 清空中…' : ' · 清空 SIM')"></button>
+          <span class="hint" style="margin-top:0" x-show="q.clearLastMs && !q.clearBusy"
+                x-text="clearResultText(q)"></span>
+        </span>
+      </template>
+    </div>
   </div>
 
   <!-- 定时主动查询 -->

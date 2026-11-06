@@ -512,6 +512,8 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..",...}]}` |
 | `POST /api/sms/ports` | `{"port":1,"enabled":bool?,"alias":".."?}` | 启用/禁用与设别名（可只传其一），返回最新列表 |
 | `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
+| `POST /api/sms/clear` | `{"port":1}` | 清空该通信模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
+| `GET /api/sms/clear` | - | 清空状态：与 `GET /api/sms/query` 同结构，各端口含 `clearBusy` / `clearLastOk` / `clearLastDeleted` / `clearLastMs` / `clearLastErr` |
 | `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | 启动发送，立即返回 `{"ok":true,"started":true}`（CMGS 握手在独立任务执行，避免阻塞 async_tcp 任务） |
 | `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}` |
 | `GET /api/sms/admin` | - | 管理员远程控制：`{"ok":true,"enabled":bool,"phones":[".."]}` |
