@@ -1,11 +1,11 @@
 <div x-data="pageSerial()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>串口调试</h2>
-      <p class="page-desc">向通信模组串口发送 AT 命令、查看交互日志与统计（调试用）</p>
+      <h2>模组调试</h2>
+      <p class="page-desc">向通信模组发送 AT 命令、查看交互日志与统计（调试用）</p>
     </div>
     <div class="bar">
-      <button class="btn ghost sm" @click="reset()">复位串口</button>
+      <button class="btn ghost sm" @click="reset()">复位模组</button>
       <button class="btn ghost sm" @click="clear()">清空历史</button>
     </div>
   </div>
@@ -39,11 +39,11 @@
           <button class="seg-btn" :class="{on: filter==='2'}" @click="filter='2'">主动上报</button>
         </div>
       </div>
-      <div class="fld"><label>串口</label>
+      <div class="fld"><label>模组</label>
         <div class="seg">
           <button class="seg-btn" :class="{on: portFilter==='all'}" @click="portFilter='all'">全部</button>
-          <button class="seg-btn" :class="{on: portFilter==='1'}" @click="portFilter='1'">串口1</button>
-          <button class="seg-btn" :class="{on: portFilter==='2'}" @click="portFilter='2'">串口2</button>
+          <button class="seg-btn" :class="{on: portFilter==='1'}" @click="portFilter='1'">模组1</button>
+          <button class="seg-btn" :class="{on: portFilter==='2'}" @click="portFilter='2'">模组2</button>
         </div>
       </div>
     </div>
@@ -53,7 +53,7 @@
           <div class="meta">
             <span class="tag" :class="typeBadge(e.type)" x-text="typeLabel(e.type)"></span>
             <span class="ts" x-text="fmtTs(e.ts)"></span>
-            <span x-text="'#' + e.id + ' · 串口' + e.port"></span>
+            <span x-text="'#' + e.id + ' · 模组' + e.port"></span>
           </div>
           <div class="cmd" x-text="'> ' + e.cmd" x-show="e.cmd"></div>
           <pre class="resp" x-text="e.resp || '(无响应)'"></pre>
@@ -62,16 +62,16 @@
       <div class="hint" style="color:var(--muted)" x-show="!entries.length">暂无记录，发送一条命令试试</div>
     </div>
     <div x-effect="onEntriesChanged()" hidden></div>
-    <div class="hint">连续 3 次无响应串口会自动复位（自愈），也可点右上角「复位串口」手动处理。后台命令与主动上报现已一并记录。</div>
+    <div class="hint">连续 3 次无响应时会自动复位该模组的串口（自愈），也可点右上角「复位模组」手动处理。后台命令与主动上报现已一并记录。</div>
   </div>
 
   <!-- 参数栏 -->
   <div class="card">
     <div class="bar">
-      <div class="field"><label>串口</label>
+      <div class="field"><label>模组</label>
         <select x-model="port">
-          <option value="1">串口1 (TX17 / RX18)</option>
-          <option value="2">串口2 (TX41 / RX40)</option>
+          <option value="1">模组1 (TX17 / RX18)</option>
+          <option value="2">模组2 (TX41 / RX40)</option>
         </select>
       </div>
       <div class="field"><label>波特率</label>
@@ -105,7 +105,7 @@
   <div class="grid cols2">
     <template x-for="s in stats" :key="s.port">
       <div class="card">
-        <h3>串口 <span x-text="s.port"></span>
+        <h3>模组<span x-text="s.port"></span>
           <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></h3>
         <div class="row"><span class="k">波特率</span><span class="v" x-text="s.baud"></span></div>
         <div class="row"><span class="k">接收 / 发送</span>

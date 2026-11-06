@@ -76,7 +76,7 @@ const MenuPage kPageScreen = {
     (uint8_t)(sizeof(kScreenItems) / sizeof(kScreenItems[0])), nullptr, 0,
 };
 
-// ---- 通信模组（两个串口各一页）----
+// ---- 通信模组（模组1 / 模组2 各一页）----
 const MenuPage kPageModem1 = {"通信模组 1", nullptr, 0, nullptr, 0, PageId::kModem1};
 const MenuPage kPageModem2 = {"通信模组 2", nullptr, 0, nullptr, 0, PageId::kModem2};
 const MenuItem kModemItems[] = {
@@ -695,7 +695,7 @@ void UIMenu::fillSoc(MenuPage &pg) {
   addInfo(pg, "时间源: %s", timeSrcCn(_snap.timeSrc));
 }
 
-// ---- 通信模组：单个串口的完整遥测 ----
+// ---- 通信模组：单个模组的完整遥测 ----
 void UIMenu::fillModem(MenuPage &pg, uint8_t idx) {
   const ModemSnapshot &m = _snap.modems[idx];
   const char *defName = (idx == 0) ? "通信模组1" : "通信模组2";
@@ -792,9 +792,9 @@ void UIMenu::fillAbout(MenuPage &pg) {
   addInfo(pg, "硬件: %s", _snap.chip);
   addInfo(pg, "开发: Null");
   addInfo(pg, "网页: http://%s", _snap.ip);
-  addInfo(pg, "串口: U1 %d/%d  U2 %d/%d", (int)cfg::kUart1Tx, (int)cfg::kUart1Rx,
+  addInfo(pg, "模组: 1 %d/%d  2 %d/%d", (int)cfg::kUart1Tx, (int)cfg::kUart1Rx,
           (int)cfg::kUart2Tx, (int)cfg::kUart2Rx);
-  addInfo(pg, "说明: 双串口 4G 短信转发");
+  addInfo(pg, "说明: 双模组 4G 短信转发");
   addInfo(pg, "内存: %s / %s", fmtBytes(_snap.freeHeap).c_str(), _snap.heapSize);
   addInfo(pg, "PSRAM: %s / %s", fmtBytes(_snap.freePsram).c_str(), _snap.psramTotal);
   addInfo(pg, "运行: %s", _snap.uptime);

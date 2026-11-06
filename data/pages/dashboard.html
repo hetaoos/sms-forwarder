@@ -165,14 +165,14 @@
     </div>
   </div>
 
-  <!-- 串口流量 + 最近 AT 交互 -->
+  <!-- 模组流量 + 最近 AT 交互 -->
   <div class="grid cols2">
-    <!-- 串口流量 -->
+    <!-- 模组流量 -->
     <div class="card">
-      <h3>串口流量 <span class="sub">AT 透传 · 双通信模组</span></h3>
+      <h3>模组流量 <span class="sub">AT 透传 · 双通信模组</span></h3>
       <template x-for="s in stats" :key="s.port">
         <div class="row">
-          <span class="k">串口 <span x-text="s.port"></span>
+          <span class="k">模组<span x-text="s.port"></span>
             <span class="badge" :class="s.open ? 'ok' : 'err'" x-text="s.open ? '已打开' : '未打开'"></span></span>
           <span class="v">
             <span x-text="'RX ' + fmtBytes(s.rx)"></span>
@@ -183,7 +183,7 @@
         </div>
       </template>
       <div class="bar" style="margin-top:12px">
-        <button class="btn ghost sm" @click="go('serial')">串口调试</button>
+        <button class="btn ghost sm" @click="go('serial')">模组调试</button>
       </div>
     </div>
 
@@ -192,7 +192,7 @@
       <h3>最近 AT 交互 <span class="sub">最近 5 条控制台记录</span></h3>
       <template x-for="e in recent" :key="e.id">
         <div class="row" style="align-items:flex-start">
-          <span class="k">串口 <span x-text="e.port"></span></span>
+          <span class="k">模组<span x-text="e.port"></span></span>
           <span class="v" style="text-align:left;font-weight:400">
             <div x-text="e.cmd"></div>
             <div style="color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px"
@@ -202,7 +202,7 @@
       </template>
       <div class="hint" x-show="!recent.length">暂无 AT 交互记录</div>
       <div class="bar" style="margin-top:12px">
-        <button class="btn ghost sm" @click="go('serial')">串口调试</button>
+        <button class="btn ghost sm" @click="go('serial')">模组调试</button>
       </div>
     </div>
   </div>

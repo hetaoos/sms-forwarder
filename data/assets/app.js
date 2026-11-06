@@ -549,7 +549,7 @@ const MENU = [
   { group: '设备控制', items: [
     { id: 'display', title: '屏幕显示', icon: 'display' },
     { id: 'rgb', title: 'RGB 灯', icon: 'rgb' },
-    { id: 'serial', title: '串口调试', icon: 'serial' },
+    { id: 'serial', title: '模组调试', icon: 'serial' },
   ]},
   { group: '网络', items: [
     { id: 'wifi', title: 'WiFi 设置', icon: 'wifi' },
@@ -778,7 +778,7 @@ function pageDashboard() {
       return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
     },
     go(id) { location.hash = '#/' + id; },
-    // 按串口号取通信模组对象（modems 来自 SSE smsports 事件）
+    // 按模组编号取通信模组对象（modems 来自 SSE smsports 事件）
     modemOf(p) { return (this.modems || []).find(m => m.port === p) || null; },
     // 通信模组信号值（主值行）：禁用 / 初始化中 / dBm
     modemDbm(p) {
@@ -872,13 +872,13 @@ function pageSched() {
   };
 }
 
-/* ---------- 串口 AT ---------- */
+/* ---------- 模组调试（AT 命令） ---------- */
 function pageSerial() {
   return {
     port: '1', baud: '115200', eol: '0', tmo: '1000',
     cmd: '', localHist: [], localIdx: -1,
     filter: 'all',             // 类型过滤：all / 0(用户) / 1(后台) / 2(上报)
-    portFilter: 'all',         // 串口过滤：all / 1(串口1) / 2(串口2)
+    portFilter: 'all',         // 模组过滤：all / 1(模组1) / 2(模组2)
     autoScroll: true,          // 自动滚动到最新（用户上移滚动条较多时自动取消，默认开启）
     atStats: {},               // GET /api/at/stats（存储位置/容量等）
     // 日志与统计来自 SSE 实时仓（与仪表盘共享，切页不丢日志）
@@ -971,8 +971,8 @@ function pageSerial() {
     },
     async reset() {
       const p = parseInt(this.port, 10);
-      if (!await confirmDialog('复位串口', '将关闭并重新打开串口' + p + '，确定？', true)) return;
-      const r = await apiOp('/api/at/reset?port=' + p, null, '串口' + p + ' 已复位');
+      if (!await confirmDialog('复位模组', '将复位模组' + p + ' 的串口连接，确定？', true)) return;
+      const r = await apiOp('/api/at/reset?port=' + p, null, '模组' + p + ' 已复位');
       if (!r) return;
     },
     onKey(ev) {

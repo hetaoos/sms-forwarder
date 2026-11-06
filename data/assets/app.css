@@ -83,7 +83,7 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
 .grid.cols2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .grid.cols3{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
 /* 190px 下限：常规宽度下每排 5 项，仪表盘 10 项正好两排对齐；
-   窄屏自动降为 3 列 / 2 列（日志、串口页的 4 项同样按此自适应） */
+   窄屏自动降为 3 列 / 2 列（日志、模组调试页的 4 项同样按此自适应） */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px}
 /* 手机竖屏：190px 下限会退化到单列，这里强制两列（指标名允许换行） */
 @media (max-width:560px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -112,7 +112,7 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
 .btn.sm{padding:5px 10px;font-size:12px;border-radius:6px}
 .btn.block{width:100%;padding:11px;font-size:15px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-/* 分段过滤按钮（串口日志类型筛选） */
+/* 分段过滤按钮（模组调试日志类型筛选） */
 .seg{display:inline-flex;gap:4px;background:#11131a;border:1px solid var(--border);
   border-radius:8px;padding:3px}
 .seg-btn{font-size:12px;padding:5px 11px;border-radius:6px;border:none;background:transparent;
@@ -204,7 +204,7 @@ input.mono{font-family:var(--mono)}
   align-items:center;gap:6px;flex-wrap:wrap}
 .console .cmd{color:#7fd1ff;white-space:pre-wrap;word-break:break-all}
 .console .resp{color:#c8f5c0;margin:3px 0 0;white-space:pre-wrap;word-break:break-all}
-/* 串口日志来源徽标：用户/后台/上报 */
+/* 模组调试日志来源徽标：用户/后台/上报 */
 .console .tag{font-size:10px;line-height:1;padding:2px 6px;border-radius:5px;
   font-weight:600;letter-spacing:.3px}
 .console .tag.cmd{background:rgba(127,209,255,.18);color:#7fd1ff}

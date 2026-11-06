@@ -476,7 +476,7 @@ void WebPanel::setupRoutes() {
   _server.on("/api/rgb", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleRgbPost(req, json); });
 
-  // ---- 串口 AT ----
+  // ---- 模组调试（AT 命令） ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
   // 经短信通信模组发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
   _server.on("/api/at/send", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtSend(req); });
@@ -490,10 +490,10 @@ void WebPanel::setupRoutes() {
   // AT 历史存储统计（PSRAM 环形缓冲，与 /api/logs/stats 对称）
   _server.on("/api/at/stats", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtStats(req); });
 
-  // 串口重新初始化（手动兜底）：?port=1|2
+  // 模组串口重新初始化（手动兜底）：?port=1|2
   _server.on("/api/at/reset", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtReset(req); });
 
-  // 串口运行统计 JSON
+  // 模组串口运行统计 JSON
   _server.on("/api/uart/stats", HTTP_GET, [this](AsyncWebServerRequest *req) { handleUartStats(req); });
 
   // 查询默认波特率（供前端下拉框初始化）
@@ -1035,9 +1035,9 @@ void WebPanel::handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json) {
   sendJson(req, stateRgbJson(_led));
 }
 
-// ---- 串口 AT ----
+// ---- 模组调试（AT 命令） ----
 void WebPanel::handleAtSend(AsyncWebServerRequest *req) {
-  uint8_t port = paramInt(req, "port", 1);                 // 串口号，默认 1
+  uint8_t port = paramInt(req, "port", 1);                 // 模组号，默认 1
   uint32_t baud = paramInt(req, "baud", cfg::kUartBaud);   // 波特率，默认配置值
   uint8_t eol = paramInt(req, "eol", 0);                   // 行尾符，默认 CRLF
   uint32_t timeout = constrain(paramInt(req, "t", 1000), 100, 5000);  // 超时钳制 100..5000ms

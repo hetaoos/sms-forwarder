@@ -18,7 +18,7 @@
 #include "sms/SmsService.h"
 #include "ota/Ota.h"   // OTA 升级（固件 + LittleFS 烧录）
 
-// 短信转发器 Web 控制台：状态页面 + RGB 控制 + 串口 AT 命令 + WiFi 配网 + 账号管理
+// 短信转发器 Web 控制台：状态页面 + RGB 控制 + 模组调试（AT 命令） + WiFi 配网 + 账号管理
 // + 运行日志查询（PSRAM 环形缓冲分页拉取）
 //
 // 代码组织约定：setupRoutes() 是纯路由表——只写路径、方法注释与一行转发
@@ -141,7 +141,7 @@ class WebPanel {
   void handleRgbGet(AsyncWebServerRequest *req);
   void handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json);
 
-  // 串口 AT：发命令 / 历史增量 / 清空 / 重初始化 / 串口统计 / 默认波特率
+  // 模组调试（AT）：发命令 / 历史增量 / 清空 / 重初始化 / 串口统计 / 默认波特率
   void handleAtSend(AsyncWebServerRequest *req);
   void handleAtHist(AsyncWebServerRequest *req);
   void handleAtClear(AsyncWebServerRequest *req);

@@ -45,7 +45,7 @@
                   x-text="m.enabled ? '禁用' : '启用'"></button>
           <button class="btn sm ghost" :disabled="!m.enabled"
                   @click="reinitPort(m.port)">重新初始化</button>
-          <span class="hint" x-text="!m.enabled ? '停用后该串口不再收发短信'
+          <span class="hint" x-text="!m.enabled ? '停用后该模组不再收发短信'
                 : (m.ready ? '已就绪，可收发短信' : '初始化中…（等待通信模组应答 / SIM / 注册）')"></span>
         </div>
         <div class="bar" style="margin-top:10px">

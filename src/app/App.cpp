@@ -278,7 +278,7 @@ void App::collectStatus(StatusInfo &out) {
 
   if (_svcReady) {
     for (uint8_t i = 0; i < 2; i++) {
-      String b = _sms.modemBrief((uint8_t)(i + 1));   // 串口号 1/2
+      String b = _sms.modemBrief((uint8_t)(i + 1));   // 模组号 1/2
       snprintf(out.modem[i], sizeof(out.modem[i]), "%s",
                b.length() ? b.c_str() : "-");
       // 完整遥测快照（菜单「通信模组」页）
