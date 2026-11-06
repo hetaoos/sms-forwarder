@@ -2019,11 +2019,21 @@ function pageModem() {
       this.queryBusy = true;
       this.pollQuery();
     },
+    clearStateClass(q) {
+      if (q.clearBusy) return 'warn';
+      if (!q.clearLastMs) return 'info';
+      return q.clearLastOk ? 'ok' : 'err';
+    },
+    clearStateText(q) {
+      if (q.clearBusy) return '清空中';
+      if (!q.clearLastMs) return '未执行';
+      return q.clearLastOk ? '已清空' : '清空失败';
+    },
     clearResultText(q) {
       if (!q.clearLastMs) return '';
       return q.clearLastOk
-        ? '✓ 上次清空成功，删除 ' + (q.clearLastDeleted || 0) + ' 条'
-        : '✕ 上次清空失败：' + (q.clearLastErr || '未知原因');
+        ? '上次清空成功，删除 ' + (q.clearLastDeleted || 0) + ' 条短信'
+        : '上次清空失败：' + (q.clearLastErr || '未知原因') + '（可查看 AT 历史）';
     },
     // 轮询查询/清空状态直到无端口在执行（普通查询 ~30s，清空 SIM 放宽到 ~90s）
     pollQuery() {
@@ -2037,7 +2047,10 @@ function pageModem() {
           this.queryBusy = false;
           if (this.clearBusy) {
             const q = (this.queryStatus.ports || []).find(p => p.port === this.clearBusy);
-            if (q && q.clearLastMs) toast(this.clearResultText(q), q.clearLastOk ? 'ok' : 'err');
+            if (q && q.clearLastMs) {
+              toast((q.clearLastOk ? '✓ ' : '✕ ') + this.clearResultText(q),
+                    q.clearLastOk ? 'ok' : 'err');
+            }
             this.clearBusy = 0;
           }
           return;
