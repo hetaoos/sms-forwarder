@@ -257,7 +257,7 @@ void Ui::buildBoot() {
   lv_obj_set_width(logo, kScreenW);
   lv_obj_set_height(logo, 49);   // Logo 字体行高
 
-  lv_obj_t *ttl = newLabel(_scrBoot, 3, C_TEXT, "短信转发器", LV_TEXT_ALIGN_CENTER);
+  lv_obj_t *ttl = newLabel(_scrBoot, 3, C_TEXT, "SMS Forwarder", LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(ttl, 0, 164);
   lv_obj_set_width(ttl, kScreenW);
 
@@ -277,7 +277,7 @@ void Ui::buildBoot() {
   lv_bar_set_value(bar, 0, LV_ANIM_OFF);
   _bootBar = bar;
 
-  lv_obj_t *hint = newLabel(_scrBoot, 3, C_HINT, "正在启动…", LV_TEXT_ALIGN_CENTER);
+  lv_obj_t *hint = newLabel(_scrBoot, 3, C_HINT, "Starting...", LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(hint, 0, 208);
   lv_obj_set_width(hint, kScreenW);
 }
