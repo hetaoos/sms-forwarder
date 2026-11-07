@@ -77,11 +77,10 @@
           <div class="hint" style="margin:0 0 8px;font-size:12px">
             默认引脚：RX <b x-text="hwDef(m.port).rx"></b> / TX <b x-text="hwDef(m.port).tx"></b>
             <template x-if="hwDef(m.port).en >= 0">
-              ，EN <b x-text="hwDef(m.port).en"></b>
-              （<span x-text="hwDef(m.port).enMode == 1 ? '高电平启用' : (hwDef(m.port).enMode == 2 ? '低电平启用' : '无效')"></span>）
+              <span>，EN <b x-text="hwDef(m.port).en"></b>（<span x-text="hwDef(m.port).enMode == 1 ? '高电平启用' : (hwDef(m.port).enMode == 2 ? '低电平启用' : '无效')"></span>）</span>
             </template>
             <template x-if="hwDef(m.port).en < 0">
-              ，EN <b>未接</b>
+              <span>，EN <b>未接</b></span>
             </template>
           </div>
           <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap">

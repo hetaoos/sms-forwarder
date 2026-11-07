@@ -85,6 +85,9 @@ bool save(const PortPins ports[], size_t n) {
   doc["ver"] = 1;
   JsonArray arr = doc["ports"].to<JsonArray>();
   for (size_t i = 0; i < n && i < cfg::kSmsMaxModems; i++) {
+    // 同步运行期内存配置：s_ports 是 GET /api/modemhw 与即时响应的数据来源，
+    // 若不更新，保存后页面读取到的仍是旧值（多为出厂默认），表现为「保存后还显示默认」。
+    s_ports[i + 1] = ports[i];
     JsonObject o = arr.add<JsonObject>();
     const PortPins &p = ports[i];
     o["port"] = (uint8_t)(i + 1);
