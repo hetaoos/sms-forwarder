@@ -120,6 +120,7 @@ constexpr const char *kNvsKeyPush = "push";      // 推送通道配置键（{"ve
 constexpr const char *kNvsKeyRemark = "remark";  // 设备备注（纯字符串，推送模板 {remark} 取值；独立键，改通道配置不会覆盖）
 constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{"ver":1,"enabled":bool,"action":n,"list":[...]}）
 constexpr const char *kNvsKeyDisp = "disp";        // 屏幕设置键（{"ver":1,"bright":n,"autoOffSec":n,"idleSec":n}）
+constexpr const char *kNvsKeyModemHw = "modemhw";  // 通信模组硬件引脚键（{"ver":1,"ports":[{"port":1,"rx":n,"tx":n,"en":n,"enMode":n},...]}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
 constexpr uint8_t kAdminPhoneMax = 5;            // 管理员号码个数上限（短信远程控制）
 constexpr size_t  kPushRemarkMaxLen = 64;        // 设备备注最长字节数（推送模板 {remark}）

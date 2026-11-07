@@ -258,6 +258,10 @@ class WebPanel {
   void handleSmsStoreGet(AsyncWebServerRequest *req);
   void handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json);
 
+  // 通信模组硬件引脚：GET 读当前 RX/TX/EN 配置；POST 保存并即时套用（含 EN 电平）
+  void handleModemHwGet(AsyncWebServerRequest *req);
+  void handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // 邮件：配置读取 / 总开关 / 测试发送 / 配置保存
   void handleEmailGet(AsyncWebServerRequest *req);
   void handleEmailEnabled(AsyncWebServerRequest *req, JsonVariant &json);

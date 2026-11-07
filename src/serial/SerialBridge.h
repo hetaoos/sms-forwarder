@@ -92,6 +92,11 @@ class SerialBridge {
   // 手动复位指定串口（关闭后按当前波特率重开）
   void reset(uint8_t port);
 
+  // 运行期更新指定串口的 RX/TX 引脚（index 0/1 对应端口 1/2）。
+  // 已打开则立即关闭并按新引脚重开；未打开仅记录，待首次 send 时套用。
+  // 用于通信模组硬件引脚配置变更后即时生效（无需重启）。
+  void setPortPins(uint8_t index, int8_t rx, int8_t tx);
+
   // 清空全部 AT 历史
   void clearHistory();
 

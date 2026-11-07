@@ -393,9 +393,10 @@ class SmsService {
   // 初始化态 -> 可读字符串（SSE/JSON 用）
   static const char *initStateName(ModemInitState s);
 
-  // 通信模组对应 EN 复位引脚 / 有效电平（来自 Config）
+  // 通信模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw）
   int8_t enPin(uint8_t port) const;
-  bool enActiveLow() const;
+  // EN 启用电平（HIGH/LOW）：硬上下电时拉到该电平即开机；无效时返回 -1
+  int8_t enEnableLevel(uint8_t port) const;
 
   // 对通信模组异步下发 PDU 模式 / 新短信直投配置（仅启动状态机，不阻塞）
   bool configureModem(uint8_t port, bool enabled);

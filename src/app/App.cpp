@@ -9,6 +9,7 @@
 #include "app/SystemService.h"  // 定时重启（系统保活）
 #include "app/TaskWatchdog.h"   // 任务看门狗：读回卡死原因 / 重配置 / 注册任务
 #include "app/UserFs.h"
+#include "app/ModemHw.h"  // 通信模组硬件引脚配置：须在 SerialBridge::begin 前载入并套用
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
@@ -107,6 +108,14 @@ bool App::begin() {
   // Web 账号：LCD 查看用户名 / 重置登录密码为随机密码
   _ui.setAccountUserFn([this]() { return _panel.webUser(); });
   _ui.setAccountResetFn([this]() { return _panel.resetWebPassword(); });
+  // 通信模组硬件引脚：须先于 SerialBridge::begin 载入并套用（串口 RX/TX 在打开时定型，
+  // EN 复位脚的开机电平也需在初始化状态机启动前就置好，避免模组悬空误动作）。
+  modemhw::load();
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    const modemhw::PortPins &pins = modemhw::get(p);
+    _bridge.setPortPins((uint8_t)(p - 1), pins.rx, pins.tx);
+  }
+  modemhw::applyBootEn();               // 已配置 EN 的端口拉到启用电平（模组上电即开机）
   _bridge.begin();                     // 启动串口抽数任务
   // AT 历史带上时间：已同步用纪元秒，未同步退回开机秒数（与短信/运行日志一致）
   _bridge.setTimeProvider([this] { return _time.epochOrUptime(); });

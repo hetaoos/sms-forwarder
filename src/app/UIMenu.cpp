@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "ota/Ota.h"    // 工具箱：检查新版本并更新（Ota 状态机）
+#include "app/ModemHw.h"  // 通信模组硬件引脚（运行期配置，LCD 展示用）
 #include "ui/Ui.h"
 #include "ui/UiIcons.h"
 
@@ -723,10 +724,13 @@ void UIMenu::fillModem(MenuPage &pg, uint8_t idx) {
   addInfo(pg, "注册: %s", m.reg);
   addInfo(pg, "号码: %s", m.num);
   addInfo(pg, "IMEI: %s", m.imei);
-  // 引脚：idx 0 -> 串口 U1，idx 1 -> 串口 U2
-  const int8_t tx = (idx == 0) ? cfg::kUart1Tx : cfg::kUart2Tx;
-  const int8_t rx = (idx == 0) ? cfg::kUart1Rx : cfg::kUart2Rx;
-  addInfo(pg, "引脚: TX%d RX%d", (int)tx, (int)rx);
+  // 引脚：idx 0 -> 端口 1，idx 1 -> 端口 2（运行期配置，非编译期常量）
+  const modemhw::PortPins &pins = modemhw::get((uint8_t)(idx + 1));
+  const char *enTxt = (pins.enMode == modemhw::kEnHighEnable) ? "高电平启用"
+                     : (pins.enMode == modemhw::kEnLowEnable)  ? "低电平启用"
+                                                              : "无效";
+  addInfo(pg, "引脚: TX%d RX%d", (int)pins.tx, (int)pins.rx);
+  addInfo(pg, "EN: %d (%s)", (int)pins.en, enTxt);
 }
 
 // ---- WIFI：工作模式 / 连接 / 已保存配置 ----
@@ -802,8 +806,9 @@ void UIMenu::fillAbout(MenuPage &pg) {
   addInfo(pg, "硬件: %s", _snap.chip);
   addInfo(pg, "开发: Null");
   addInfo(pg, "网页: http://%s", _snap.ip);
-  addInfo(pg, "模组: 1 %d/%d  2 %d/%d", (int)cfg::kUart1Tx, (int)cfg::kUart1Rx,
-          (int)cfg::kUart2Tx, (int)cfg::kUart2Rx);
+  addInfo(pg, "模组: 1 RX%d/TX%d  2 RX%d/TX%d",
+          (int)modemhw::get(1).rx, (int)modemhw::get(1).tx,
+          (int)modemhw::get(2).rx, (int)modemhw::get(2).tx);
   addInfo(pg, "说明: 双模组 4G 短信转发");
   addInfo(pg, "内存: %s / %s", fmtBytes(_snap.freeHeap).c_str(), _snap.heapSize);
   addInfo(pg, "PSRAM: %s / %s", fmtBytes(_snap.freePsram).c_str(), _snap.psramTotal);

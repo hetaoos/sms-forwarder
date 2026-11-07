@@ -117,6 +117,26 @@ void SerialBridge::reopen(Port &p, uint32_t baud) {
   // 回调里捕获的是 Port 指针，端口对象没变，回调依然有效
 }
 
+// 运行期更新端口引脚：已打开则按新引脚重开（reopen 复用内部 begin 逻辑），
+// 未打开仅更新记录，确保首次 send 时 ensureOpen 用新引脚 begin。
+void SerialBridge::setPortPins(uint8_t index, int8_t rx, int8_t tx) {
+  if (index >= 2) return;
+  Port &p = _ports[index];
+  if (p.opened) {
+    _log.addf(LogLevel::kWarn, "uart",
+              "串口 %u 引脚变更：RX %d->%d，TX %d->%d，立即重开",
+              (unsigned)(p.index + 1), (int)p.rx, (int)rx, (int)p.tx, (int)tx);
+    p.rx = rx;
+    p.tx = tx;
+    reopen(p, p.baud ? p.baud : cfg::kUartBaud);
+  } else {
+    p.rx = rx;
+    p.tx = tx;
+    _log.addf(LogLevel::kInfo, "uart", "串口 %u 引脚已记录：RX %d，TX %d（下次打开时套用）",
+              (unsigned)(p.index + 1), (int)rx, (int)tx);
+  }
+}
+
 // 初始化互斥量并创建抽数任务（固定到核心 1，优先级 2）
 // 栈 8KB：本任务的调用链很深——URC 回调 -> SmsService::onUnsolicited ->
 // handleCmt（pdulib 解码 + LittleFS 写入 + 日志输出）-> 上层回调

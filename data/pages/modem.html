@@ -59,6 +59,48 @@
     </template>
   </div>
 
+  <!-- 硬件引脚配置（RX/TX/EN） -->
+  <div class="card" style="margin-top:16px">
+    <h3>硬件引脚配置</h3>
+    <p class="hint">为每个通信模组配置串口引脚（RX 接模组 TXD、TX 接模组 RX）与 EN 复位/开关机引脚。
+      保存后即时套用：串口按新引脚重开、EN 拉到启用电平、已启用的模组重新初始化。若模组仍未就绪，请重启设备使引脚彻底复位。</p>
+    <p class="hint warn" style="margin-top:8px">EN 模式：<b>无效</b>（不控制，沿用模组自身上电时序）；
+      <b>高电平启用</b>（拉高=开机，拉低=关机）；<b>低电平启用</b>（拉低=开机，拉高=关机）。EN 引脚填 -1 表示未接。</p>
+
+    <div class="grid cols2">
+      <template x-for="m in modems" :key="'hw'+m.port">
+        <div style="background:var(--bg2);padding:12px;border-radius:8px">
+          <div class="row" style="border:none;margin-bottom:8px">
+            <span class="badge" x-text="modemLabel(m)"></span>
+            <span class="v" style="font-size:12px;color:var(--muted)" x-text="'端口 ' + m.port"></span>
+          </div>
+          <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
+            <div class="field" style="min-width:90px;flex:1"><label>RX 引脚</label>
+              <input type="number" min="0" max="48" x-model.number="hwDraft[m.port].rx"></div>
+            <div class="field" style="min-width:90px;flex:1"><label>TX 引脚</label>
+              <input type="number" min="0" max="48" x-model.number="hwDraft[m.port].tx"></div>
+          </div>
+          <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:8px">
+            <div class="field" style="min-width:90px;flex:1"><label>EN 引脚</label>
+              <input type="number" min="-1" max="48" x-model.number="hwDraft[m.port].en" placeholder="-1 未接"></div>
+            <div class="field" style="min-width:150px;flex:1"><label>EN 模式</label>
+              <select class="inp" x-model.number="hwDraft[m.port].enMode">
+                <option value="0">无效（不控制）</option>
+                <option value="1">高电平启用</option>
+                <option value="2">低电平启用</option>
+              </select></div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div class="bar" style="margin-top:12px">
+      <button class="btn" @click="saveHw()" :disabled="hwSaving"
+              x-text="hwSaving ? '保存中…' : '保存引脚配置'"></button>
+      <span class="form-err" x-show="hwErr" x-text="hwErr"></span>
+    </div>
+  </div>
+
   <!-- 网络连通性测试（PING） -->
   <div class="card" style="margin-top:16px">
     <h3>网络连通性测试（PING）</h3>

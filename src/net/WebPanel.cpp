@@ -9,6 +9,7 @@
 #include <Arduino.h>
 
 #include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
+#include "app/ModemHw.h"     // 通信模组硬件引脚（运行期配置，Web 读写/套用）
 #include "app/Coredump.h"    // 崩溃转储（coredump）分区查询
 #include "app/SystemService.h"  // 定时重启（单例）
 #include "app/TaskWatchdog.h"   // 看门狗故障注入自检（POST /api/wdt/selftest）
@@ -806,6 +807,11 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/store", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsStoreGet(req); });
   _server.on("/api/sms/store", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsStorePost(req, json); });
+
+  // ---- 通信模组硬件引脚：GET 读 / POST 保存并即时套用 ----
+  _server.on("/api/modemhw", HTTP_GET, [this](AsyncWebServerRequest *req) { handleModemHwGet(req); });
+  _server.on("/api/modemhw", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleModemHwPost(req, json); });
 
   // ---- 以下是父路径 /api/sms，必须排在上述子路径之后 ----
   // 列表：?page=&pageSize=&q=&port= -> {"ok":true,"total":n,"page":p,
@@ -2313,6 +2319,103 @@ void WebPanel::handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json)
   JsonDocument doc;
   doc["ok"] = true;
   doc["store"] = _sms.storeMode();
+  sendJsonDoc(req, doc);
+}
+
+// ---- 通信模组硬件引脚 ----
+// GET /api/modemhw：回显当前运行期引脚配置（含 EN 模式语义文本）
+void WebPanel::handleModemHwGet(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  doc["ok"] = true;
+  JsonArray arr = doc["ports"].to<JsonArray>();
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    const modemhw::PortPins &pins = modemhw::get(p);
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = p;
+    o["rx"] = pins.rx;
+    o["tx"] = pins.tx;
+    o["en"] = pins.en;
+    o["enMode"] = pins.enMode;
+    const char *m = (pins.enMode == modemhw::kEnHighEnable) ? "high"
+                   : (pins.enMode == modemhw::kEnLowEnable)  ? "low"
+                                                            : "off";
+    o["enModeText"] = m;
+  }
+  sendJsonDoc(req, doc);
+}
+
+// POST /api/modemhw：保存并即时套用引脚配置。
+// body: {"ports":[{"port":1,"rx":18,"tx":17,"en":-1,"enMode":0},...]}
+//   rx/tx：必填，合法 GPIO（0..48）且 rx != tx；
+//   en：可选，-1 或合法 GPIO（未接用 -1）；enMode 非 0 时 en 须 >= 0，否则强制无效；
+//   enMode：0=无效 / 1=高电平启用 / 2=低电平启用。
+// 保存后：串口引脚立即重开生效，EN 拉到启用电平，已启用模组重新初始化。
+void WebPanel::handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>() || !json["ports"].is<JsonArray>()) {
+    sendErr(req, 400, "请求格式错误：缺少 ports 数组");
+    return;
+  }
+  JsonArrayConst ports = json["ports"].as<JsonArrayConst>();
+  modemhw::PortPins next[cfg::kSmsMaxModems];
+  for (uint8_t i = 0; i < cfg::kSmsMaxModems; i++) {
+    next[i] = modemhw::get((uint8_t)(i + 1));  // 以当前值为基础，仅覆盖请求里出现的端口
+  }
+  for (JsonObjectConst o : ports) {
+    int port = o["port"] | 0;
+    if (port < 1 || port > cfg::kSmsMaxModems) {
+      sendErr(req, 400, "通信模组序号无效");
+      return;
+    }
+    modemhw::PortPins &p = next[port - 1];
+    if (!o["rx"].is<int>() || !o["tx"].is<int>()) {
+      sendErr(req, 400, ("通信模组 " + String(port) + " 缺少 rx/tx").c_str());
+      return;
+    }
+    int rx = o["rx"].as<int>(), tx = o["tx"].as<int>();
+    if (rx < 0 || rx > 48 || tx < 0 || tx > 48 || rx == tx) {
+      sendErr(req, 400,
+              ("通信模组 " + String(port) + " 的 rx/tx 非法（须 0..48 且不相同）").c_str());
+      return;
+    }
+    p.rx = (int8_t)rx;
+    p.tx = (int8_t)tx;
+    int en = o["en"] | -1;
+    int enMode = o["enMode"] | 0;
+    if (enMode < 0 || enMode > 2) enMode = 0;
+    if (en < 0) enMode = 0;        // 未接 EN 引脚时强制无效
+    if (enMode == 0) en = -1;      // 无效模式不保留引脚号
+    p.en = (int8_t)en;
+    p.enMode = (uint8_t)enMode;
+  }
+
+  if (!modemhw::save(next, cfg::kSmsMaxModems)) {
+    sendErr(req, 500, "配置保存失败");
+    return;
+  }
+  // 即时套用：串口引脚重开 + EN 电平 + 已启用模组重新初始化
+  for (uint8_t port = 1; port <= cfg::kSmsMaxModems; port++) {
+    const modemhw::PortPins &p = next[port - 1];
+    _bridge.setPortPins((uint8_t)(port - 1), p.rx, p.tx);
+  }
+  modemhw::applyBootEn();           // 已配置 EN 拉到启用电平
+  for (uint8_t port = 1; port <= cfg::kSmsMaxModems; port++) {
+    if (_sms.modemEnabled(port)) _sms.reinitPort(port);  // 用新引脚/EN 重新初始化
+  }
+
+  String modems = _sms.modemsJson();
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["modems"] = serialized(modems);
+  JsonArray arr = doc["ports"].to<JsonArray>();
+  for (uint8_t port = 1; port <= cfg::kSmsMaxModems; port++) {
+    const modemhw::PortPins &pins = modemhw::get(port);
+    JsonObject o = arr.add<JsonObject>();
+    o["port"] = port;
+    o["rx"] = pins.rx;
+    o["tx"] = pins.tx;
+    o["en"] = pins.en;
+    o["enMode"] = pins.enMode;
+  }
   sendJsonDoc(req, doc);
 }
 

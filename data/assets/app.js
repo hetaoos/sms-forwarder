@@ -1996,12 +1996,23 @@ function pageModem() {
     err: '',                 // 校验错误（定时查询表单）
     _snapPoll: '',            // 定时查询日程快照
     _snapSafety: '',          // 兜底轮询周期快照
+    // ---- 硬件引脚配置 ----
+    hw: [],                   // 当前引脚配置（来自 /api/modemhw）
+    hwDraft: {},              // 引脚草稿（按 port 暂存输入），先行预填避免模板绑定空引用
+    hwSaving: false,
+    hwErr: '',
     init() {
       // SSE 推送通信模组状态（含遥测）时同步
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
       const live = Alpine.store('live');
       if (live.smsports.length) this.applyPorts(live.smsports);
       else this.loadPorts();
+      // 预填引脚草稿（端口 1/2），避免 hwDraft 未载入时模板访问 .rx 报空引用
+      this.hwDraft = {
+        1: { rx: 0, tx: 0, en: -1, enMode: 0 },
+        2: { rx: 0, tx: 0, en: -1, enMode: 0 }
+      };
+      this.loadHw();
       this.loadQueryStatus();
       this.loadStore();
       this.loadPoll();
@@ -2037,6 +2048,51 @@ function pageModem() {
     async reinitPort(p) {
       const r = await postOp('/api/sms/reinit', { port: p }, '通信模组' + p + ' 重新初始化');
       if (r) this.applyPorts((await r.json()).modems || []);
+    },
+    async loadHw() {
+      try {
+        const r = await apiFetch('/api/modemhw');
+        if (r.ok) {
+          const j = await r.json();
+          this.hw = j.ports || [];
+          this.hwDraft = {};
+          this.hw.forEach(p => {
+            this.hwDraft[p.port] = { rx: p.rx, tx: p.tx, en: p.en, enMode: p.enMode };
+          });
+        }
+      } catch (e) {}
+    },
+    async saveHw() {
+      this.hwErr = '';
+      const ports = [];
+      for (const p of this.hw) {
+        const d = this.hwDraft[p.port];
+        if (!d) continue;
+        let en = d.en;
+        if (en === '' || en === null || en === undefined || isNaN(en)) en = -1;
+        ports.push({ port: p.port, rx: d.rx, tx: d.tx, en: en, enMode: d.enMode });
+      }
+      this.hwSaving = true;
+      try {
+        const r = await apiFetch('/api/modemhw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ports })
+        });
+        if (r.ok) {
+          const j = await r.json();
+          this.hw = j.ports || [];
+          this.hw.forEach(p => {
+            this.hwDraft[p.port] = { rx: p.rx, tx: p.tx, en: p.en, enMode: p.enMode };
+          });
+          if (j.modems) this.applyPorts(j.modems);
+          toast('引脚配置已保存并套用');
+        } else {
+          const j = await r.json().catch(() => ({}));
+          this.hwErr = j.error || ('保存失败（' + r.status + '）');
+        }
+      } catch (e) { this.hwErr = '网络错误'; }
+      this.hwSaving = false;
     },
     enabledPorts() { return this.modems.filter(m => m.enabled); },
 

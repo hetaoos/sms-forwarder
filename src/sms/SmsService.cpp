@@ -10,6 +10,7 @@ static void attachVerifyCode(SmsMessage &m) {
 }
 
 #include "app/TaskWatchdog.h"  // 发送 / 查询常驻任务注册 TWDT 并喂狗
+#include "app/ModemHw.h"        // 通信模组硬件引脚（EN 复位脚 / 有效电平）运行期配置
 #include "log/LogStore.h"
 
 #include <ArduinoJson.h>
@@ -1568,11 +1569,14 @@ void SmsService::stopInit(uint8_t port) {
   _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已禁用", (unsigned)port);
 }
 
-// 通信模组对应 EN 复位引脚 / 有效电平（来自 Config；-1 表示不控制）
+// 通信模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw；-1 / 无效表示不控制）
 int8_t SmsService::enPin(uint8_t port) const {
-  return port == 1 ? cfg::kModemEnPin1 : (port == 2 ? cfg::kModemEnPin2 : -1);
+  return modemhw::enPin(port);
 }
-bool SmsService::enActiveLow() const { return cfg::kModemEnActiveLow; }
+// EN 启用电平（HIGH/LOW）：硬上下电时拉到该电平即开机
+int8_t SmsService::enEnableLevel(uint8_t port) const {
+  return modemhw::enEnableLevel(port);
+}
 
 // 状态机可读名（SSE/JSON 用）
 const char *SmsService::initStateName(ModemInitState s) {
@@ -1651,21 +1655,25 @@ void SmsService::pollInit(uint8_t port) {
       return;
 
     case ModemInitState::kPowerOn: {
-      if (enPin(port) < 0) {  // 未配置 EN 引脚，直接等 AT
+      const int8_t pin = enPin(port);
+      if (pin < 0) {  // 未配置 EN 引脚（无效），直接等 AT
         m.initState = ModemInitState::kWaitAt;
         m.initAttempts = 0;
         m.nextPollMs = now;
         return;
       }
-      // 阶段 0：拉低关机 -> 1.2s；阶段 1：拉高开机 -> 0.5s；阶段 2：进等 AT
+      // 阶段 0：拉到「禁用电平」关机 -> 1.2s；阶段 1：拉到「启用电平」开机 -> 0.5s；
+      // 阶段 2：进等 AT。启用电平由 EN 配置决定（高电平启用=HIGH / 低电平启用=LOW），
+      // 禁用电平取其反相，保证不同电平逻辑的模组都能正确硬复位。
+      const int8_t onLvl = enEnableLevel(port);  // HIGH or LOW
       if (m.configStep == 0) {
-        pinMode(enPin(port), OUTPUT);
-        digitalWrite(enPin(port), enActiveLow() ? LOW : HIGH);
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, onLvl == HIGH ? LOW : HIGH);
         m.configStep = 1;
         m.nextPollMs = now + 1200;
         return;
       } else if (m.configStep == 1) {
-        digitalWrite(enPin(port), enActiveLow() ? HIGH : LOW);
+        digitalWrite(pin, onLvl);
         m.configStep = 2;
         m.nextPollMs = now + 500;
         return;
