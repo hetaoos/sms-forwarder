@@ -148,8 +148,13 @@ class SerialBridge {
   // 关闭再重开串口：自愈/手动复位用
   void reopen(Port &p, uint32_t baud);
 
-  // 在 waitMs 内持续读响应，静默 gapMs 后提前结束
+  // 在 waitMs 内持续读响应：见到标准终止行（OK / ERROR / +CMS ERROR 等）即结束，
+  // 否则静默 gapMs 后提前结束（兼容不回终止行的模组）
   String readResponse(Port &p, uint32_t waitMs, uint32_t gapMs);
+
+  // 下发命令前抽干 RX 残留（调用方须持有端口锁）：残留字节交回 pend 由抽数任务
+  // 按自发上报归档，避免上一条命令的尾部（PDU / OK）混进本次响应造成解析串包
+  void drainRxLocked(Port &p);
 
   // ---- 锁助手：每端口锁 + 历史锁，互不嵌套（先端口锁后历史锁）----
   // 取/放端口锁（阻塞）
@@ -166,8 +171,8 @@ class SerialBridge {
   static void appendPrintable(String &out, char c);
 
   // 把 AT 响应收集窗口内混入的短信 URC（+CMT/+CMTI/+CDS）交回 pend：
-  // readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
-  // 一并读进 resp；本方法把该段从响应里捞出、追加到 p.pend，由抽数任务按常规
+  // 响应收集窗口内到达的 URC 会被一并读进 resp；本方法把该段从响应里捞出、
+  // 追加到 p.pend，由抽数任务按常规
   // 自发上报流程（120ms 静默后回调 _urc 并记入 AT 历史为 kUrc）归档，避免被当作
   // 本次 AT 响应的一部分而干扰调用方解析、或随响应窗口丢失。resp 本身不改动。
   void stashUrc(Port &p, const String &resp);

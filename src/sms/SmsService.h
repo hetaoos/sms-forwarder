@@ -280,10 +280,12 @@ class SmsService {
     String alias;               // 通信模组别名（用户可设，展示用；如「客厅卡槽」）
     uint8_t csmsRef = 1;       // 长短信参考号计数器（每通信模组独立，非零）
     bool waitingPdu = false;   // +CMT 头之后的下一段即 PDU
+    uint32_t waitingPduAtMs = 0;  // +CMT 置位时刻；超时自清，避免标志永久吞掉后续 URC
     ModemInitState initState = ModemInitState::kDown;  // 初始化状态机当前态
     uint8_t initAttempts = 0;  // 等 AT 就绪尝试次数
     uint8_t regAttempts = 0;   // 网络注册尝试次数
     uint8_t configStep = 0;    // 配置逐条下发索引（kPowerOn 时复用为阶段）
+    uint8_t configFailCount = 0;  // CMGF/CNMI 等关键配置未确认 OK 的连续重试次数
     uint8_t failCount = 0;     // 心跳/就绪后连续失败计数
     uint32_t nextPollMs = 0;   // 下次动作时间（节流，避免 AT 风暴）
     uint32_t lastActivityMs = 0;  // 上次模组有活动(响应/URC 上报)的时刻；心跳仅在其过期(30s)时才发 AT
@@ -298,13 +300,19 @@ class SmsService {
     uint32_t queryLastFound = 0;    // 上次查询发现的存量条数
     uint32_t queryLastHandled = 0;  // 上次查询落盘处理的条数
     uint32_t queryLastDeleted = 0;  // 上次查询成功删除的 SIM 侧副本条数
-    // +CMTI 通知的短信索引：多条通知不能互相覆盖（被覆盖的索引会永久留在 SIM 里），
-    // 用小数组累积，查询时一次性合并进 AT+CMGL 列表。
+    // +CMTI 通知的短信索引：多条通知不能互相覆盖（被覆盖的索引会永久留在 SIM 里）。
+    // 用小数组累积，查询时优先直接 AT+CMGR；只有成功读回并解码的索引才移除，
+    // 读失败的保留并退避重试，避免「一次 CMGR 失败 -> 索引永久丢失」。
     static constexpr uint8_t kQueryIndexSlots = 8;
     int     queryIndexes[kQueryIndexSlots] = {0};
     uint8_t queryIndexCount = 0;
-    uint32_t queryRetryAfterMs = 0; // 删除失败后的补删重试时刻（节流，避免 AT 风暴）
+    uint32_t queryRetryAfterMs = 0; // 补删 / 读回失败的重试时刻（节流，避免 AT 风暴）
     uint32_t queryLogMs = 0;        // 「无存量」提示的节流时间戳（避免每轮刷屏）
+    uint8_t  queryFailStreak = 0;   // 连续读回失败轮次：达到阈值改走 CMGL 全量扫描自愈
+    bool     cmgfChecked = false;   // 本次初始化后是否已用 AT+CMGF? 确认 PDU 模式
+    bool     cmgfOk = false;        // 最近一次确认结果（false = 模组可能停在 TEXT 模式）
+    String   lastCmgrResp;          // 最近一次 AT+CMGR 原始响应片段（Web 取证用）
+    String   lastQueryErr;          // 最近一次查询失败原因（Web 取证用）
 
     // 残缺长短信滞留跟踪：SIM 上缺失分段永远等不到时，重组槽每 30s 被清一次，
     // 查询链路会无限重复「读回 -> 等分段 -> 不删」。这里按 (发送方|参考号|总段数)

@@ -53,6 +53,26 @@ int parseCpmsUsed(const String &resp) {
   return num ? v : -1;
 }
 
+// 解析 AT+CMGF? 响应：0 = PDU 模式，1 = TEXT 模式，-1 = 无有效响应
+int parseCmgfMode(const String &resp) {
+  int p = resp.indexOf("+CMGF:");
+  if (p < 0) return -1;
+  int j = p + 6;
+  while (j < (int)resp.length() &&
+         (resp[j] == ' ' || resp[j] == '\r' || resp[j] == '\n' || resp[j] == '\t')) j++;
+  if (j >= (int)resp.length() || resp[j] < '0' || resp[j] > '9') return -1;
+  return resp[j] - '0';
+}
+
+// 把响应压成一行短片段，供日志与 Web 诊断展示（限制长度，避免占内存/刷屏）
+String briefResp(const String &resp) {
+  String s = resp.substring(0, 100);
+  s.replace("\r", " ");
+  s.replace("\n", " ");
+  s.trim();
+  return s;
+}
+
 }  // namespace
 
 // 网络注册状态码 -> 可读文本
@@ -297,9 +317,9 @@ void SmsService::sendTask() {
   }
 }
 
-// 判断一行是否为 PDU 十六进制串（偶数长度、全为 hex 字符）
-static bool isPduLine(const String &s) {
-  if (!s.length() || (s.length() & 1)) return false;
+// 一行是否全为 hex 字符（不要求偶数长度：长 PDU 可能被模组分行）
+static bool isHexOnly(const String &s) {
+  if (!s.length()) return false;
   for (size_t i = 0; i < s.length(); i++) {
     char c = s[i];
     if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
@@ -307,6 +327,11 @@ static bool isPduLine(const String &s) {
       return false;
   }
   return true;
+}
+
+// 判断一行是否为完整的 PDU 十六进制串（偶数长度、全为 hex 字符）
+static bool isPduLine(const String &s) {
+  return !(s.length() & 1) && isHexOnly(s);
 }
 
 // 串口自发数据消费（抽数任务上下文，持锁运行——禁止回调 SerialBridge）。
@@ -333,17 +358,23 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     if (!line.length()) continue;  // 跳过空行（段首空行曾导致 +CMT 漏判）
     m.lastActivityMs = millis();   // 任意模组上报都算"活跃"，用于抑制心跳探活
 
-    // 等待中的 PDU 行优先归属上一条 +CMT
+    // 等待中的 PDU 行优先归属上一条 +CMT。只有纯 hex 行才消费；其它行必须
+    // 继续按行路由——否则恰好排在 +CMT 之后的 +CMTI 会被吞掉，存储模式下
+    // queryPending 永远不置位，短信留在 SIM 里再也不被读回。
     if (m.waitingPdu) {
-      m.waitingPdu = false;
-      if (isPduLine(line)) {
+      if (millis() - m.waitingPduAtMs > cfg::kSmsPduWaitMs) {
+        m.waitingPdu = false;  // 超时自清，避免标志永久卡住
+      } else if (isPduLine(line)) {
+        m.waitingPdu = false;
         handleCmt(port, line);
+        consumed = true;
+        continue;
       } else {
-        _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 的 +CMT 后未收到 PDU：%s",
+        m.waitingPdu = false;
+        _log.addf(LogLevel::kWarn, "sms",
+                  "通信模组 %u 的 +CMT 后未收到 PDU，按普通上报继续处理：%s",
                   (unsigned)port, line.c_str());
       }
-      consumed = true;
-      continue;
     }
 
     // 运行时通信模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化。
@@ -394,6 +425,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     if (line.startsWith("+CMT:")) {
       // PDU 可能在同段后续行，也可能在下一段（头/PDU 跨 flush 时）
       m.waitingPdu = true;
+      m.waitingPduAtMs = millis();
       { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 收短信延长暂停窗口
       consumed = true;
       continue;
@@ -404,6 +436,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
     if (line.startsWith("+CMTI:")) {
       m.queryPending = true;
       m.queryRetryAfterMs = 0;   // 新短信优先，不继承上次补删失败的重试节流
+      { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }  // 与 +CMT 一致，令后台 AT 让行
       // +CMTI 形如 +CMTI: "SM",3 —— 末尾数字即该短信在模组存储中的索引，
       // 记下来可直接 AT+CMGR 读回，不必依赖 AT+CMGL 列表（部分模组不支持该命令）
       int ci = line.lastIndexOf(',');
@@ -730,12 +763,23 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
     err = "通信模组序号无效";
     return r;
   }
-  // 还原短信关键配置（仅通信模组就绪时）；初始化进行中由状态机负责下发，无需此处干预
+  // 还原短信关键配置（仅通信模组就绪时）；初始化进行中由状态机负责下发，无需此处干预。
+  // 必须确认 OK：用户刚发过 AT+CMGF=1 / AT+CNMI=... 时若还原失败，模组会停在
+  // TEXT 模式或未开 +CMTI 上报，存储模式的 AT+CMGR 就读不到 PDU。
   if (m.initState == ModemInitState::kReady) {
-    _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0", SerialBridge::kCrlf,
-                 cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
-    _bridge.send(port, cfg::kUartBaud, cnmiCmd(), SerialBridge::kCrlf,
-                 cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
+    const char *restore[2] = {"AT+CMGF=0", cnmiCmd()};
+    for (uint8_t i = 0; i < 2; i++) {
+      SerialBridge::Result rr = _bridge.send(port, cfg::kUartBaud, restore[i],
+                                             SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs,
+                                             AtHistory::Type::kBg);
+      if (rr.ok && rr.resp.indexOf("OK") >= 0 && rr.resp.indexOf("ERROR") < 0) {
+        if (i == 0) { m.cmgfChecked = false; m.cmgfOk = false; }  // 查询任务再复核一次
+      } else {
+        _log.addf(LogLevel::kWarn, "sms",
+                  "通信模组 %u 还原 %s 未确认（响应：%s），短信收发可能异常",
+                  (unsigned)port, restore[i], briefResp(rr.resp).c_str());
+      }
+    }
   }
   return r;
 }
@@ -1666,10 +1710,14 @@ void SmsService::pollInit(uint8_t port) {
 
     case ModemInitState::kConfig: {
       // 逐条下发（每条 tick 一条，节流），避免一次性持端口锁过久
+      // CMGF=0 必须先于 CNMI：部分模组在 TEXT 模式下会拒绝 CNMI 参数。
+      // 这两条直接决定「+CMTI 上报后能否用 AT+CMGR 读回 PDU」，必须确认 OK。
       static const char *kCmds[] = {
           "AT+COPS=0", "AT+CEREG=3", "AT+CGDCONT=1,\"IP\",\"\"",
+          "AT+CMGF=0",
           nullptr,  // 占位：CNMI 随配置动态生成（存储 / 直投模式）
-          "AT+CMGF=0", "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
+          "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
+      if (m.configStep == 0) m.configFailCount = 0;
       if (m.configStep == 1) {
         // CEREG=3 失败降级到 =2（部分 2G 通信模组不支持带原因的注册上报）
         if (at("AT+CEREG=3", cfg::kSmsCmdTimeoutMs)) {
@@ -1677,10 +1725,28 @@ void SmsService::pollInit(uint8_t port) {
         } else {
           return;  // 忙
         }
-      } else if (m.configStep == 3) {
-        // CNMI：存储模式（2,1，短信落通信模组存储 + 上报 +CMTI 索引）/
-        // 直投模式（2,2，新短信直接推送到本机串口）
-        if (!at(cnmiCmd(), cfg::kSmsCmdTimeoutMs)) return;  // 忙
+      } else if (m.configStep == 3 || m.configStep == 4) {
+        // CMGF=0 / CNMI：原实现只判断「端口锁是否取到」，resp 为 ERROR 甚至空
+        // 也照样推进到就绪，模组可能停在 TEXT 模式或未开启 +CMTI 上报——
+        // 表现为「串口能看到 +CMTI，短信却始终不入库」。此处校验并重试本步。
+        const char *keyCmd = (m.configStep == 3) ? "AT+CMGF=0" : cnmiCmd();
+        if (!at(keyCmd, cfg::kSmsCmdTimeoutMs)) return;  // 忙
+        if (resp.indexOf("OK") < 0 || resp.indexOf("ERROR") >= 0) {
+          if (++m.configFailCount <= 3) {
+            _log.addf(LogLevel::kWarn, "sms",
+                      "通信模组 %u 配置 %s 未确认（第 %u 次，响应：%s）",
+                      (unsigned)port, keyCmd, (unsigned)m.configFailCount,
+                      briefResp(resp).c_str());
+            m.nextPollMs = now + cfg::kModemConfigStepMs;
+            return;  // 停在本步重试，不推进状态机
+          }
+          _log.addf(LogLevel::kError, "sms",
+                    "通信模组 %u 配置 %s 连续失败，跳过该步（短信收发可能异常）",
+                    (unsigned)port, keyCmd);
+          m.configFailCount = 0;
+        } else {
+          m.configFailCount = 0;
+        }
       } else {
         if (!at(kCmds[m.configStep], cfg::kSmsCmdTimeoutMs)) return;  // 忙
       }
@@ -1688,6 +1754,8 @@ void SmsService::pollInit(uint8_t port) {
       if (m.configStep >= (int)(sizeof(kCmds) / sizeof(kCmds[0]))) {
         m.initState = ModemInitState::kReady;
         m.failCount = 0;
+        m.cmgfChecked = false;  // 重新就绪后由首次查询再复核一次实际模式
+        m.cmgfOk = false;
         m.everReady = true;  // 此后 SIM 掉卡/插卡才算「运行时事件」
         m.lastActivityMs = now;
         m.nextPollMs = now + cfg::kModemLivenessMs;
@@ -2104,6 +2172,31 @@ bool SmsService::queryPort(uint8_t port) {
   // 查询期间暂停后台指令（心跳 / 遥测），避免 AT 互相交织
   { uint32_t u = millis() + cfg::kSmsRecvPauseMs; if (u > m.cmdPauseUntil) m.cmdPauseUntil = u; }
 
+  // 0) 复核 PDU 模式。初始化或用户在控制台发 AT 都可能把 CMGF 改回 TEXT，
+  //    此时 AT+CMGR 返回文本正文，extractPduHex 取不到 PDU —— 这是「+CMTI 可见
+  //    但短信不入库」最常见的根因。仅每轮初始化后首次查询、或读失败后复查。
+  auto confirmPduMode = [&](bool force) {
+    if (m.cmgfChecked && !force) return m.cmgfOk;
+    SerialBridge::Result cr = _bridge.send(port, cfg::kUartBaud, "AT+CMGF?",
+                                           SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs,
+                                           AtHistory::Type::kBg);
+    int mode = parseCmgfMode(cr.resp);
+    m.cmgfOk = (mode == 0);
+    m.cmgfChecked = true;
+    if (!m.cmgfOk) {
+      _log.addf(LogLevel::kWarn, "sms",
+                "通信模组 %u 不处于 PDU 模式（AT+CMGF? = %d，响应：%s），重新下发 AT+CMGF=0",
+                (unsigned)port, mode, briefResp(cr.resp).c_str());
+      SerialBridge::Result fix = _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0",
+                                              SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs,
+                                              AtHistory::Type::kBg);
+      m.cmgfOk = (fix.ok && fix.resp.indexOf("OK") >= 0 && fix.resp.indexOf("ERROR") < 0);
+      m.lastQueryErr = String("CMGF 非 PDU 模式，已尝试纠正：") + briefResp(cr.resp);
+    }
+    return m.cmgfOk;
+  };
+  confirmPduMode(false);
+
   // 1) 存储占用（仅用于日志；失败不阻断后续查询）
   SerialBridge::Result cp = _bridge.send(port, cfg::kUartBaud, "AT+CPMS=\"SM\"",
                                          SerialBridge::kCrlf, cfg::kSmsQueryTimeoutMs,
@@ -2113,34 +2206,50 @@ bool SmsService::queryPort(uint8_t port) {
               (unsigned)port, cp.resp.substring(cp.resp.indexOf("+CPMS:")).c_str());
   }
 
-  // 2) 列出短信索引：未读(0) 与 已读(1) 都要扫。
-  // AT+CMGR 会把 REC UNREAD 标记为 REC READ，所以只要某一轮删除失败 / 长短信
-  // 没拼齐 / 落盘失败，那条短信就再也不会出现在 AT+CMGL=0 里，长期占满 SIM
-  // 导致无法接收新短信。加扫已读列表可把这些残留重新捞回并补删（去重表保证
-  // 不重复落盘、不重复推送）；+CMTI 索引作为最可靠的补充直接并入。
+  // 2) 索引来源：+CMTI 优先，直接 AT+CMGR；AT+CMGL 只作补充扫描。
+  //    部分 Cat.1 模组不响应 CMGL，原实现每轮固定发两条 8s 超时的 CMGL，
+  //    既长时间独占端口，又容易把残留响应串进下一条命令。
+  //    CMTI 索引读失败会保留并退避重试，连续失败达阈值才改走 CMGL 全量扫描自愈。
   auto listOk = [](const SerialBridge::Result &r) {
-    return r.ok && r.resp.indexOf("OK") >= 0;
+    return r.ok && r.resp.indexOf("OK") >= 0 && r.resp.indexOf("ERROR") < 0;
   };
-  SerialBridge::Result gl0 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=0",
-                                          SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
-                                          AtHistory::Type::kBg);
-  SerialBridge::Result gl1 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=1",
-                                          SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
-                                          AtHistory::Type::kBg);
-  bool have0 = listOk(gl0), have1 = listOk(gl1);
-  if (!have0 && !have1 && m.queryIndexCount == 0) {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败（未读/已读均无响应）",
-              (unsigned)port);
-    return false;
+  std::vector<int> unread, read, cmti, idxs;
+  for (uint8_t k = 0; k < m.queryIndexCount; k++) cmti.push_back(m.queryIndexes[k]);
+  const bool cmtiOnly = !cmti.empty() && m.queryFailStreak < cfg::kSmsQueryFailMax;
+  String gl0Resp, gl1Resp;
+  if (!cmtiOnly) {
+    if (m.queryFailStreak >= cfg::kSmsQueryFailMax) {
+      _log.addf(LogLevel::kWarn, "sms",
+                "通信模组 %u 连续 %u 轮读回失败，改用 AT+CMGL 全量扫描自愈",
+                (unsigned)port, (unsigned)m.queryFailStreak);
+      cmti.clear();             // 交给 CMGL 把 SIM 上的残留（含已读）重新捞回
+      m.queryIndexCount = 0;    // 后续新到达的 +CMTI 从 0 开始重新累积
+      m.queryFailStreak = 0;
+      m.lastQueryErr = String("连续读回失败，已转 AT+CMGL 全量扫描");
+    }
+    SerialBridge::Result gl0 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=0",
+                                            SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                            AtHistory::Type::kBg);
+    SerialBridge::Result gl1 = _bridge.send(port, cfg::kUartBaud, "AT+CMGL=1",
+                                            SerialBridge::kCrlf, cfg::kSmsQueryListTimeoutMs,
+                                            AtHistory::Type::kBg);
+    gl0Resp = gl0.resp;
+    gl1Resp = gl1.resp;
+    bool have0 = listOk(gl0), have1 = listOk(gl1);
+    if (!have0 && !have1 && cmti.empty()) {
+      m.lastQueryErr = String("CMGL 无响应：") + briefResp(gl0.resp) + " / " +
+                       briefResp(gl1.resp);
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败（未读/已读均无响应）",
+                (unsigned)port);
+      m.queryRetryAfterMs = millis() + 5000UL;  // 失败退避，避免 250ms 一轮的 AT 风暴
+      return false;
+    }
+    if (have0) parseSmsIndexes(gl0.resp, unread);
+    if (have1) parseSmsIndexes(gl1.resp, read);
   }
-  std::vector<int> idxs, readIdxs;
-  if (have0) parseSmsIndexes(gl0.resp, idxs);
-  if (have1) parseSmsIndexes(gl1.resp, readIdxs);
-  const size_t nUnread = idxs.size(), nRead = readIdxs.size();
-  for (int v : readIdxs) idxs.push_back(v);
-  const uint8_t cmtiCount = m.queryIndexCount;
-  for (uint8_t k = 0; k < cmtiCount; k++) idxs.push_back(m.queryIndexes[k]);
-  m.queryIndexCount = 0;
+  for (int v : unread) idxs.push_back(v);
+  for (int v : read) idxs.push_back(v);
+  for (int v : cmti) idxs.push_back(v);
   std::sort(idxs.begin(), idxs.end());
   idxs.erase(std::unique(idxs.begin(), idxs.end()), idxs.end());
   if (idxs.empty()) {
@@ -2153,15 +2262,14 @@ bool SmsService::queryPort(uint8_t port) {
       m.queryLogMs = millis();
       _log.addf(LogLevel::kInfo, "sms",
                 "通信模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：%s / %s）",
-                (unsigned)port, gl0.resp.substring(0, 100).c_str(),
-                gl1.resp.substring(0, 100).c_str());
+                (unsigned)port, briefResp(gl0Resp).c_str(), briefResp(gl1Resp).c_str());
     }
     return true;  // 无存量：正常结束
   }
   _log.addf(LogLevel::kInfo, "sms",
             "通信模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）",
-            (unsigned)port, (unsigned)idxs.size(), (unsigned)nUnread, (unsigned)nRead,
-            (unsigned)cmtiCount);
+            (unsigned)port, (unsigned)idxs.size(), (unsigned)unread.size(),
+            (unsigned)read.size(), (unsigned)cmti.size());
 
   // 3) 逐条读出 PDU 并解码（解码需持有编解码锁：pdulib 实例非线程安全）
   struct Stored {
@@ -2170,12 +2278,15 @@ bool SmsService::queryPort(uint8_t port) {
     int    concat[3] = {0, 0, 0};
   };
   std::vector<Stored> msgs;
-  bool truncated = false;
-  for (int idx : idxs) {
+  std::vector<int> failed;  // 本轮没能成功读回并解码的索引
+  bool truncated = false, modeFixed = false;
+  for (size_t ii = 0; ii < idxs.size(); ii++) {
+    int idx = idxs[ii];
     if (msgs.size() >= cfg::kSmsQueryMaxMsgs) {
       truncated = true;
       _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 存量短信超过 %u 条，本轮仅处理前 %u 条",
                 (unsigned)port, (unsigned)cfg::kSmsQueryMaxMsgs, (unsigned)msgs.size());
+      for (size_t jj = ii; jj < idxs.size(); jj++) failed.push_back(idxs[jj]);
       break;
     }
     char cmd[24];
@@ -2184,15 +2295,23 @@ bool SmsService::queryPort(uint8_t port) {
                                            cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
     if (!gr.ok) {
       _log.addf(LogLevel::kWarn, "sms", "通信模组 %u AT+CMGR=%d 发送失败", (unsigned)port, idx);
+      failed.push_back(idx);
       continue;
     }
+    m.lastCmgrResp = briefResp(gr.resp);  // 保留原始响应，Web 侧无需接 USB 也能取证
     String pdu = extractPduHex(gr.resp);
     if (!pdu.length()) {
-      // 插桩：读不到 PDU 时打印模组原始响应（定位命令不被支持 / 响应格式异常）
-      _log.addf(LogLevel::kWarn, "sms",
-                "通信模组 %u AT+CMGR=%d 未取到 PDU（响应前 100 字：%s）",
-                (unsigned)port, idx, gr.resp.substring(0, 100).c_str());
-      continue;  // 读不到内容：跳过，不删除
+      // 取不到 PDU 多因模组停在 TEXT 模式：立即复核并纠正一次，本轮保留索引重试
+      if (!modeFixed) {
+        modeFixed = true;
+        m.cmgfChecked = false;
+        confirmPduMode(true);
+      }
+      m.lastQueryErr = String("AT+CMGR=") + idx + " 未取到 PDU：" + m.lastCmgrResp;
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u %s",
+                (unsigned)port, m.lastQueryErr.c_str());
+      failed.push_back(idx);
+      continue;
     }
     Stored s;
     s.idx = idx;
@@ -2200,21 +2319,41 @@ bool SmsService::queryPort(uint8_t port) {
     bool ok = _codec.decode(pdu, s.sender, s.ts, s.text, s.concat);
     xSemaphoreGive(_codecMutex);
     if (!ok) {
-      // 插桩：解码失败时打印 PDU 头部（定位 pdulib 与该 PDU 的兼容性）
-      _log.addf(LogLevel::kWarn, "sms",
-                "通信模组 %u 索引 %d 的 PDU 解码失败（PDU 前 60 字：%s）",
-                (unsigned)port, idx, pdu.substring(0, 60).c_str());
+      m.lastQueryErr = String("索引 ") + idx + " PDU 解码失败：" + pdu.substring(0, 60);
+      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u %s",
+                (unsigned)port, m.lastQueryErr.c_str());
+      failed.push_back(idx);
       continue;
     }
     msgs.push_back(s);
   }
-  m.queryLastFound = (uint32_t)msgs.size();
-  if (msgs.empty()) {
-    m.queryLastHandled = 0;
-    m.queryLastDeleted = 0;
-    _queryLastMs = millis();
-    return true;
+
+  // 3b) 只有成功读回并解码的 +CMTI 索引才从队列移除；失败的一律保留并退避重试。
+  //     原实现在 CMGR 之前就清空队列，一次失败即永久丢失索引，SIM 副本再无人读。
+  //     查询期间新到达的 +CMTI 也必须保留，否则会被本轮重建覆盖掉。
+  std::vector<int> current, keep;
+  for (uint8_t k = 0; k < m.queryIndexCount; k++) current.push_back(m.queryIndexes[k]);
+  for (int idx : current) {
+    if (std::find(cmti.begin(), cmti.end(), idx) == cmti.end()) keep.push_back(idx);
   }
+  for (int idx : cmti) {
+    if (std::find(failed.begin(), failed.end(), idx) != failed.end()) keep.push_back(idx);
+  }
+  std::sort(keep.begin(), keep.end());
+  keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+  uint8_t kept = 0;
+  for (int idx : keep) {
+    if (kept >= ModemState::kQueryIndexSlots) break;
+    m.queryIndexes[kept++] = idx;
+  }
+  m.queryIndexCount = kept;
+  if (failed.empty()) {
+    m.queryFailStreak = 0;
+    if (!modeFixed) m.lastQueryErr = String();  // 正常一轮：清掉历史故障信息
+  } else if (m.queryFailStreak < 255) {
+    m.queryFailStreak++;
+  }
+  m.queryLastFound = (uint32_t)msgs.size();
 
   // 4) 分组：长短信按（发送方 + 参考号）归组，其余各自成组
   std::vector<std::vector<int>> groups;
@@ -2390,18 +2529,27 @@ bool SmsService::queryPort(uint8_t port) {
   m.queryLastHandled = handled;
   m.queryLastDeleted = deleted;
   _queryLastMs = millis();
-  // 删除失败 / 单轮没处理完：尽快排下一轮补删（失败时带 5s 节流，防 AT 风暴）。
-  // 已清空时不额外排队，等 +CMTI 或兜底轮询即可。
-  if (delFailed || (truncated && deleted > 0)) {
+  // 删除失败 / 单轮没处理完 / 索引读回失败：排下一轮。读回失败按连续轮次指数
+  // 退避（3s 起，上限 60s），避免模组异常时每 250ms 刷一轮 AT 风暴。
+  uint32_t waitMs = delFailed ? 5000UL : 0UL;
+  if (!failed.empty()) {
+    uint32_t backoff = 3000UL;
+    for (uint8_t i = 1; i < m.queryFailStreak && i < 6; i++) backoff *= 2;
+    if (backoff > 60000UL) backoff = 60000UL;
+    if (backoff > waitMs) waitMs = backoff;
+  }
+  if (delFailed || (truncated && deleted > 0) || !failed.empty()) {
     m.queryPending = true;
-    m.queryRetryAfterMs = millis() + (delFailed ? 5000UL : 0UL);
+    m.queryRetryAfterMs = waitMs ? millis() + waitMs : 0;
   } else {
     m.queryRetryAfterMs = 0;
   }
   _log.addf(LogLevel::kInfo, "sms",
-            "通信模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条%s",
-            (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled, (unsigned)deleted,
-            delFailed ? "（部分删除失败，已排队补删）" : "");
+            "通信模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条，读回失败 %u 条%s",
+            (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled,
+            (unsigned)deleted, (unsigned)failed.size(),
+            delFailed ? "（部分删除失败，已排队补删）" :
+            (!failed.empty() ? "（索引已保留，稍后重试）" : ""));
   return true;
 }
 
@@ -2511,8 +2659,13 @@ void SmsService::parseSmsIndexes(const String &resp, std::vector<int> &out) {
   }
 }
 
-// 从 AT+CMGR 响应中提取 PDU 十六进制串（+CMGR: 头之后的下一行）
+// 从 AT+CMGR 响应中提取 PDU 十六进制串。
+// 兼容：+CMGR: 头行、长 PDU 被模组分行、行内空格/引号；拒绝 OK/ERROR 之后的内容，
+// 以及头行之前混入的纯 hex 行（上一条命令的串包残留），避免把别处的 PDU
+// 当成本条短信解码。要求必须见到 +CMGR/+CMGL 头，否则返回空由调用方重试。
 String SmsService::extractPduHex(const String &resp) {
+  bool seenHeader = false;
+  String pdu;
   int pos = 0;
   while (pos <= (int)resp.length()) {
     int nl = resp.indexOf('\n', pos);
@@ -2520,12 +2673,32 @@ String SmsService::extractPduHex(const String &resp) {
     pos = (nl >= 0) ? nl + 1 : (int)resp.length() + 1;
     line.trim();
     if (!line.length()) continue;
-    if (line.startsWith("+CMGR:")) continue;  // 头行：取下一行
-    if (isPduLine(line)) return line;
-    if (line == "OK" || line.startsWith("+CMS ERROR") ||
-        line.startsWith("+CME ERROR")) break;
+    if (line == "OK" || line.startsWith("ERROR") ||
+        line.startsWith("+CMS ERROR") || line.startsWith("+CME ERROR")) break;
+    if (line.startsWith("+CMGR:") || line.startsWith("+CMGL:")) {
+      seenHeader = true;
+      continue;
+    }
+    // 响应窗口里混入的 URC（+CMTI/+CDS/+CEREG/RING 等）跳过，不打断 PDU 拼接
+    if (line[0] == '+' || line.startsWith("RING") ||
+        line.startsWith("NO CARRIER") || line == "BUSY" || line == "NO ANSWER") continue;
+    // 去掉行内空白与引号（部分模组回显 PDU 时会带空格或引号）
+    String clean;
+    for (size_t i = 0; i < line.length(); i++) {
+      char c = line[i];
+      if (c == ' ' || c == '\r' || c == '\n' || c == '\t' || c == '"') continue;
+      clean += c;
+    }
+    if (!clean.length()) continue;
+    if (!isHexOnly(clean)) {
+      // TEXT 模式下的正文 / 其它非 hex 内容：已有 PDU 就收口，没有则跳过
+      if (pdu.length()) break;
+      continue;
+    }
+    if (!seenHeader) continue;  // 头之前的 hex 只可能是串包残留
+    pdu += clean;               // 长 PDU 分行时拼接
   }
-  return String();
+  return (seenHeader && pdu.length() && !(pdu.length() & 1)) ? pdu : String();
 }
 
 // 去重表查询：TTL 内同键视为已处理过
@@ -2581,6 +2754,13 @@ String SmsService::queryStatusJson() const {
     o["clearLastDeleted"] = _modems[p].clearLastDeleted;
     o["clearLastMs"] = _modems[p].clearLastMs;
     o["clearLastErr"] = _modems[p].clearLastErr;
+    // 存储模式诊断：不接 USB 也能从 /api/sms/query 判断链路停在哪一步
+    o["indexes"] = _modems[p].queryIndexCount;      // 保留待重试的 +CMTI 索引数
+    o["cmgfChecked"] = _modems[p].cmgfChecked;
+    o["cmgfOk"] = _modems[p].cmgfOk;                // false = 模组可能停在 TEXT 模式
+    o["failStreak"] = _modems[p].queryFailStreak;
+    o["lastCmgr"] = _modems[p].lastCmgrResp;        // 最近一次 AT+CMGR 原始响应片段
+    o["lastError"] = _modems[p].lastQueryErr;
   }
   String out;
   serializeJson(doc, out);
@@ -2679,12 +2859,20 @@ bool SmsService::setStoreMode(bool on) {
   if (_cnmiStore == on) return true;
   _cnmiStore = on;
   _cnmiDirty = true;
+  // 模式切换会改变 URC 形态：清掉上一模式遗留的 +CMT 等待标志，否则切到存储
+  // 模式后第一条 +CMTI 可能被当成「+CMT 后的 PDU 行」吞掉。
+  for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
+    _modems[p].waitingPdu = false;
+    _modems[p].cmgfChecked = false;
+    _modems[p].queryFailStreak = 0;
+  }
   if (!saveConfig()) {
     _log.addf(LogLevel::kError, "sms", "短信接收模式配置落盘失败");
     return false;
   }
   _log.addf(LogLevel::kInfo, "sms", "短信接收模式已切换：%s",
             on ? "存储+索引上报(CNMI=2,1)" : "直投(CNMI=2,2)");
+  if (on) requestQueryAll();  // 立刻扫一次模组存量，切模式前收到的短信不漏
   return true;
 }
 

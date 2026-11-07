@@ -287,6 +287,9 @@ constexpr uint32_t kSmsConcatStuckMs = 60000;
 constexpr uint32_t kSmsCmgsPromptMs = 5000;      // AT+CMGS= 后等 '>' 提示符的上限
 constexpr uint32_t kSmsSendTimeoutMs = 30000;     // 单段 CMGS 发送超时（PDU 响应收集上限）
 constexpr uint32_t kSmsRecvPauseMs = 2000;        // 收到短信后延长暂停窗口的量（避免与短信处理交织）
+// 直投模式下 +CMT 头之后等待 PDU 行的窗口：超时后清 waitingPdu，避免该标志
+// 长期挂着把后续 +CMTI 等 URC 误吞
+constexpr uint32_t kSmsPduWaitMs = 5000;
 constexpr uint32_t kSmsSendPauseMs = kSmsCmgsPromptMs + kSmsSendTimeoutMs + 3000;  // 短信发送期间暂停后台指令的窗口（覆盖整段 CMGS 握手）
 constexpr uint32_t kSmsCmdTimeoutMs = 1500;       // AT 配置类命令超时
 constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
@@ -294,8 +297,9 @@ constexpr uint32_t kSmsPageSizeMax = 100;     // 列表分页每页条数上限
 // ---------------- 主动查询短信（模组存储兜底）----------------
 // 通信模组以 CNMI=2,1（落存储 + 上报 +CMTI 索引）接收时短信不再直投，
 // 改由「查询任务」按需/定时把模组存储里的短信读回本机：落盘 + 推送成功后立即删除
-// 模组侧副本。列表同时扫未读(CMGL=0)与已读(CMGL=1)，保证删除失败的残留能被
-// 下一轮补删，不会占满 SIM 导致收不到新短信。直投模式（CNMI=2,2）下该链路
+// 模组侧副本。有新短信时按 +CMTI 索引直接 AT+CMGR（最快、且不依赖模组是否支持
+// CMGL）；AT+CMGL=0/1 只作补充扫描，用于捞回删除失败 / 长短信未齐的已读残留、
+// 以及兜底轮询，避免占满 SIM 导致收不到新短信。直投模式（CNMI=2,2）下该链路
 // 仅作兜底（+CMT 丢失时的补救）。
 constexpr uint32_t kSmsQueryPollMs = 250;        // 查询任务轮询周期（检查待查标记）
 constexpr uint32_t kSmsQueryTimeoutMs = 3000;     // 单条查询 AT 的响应收集超时
@@ -305,8 +309,12 @@ constexpr uint32_t kSmsDedupTtlMs = 600000;      // 去重有效期（10 分钟�
 constexpr uint8_t  kSmsDedupSlots = 32;          // 去重表槽位数（环形覆盖最旧）
 // 兜底轮询周期（毫秒）：与 +CMTI 自动上报互为补充——URC 丢失时按此周期
 // 主动下发 AT 指令拉取通信模组存储中的短信，防止漏收。常开，不随排程配置变化。
-// 每轮仅 AT+CPMS + AT+CMGL=0/1 三条指令（存量为空时响应很短），串口占用约 1%。
+// 每轮走 AT+CMGL=0/1 全量扫描（新短信走 +CMTI 快速路径时不触发本扫描），
+// 存量为空时响应很短，串口占用约 1%。
 constexpr uint32_t kSmsSafetyPollMs = 60000;     // 1 分钟
+// +CMTI 索引连续读回失败达到该轮次后，改走 AT+CMGL 全量扫描自愈，
+// 避免某个异常索引把快速路径永久占住（同时由去重表保证不重复落盘）
+constexpr uint8_t kSmsQueryFailMax = 3;
 
 // ---------------- 时间同步（NTP 为主，SIM NITZ 兜底）----------------
 constexpr int32_t  kNtpGmtOffsetSec = 8 * 3600;                 // 时区偏移：UTC+8

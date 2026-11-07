@@ -20,6 +20,17 @@ constexpr TickType_t kPumpPeriod = pdMS_TO_TICKS(5);  // 抽数任务周期 5ms
 // 串口接收错误的最小上报间隔：onReceiveError 回调（串口事件任务上下文）只计数，
 // 抽数任务最多每 2s 合并打印一次，错误风暴时既不失可观测性也不刷屏
 constexpr uint32_t kErrReportMinGapMs = 2000;
+
+// 标准 AT 终止行：OK / ERROR / +CMS ERROR / +CME ERROR。
+// AT+CMGL 的多段响应、AT+CMGR 的头行与 PDU 之间都可能停顿超过 80ms，
+// 仅靠「静默即结束」会提前截断，残留的 PDU 字节串进下一条命令的响应，
+// 导致存储模式读回的短信被解析错或整条丢失。
+bool isFinalLine(const String &line) {
+  String s = line;
+  s.trim();
+  return s == "OK" || s.startsWith("ERROR") ||
+         s.startsWith("+CMS ERROR") || s.startsWith("+CME ERROR");
+}
 }  // namespace
 
 // 把字符按可打印形式追加到 out：控制字符转成 \xNN 文本
@@ -208,8 +219,7 @@ void SerialBridge::reportErrors(uint8_t i) {
 
 // 把 AT 响应收集窗口内混入的自发上报（短信 URC +CMT/+CMTI/+CDS，来电 URC
 // RING/+CRING/+CLIP/+CLCC/NO CARRIER 等）交回 pend：
-// readResponse 按 80ms 静默判停，心跳/遥测 AT 执行期间到达的 URC 会被
-// 一并读进 resp；本方法把该段捞出、追加到 p.pend，由抽数任务按常规自发上报流程
+// 收集窗口内到达的 URC 会被一并读进 resp；本方法把该段捞出、追加到 p.pend，由抽数任务按常规自发上报流程
 // （120ms 静默后回调 _urc 并以 kUrc 类型记入 AT 历史）归档，避免被当作本次 AT
 // 响应的一部分而干扰调用方解析、或随响应窗口丢失；resp 本身不改动。
 // p：端口状态（调用方须持有端口锁）；resp：刚收集到的 AT 响应
@@ -250,10 +260,26 @@ void SerialBridge::stashUrc(Port &p, const String &resp) {
             (unsigned)(p.index + 1), (unsigned)tail.length());
 }
 
-// 同步收集响应：直到超时或静默 gapMs
-// p：端口状态；waitMs：总等待上限；gapMs：收到数据后的静默判停间隔
+// 下发命令前抽干 RX 残留；抽出的内容交回 pend，由抽数任务按自发上报归档，
+// 其中若含刚到达的 +CMTI 仍会被 SmsService 正常消费（不丢新短信通知）。
+void SerialBridge::drainRxLocked(Port &p) {
+  String stale;
+  for (int i = 0; i < 1024; i++) {
+    int c = p.dev->read();
+    if (c < 0) break;
+    p.rxBytes++;
+    appendPrintable(stale, (char)c);
+  }
+  if (stale.length()) {
+    p.pend += stale;
+    p.pendMs = millis();
+  }
+}
+
+// 同步收集响应：见到标准终止行即结束；否则等满超时或静默 gapMs 兜底。
+// p：端口状态；waitMs：总等待上限；gapMs：未收到终止行时的静默判停间隔
 String SerialBridge::readResponse(Port &p, uint32_t waitMs, uint32_t gapMs) {
-  String out;
+  String out, lineBuf;
   uint32_t start = millis(), last = start;
   while (millis() - start < waitMs) {
     int c = p.dev->read();
@@ -262,8 +288,14 @@ String SerialBridge::readResponse(Port &p, uint32_t waitMs, uint32_t gapMs) {
       p.rxBytes++;
       p.lastRxMs = millis();
       last = millis();
+      if (c == '\n') {
+        if (isFinalLine(lineBuf)) break;  // OK / ERROR 已到齐，不必再等静默
+        lineBuf = String();
+      } else {
+        lineBuf += (char)c;
+      }
     } else if (out.length() && millis() - last >= gapMs) {
-      break;  // 已收到内容且再次静默，视为响应结束
+      break;  // 模组未回终止行：仍按静默兜底，避免卡满超时
     } else {
       delay(2);
     }
@@ -282,6 +314,7 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
   lockPort(port - 1);
   Port &p = _ports[port - 1];
   ensureOpen(p, baud);
+  drainRxLocked(p);  // 清掉上一条命令的残留，避免串进本次响应
 
   size_t written = p.dev->write((const uint8_t *)cmd.c_str(), cmd.length());
   switch (eol) {
@@ -293,7 +326,9 @@ SerialBridge::Result SerialBridge::send(uint8_t port, uint32_t baud,
   p.txBytes += written;
   p.dev->flush();
 
-  String resp = readResponse(p, timeoutMs, 80);
+  // 静默兜底放宽到 300ms：模组从 SIM 读 PDU 时头行与数据行可能间隔较久，
+  // 80ms 会把 PDU 行截到下一条命令里。正常响应见 OK 即返回，不受此值影响。
+  String resp = readResponse(p, timeoutMs, 300);
 
   // 响应窗口内混入的自发上报（短信 / 来电 URC）交回 pend，避免被当作 AT 响应丢弃
   stashUrc(p, resp);
@@ -329,6 +364,7 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
 
   Port &p = _ports[port - 1];
   ensureOpen(p, baud);
+  drainRxLocked(p);  // 清掉上一条命令的残留，避免串进本次响应
 
   size_t written = p.dev->write((const uint8_t *)cmd.c_str(), cmd.length());
   switch (eol) {
@@ -340,7 +376,9 @@ bool SerialBridge::trySend(uint8_t port, uint32_t baud, const String &cmd, Eol e
   p.txBytes += written;
   p.dev->flush();
 
-  String resp = readResponse(p, timeoutMs, 80);
+  // 静默兜底放宽到 300ms：模组从 SIM 读 PDU 时头行与数据行可能间隔较久，
+  // 80ms 会把 PDU 行截到下一条命令里。正常响应见 OK 即返回，不受此值影响。
+  String resp = readResponse(p, timeoutMs, 300);
 
   // 响应窗口内混入的自发上报（短信 / 来电 URC）交回 pend，避免被当作 AT 响应丢弃
   stashUrc(p, resp);
@@ -384,17 +422,7 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
   // 1) 抽干 RX：上一条命令/URC 的残留字节若留在缓冲，会混进本次握手响应，
   //    使 >/OK 判定失真。抽出的字节交回 pend（不丢弃）：其中若含刚到的新短信
   //    URC，抽数任务会按自发上报正常归档，不会顺手吞掉来信。
-  String stale;
-  for (int i = 0; i < 1024; i++) {
-    int c = p.dev->read();
-    if (c < 0) break;
-    p.rxBytes++;
-    appendPrintable(stale, (char)c);
-  }
-  if (stale.length()) {
-    p.pend += stale;
-    p.pendMs = millis();
-  }
+  drainRxLocked(p);
   p.timeouts = 0;
 
   // 2) 报长度，逐字节等 '>' 提示符（不用静默判停：'>' 前无其它内容可依赖）

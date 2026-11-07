@@ -137,6 +137,21 @@
                      ' / 删除 ' + (q.lastDeleted || 0) + '）'"></span>
       </template>
     </div>
+
+    <!-- 存储模式链路诊断：不接 USB 也能定位「+CMTI 可见但短信没入库」停在哪一步 -->
+    <div style="margin-top:8px" x-cloak
+         x-show="queryPorts().some(q => q.lastError || q.indexes || (q.cmgfChecked && !q.cmgfOk))">
+      <template x-for="q in queryPorts()" :key="'qd'+q.port">
+        <div class="hint" style="margin-top:4px;word-break:break-all"
+             x-show="q.lastError || q.indexes || (q.cmgfChecked && !q.cmgfOk)">
+          <b x-text="modemLabel({port:q.port})"></b> ·
+          <span x-text="'待重试索引 ' + (q.indexes || 0) + ' · 连续失败 ' + (q.failStreak || 0) +
+                       ' · PDU 模式 ' + (!q.cmgfChecked ? '未复核' : (q.cmgfOk ? '正常' : '异常'))"></span>
+          <div x-show="q.lastError" x-text="'最近错误：' + (q.lastError || '')"></div>
+          <div x-show="q.lastCmgr" x-text="'最近 CMGR 响应：' + (q.lastCmgr || '')"></div>
+        </div>
+      </template>
+    </div>
   </div>
 
   <!-- SIM 短信清理（危险操作） -->
