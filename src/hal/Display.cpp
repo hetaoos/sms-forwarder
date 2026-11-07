@@ -1,5 +1,9 @@
 #include "hal/Display.h"
 
+#include "app/Config.h"  // ENABLE_LCD（编译期开关，默认 1）
+
+#if ENABLE_LCD
+
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
 #include <esp_heap_caps.h>  // PSRAM 分配（LVGL 渲染缓冲 / 预览 JPEG）
@@ -398,3 +402,5 @@ uint8_t *Display::takeScreenJpg(size_t &outLen) {
   outLen = len;
   return out;
 }
+
+#endif  // ENABLE_LCD

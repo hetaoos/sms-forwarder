@@ -57,7 +57,9 @@ bool App::begin() {
   // setup 阶段 loopTask 已订阅 TWDT 却还没进 App::tick()，长初始化之间补一次心跳，
   // 避免中文字库加载 / 用户数据扫描等步骤把 60s 超时耗光导致开机即重启。
   TaskWatchdog::feed();
+#if ENABLE_LCD
   _keypad.begin();                     // 4 键输入（OK/UP/DOWN/BACK）
+#endif
   _ui.begin();                         // 菜单导航状态机（默认停在状态页）
   _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 动态页数据源
   // LCD「短信」页数据源：只在菜单页可见时被调用（内部另有 3 秒节流）
@@ -510,6 +512,8 @@ void App::tick() {
   _outbox.tick();                      // 持久化发件箱：落盘新事件 + 逐通道投递/续投
 
   // 轮询 4 键，事件交给菜单状态机处理（状态页下任意键切入菜单）
+  // LCD 关闭时整段跳过：菜单状态机已裁掉，按键与 Web 注入按键均不再响应
+#if ENABLE_LCD
   KeyId key;
   KeyEvent ev;
   if (_keypad.poll(millis(), key, ev)) {
@@ -523,6 +527,7 @@ void App::tick() {
     _bootDone = true;
     _ui.handle(ikey, iev);
   }
+#endif
 
   // 新短信检测：有新的收到短信时弹出到屏幕（loop 任务上下文）
   checkNewSms();

@@ -1,3 +1,5 @@
+#if ENABLE_LCD
+
 #include "ui/UiFonts.h"
 
 #include <Arduino.h>
@@ -114,3 +116,5 @@ bool fontsTakeReadyFlag() {
 }
 
 }  // namespace ui
+
+#endif  // ENABLE_LCD

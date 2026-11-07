@@ -3,6 +3,10 @@
 #include <cstddef>
 #include <stdint.h>
 
+#include "app/Config.h"  // ENABLE_LCD（编译期开关，默认 1）
+
+#if ENABLE_LCD
+
 // ST7789 240x320 屏幕：内部持有 LovyanGFX 面板 + LVGL 显示端口（pimpl 隔离依赖）。
 //
 // 职责边界：本类只做「硬件 + 渲染引擎」，不画任何业务内容——所有页面由
@@ -65,3 +69,23 @@ class Display {
   struct Impl;   // 前向声明：实现细节隐藏在 .cpp
   Impl *_impl;   // pimpl 指针，避免头文件暴露 LovyanGFX / LVGL
 };
+
+#else  // !ENABLE_LCD —— 编译期关闭屏幕，整类退化为无副作用的空实现
+
+// 纯 inline 的空实现替身：覆盖所有调用点，全部无状态、无副作用。
+// 与 ENABLE_MQTT 同套路：Display.cpp 全实现不编译，这里顶住装配代码。
+class Display {
+ public:
+  Display() = default;
+  ~Display() = default;
+  Display(const Display &) = delete;
+  Display &operator=(const Display &) = delete;
+
+  bool begin() { return false; }
+  void lvglTick() {}
+  bool screenOn() const { return false; }
+  uint8_t brightness() const { return 0; }
+  void refreshScreenJpg() {}
+};
+
+#endif  // ENABLE_LCD

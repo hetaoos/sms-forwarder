@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+#include "app/Config.h"  // ENABLE_LED（编译期开关，默认 1）
+
+#if ENABLE_LED
+
 // 板载 RGB(WS2812, GPIO48)，通过 Arduino core 的 rgbLedWrite 驱动
 class RgbLed {
  public:
@@ -48,3 +52,21 @@ class RgbLed {
   Color _cur = kPalette[0];             // 当前颜色（预设或自定义）
   uint8_t _bright = 100;                // 亮度百分比（100 = 原色）
 };
+
+#else  // !ENABLE_LED —— 编译期关闭 RGB 灯，整类退化为无副作用的空实现
+
+// 纯 inline 的空实现替身：覆盖所有调用点，全部无状态、无副作用。
+// 与 ENABLE_MQTT 同套路：RgbLed.cpp 全实现不编译，这里顶住装配代码。
+class RgbLed {
+ public:
+  struct Color { const char *name; uint8_t r, g, b; };
+
+  void begin(uint8_t = 0) {}
+  void next() {}
+  void setBrightness(uint8_t) {}
+  uint8_t brightness() const { return 0; }
+  uint8_t index() const { return 0; }
+  const Color &color() const { static const Color c{"OFF", 0, 0, 0}; return c; }
+};
+
+#endif  // ENABLE_LED

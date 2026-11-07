@@ -1,5 +1,10 @@
 #pragma once
 
+#include "app/Config.h"    // ENABLE_LCD（编译期开关，默认 1）
+#include "app/StatusInfo.h"
+
+#if ENABLE_LCD
+
 #include <lvgl.h>
 
 #include <Arduino.h>
@@ -52,10 +57,9 @@ class Ui {
 
   // ---- 菜单页 ----
   // rows/n：选项（可多于可见行数，区域自带滚动，高亮行会自动滚入视野）；
-  // sel：高亮下标（-1 表示纯信息页，展示 info）；
-  // info/infoCount：正文（过长自动换行 + 随区域滚动）；foot：页脚（可为 nullptr）；
-  // barPct：底部进度条取值（0-100，负数 = 不显示进度条）；
-  // barText：进度条右侧的数值文本（如 "80%" / "60秒"，可为 nullptr）
+  // sel：高亮下标（-1 表示纯信息页，展示 info）；info/infoCount：正文（过长自动换行
+  // + 随区域滚动）；foot：页脚（可为 nullptr）；barPct：底部进度条取值（0-100，负数
+  // = 不显示进度条）；barText：进度条右侧的数值文本（如 "80%" / "60秒"，可为 nullptr）
   void menuUpdate(const char *title, const MenuRow *rows, uint8_t n, int8_t sel,
                   const char *const *info, uint8_t infoCount, const char *foot,
                   int barPct = -1, const char *barText = nullptr);
@@ -175,3 +179,27 @@ class Ui {
 Ui &instance();
 
 }  // namespace ui
+
+#else  // !ENABLE_LCD —— 编译期关闭屏幕，ui 层退化为无副作用的空实现
+
+// 纯 inline 的空实现替身：覆盖所有调用点，全部无状态、无副作用。
+// 与 ENABLE_MQTT 同套路：Ui.cpp / UiFonts.cpp 全实现不编译，这里顶住装配代码。
+namespace ui {
+
+class Ui {
+ public:
+  Ui() = default;
+
+  void begin() {}
+  void bootUpdate(uint8_t) {}
+  void tick() {}
+};
+
+inline Ui &instance() {
+  static Ui s;
+  return s;
+}
+
+}  // namespace ui
+
+#endif  // ENABLE_LCD

@@ -363,13 +363,18 @@ build_flags =
 |----|------|------|
 | `ENABLE_FIRMWARE_UPGRADE` | `1` | OTA 在线升级 / 本地上传（分区表需具备 ota 双槽）。置 `0` 时整个检查/下载/烧录实现不编译，仅保留版本标识与 `/api/ota/status`（`available=false`），Web 升级入口与 LCD 升级动作隐藏 |
 | `ENABLE_MQTT` | `1` | MQTT 服务（esp-mqtt 为 esp-idf 内置组件，无需额外 lib_deps）。置 `0` 时 `MqttService.cpp` 全实现不编译，改由头文件里的空实现替身顶住装配代码；`/api/status` 返回 `mqtt.compiled=false`，前端 MQTT 菜单自动隐藏，配置类 API 返回 404「MQTT 未编译进固件」 |
+| `ENABLE_LCD` | `1` | ST7789 屏幕 + LVGL UI + 菜单状态机（4 键导航）整体开关。置 `0` 时 `Display` / `ui::Ui` / `UIMenu` 的实现整体不编译（LVGL、LovyanGFX 不再链接），改由头文件里的空实现替身顶住装配代码；`/api/status` 返回 `lcdCompiled=false`，前端 LCD 菜单、屏幕预览、按键导航入口隐藏，**LCD 相关接口（`/api/disp`、`/api/screen`、`/api/key` 等）统一返回 404「LCD 未编译进固件」**。**关闭后 4 个物理按键与 LCD 菜单整体失效**（菜单状态机已裁掉，按键不再响应） |
+| `ENABLE_LED` | `1` | 板载 RGB 灯（WS2812）。置 `0` 时 `RgbLed` 实现不编译，同样由空实现替身顶住装配代码；`/api/status` 返回 `ledCompiled=false`，前端 RGB 灯菜单隐藏，**RGB 相关接口（`/api/led`、`/api/rgb`）统一返回 404「LED 未编译进固件」** |
 | `APP_PLATFORM` | `esp32s3` | 平台标识，决定 OTA 产物文件名后缀，须与 CI Release 文件名一致 |
 
-两个宏在 `src/app/Config.h` 里归一化：命令行未定义时按默认 `1` 处理，避免 IDE
-用陈旧的 `compile_commands.json` 时功能被静默裁掉或误报 `MqttService incomplete`。
+四个宏在 `src/app/Config.h` 里归一化：命令行未定义时按默认 `1` 处理，避免 IDE
+用陈旧的 `compile_commands.json` 时功能被静默裁掉或误报 `incomplete`。
 改开关后建议用全新构建目录验证：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`。
 
 ## 屏幕 UI 与按键
+
+（仅当 `ENABLE_LCD=1` 时生效；置 `0` 时屏幕、菜单与 4 键整体不编译，物理按键不再响应——
+其余后台功能不受影响，详见上文「功能开关」的 `ENABLE_LCD`）
 
 4 个物理按键（OK / UP / DOWN / BACK，低电平有效）驱动 `app/UIMenu` 的菜单状态机，
 页面由 `ui/Ui`（LVGL）绘制。`hal/Button` 长按阈值 600ms，长按期间每 180ms 连发一次

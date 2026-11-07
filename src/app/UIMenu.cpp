@@ -1,3 +1,7 @@
+#include "app/Config.h"  // ENABLE_LCD（编译期开关，默认 1）
+
+#if ENABLE_LCD
+
 #include "app/UIMenu.h"
 
 #include <Preferences.h>
@@ -6,7 +10,6 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "app/Config.h"
 #include "ota/Ota.h"    // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"
 #include "ui/UiIcons.h"
@@ -1148,3 +1151,5 @@ void UIMenu::loadConfig() {
     _disp.setBrightness((uint8_t)b);
   }
 }
+
+#endif  // ENABLE_LCD

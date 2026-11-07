@@ -1,3 +1,5 @@
+#if ENABLE_LCD
+
 #include "ui/Ui.h"
 
 #include <Arduino.h>
@@ -811,3 +813,5 @@ void Ui::smsPopupUpdate(const char *phone, const char *body, int8_t modem,
 }
 
 }  // namespace ui
+
+#endif  // ENABLE_LCD

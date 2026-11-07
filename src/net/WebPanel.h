@@ -157,10 +157,12 @@ class WebPanel {
   void handleAuthGet(AsyncWebServerRequest *req);
   void handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+#if ENABLE_LED
   // RGB：切换下一色 / 查询 / 设置
   void handleLedNext(AsyncWebServerRequest *req);
   void handleRgbGet(AsyncWebServerRequest *req);
   void handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json);
+#endif
 
   // 模组调试（AT）：发命令 / 历史增量 / 清空 / 重初始化 / 串口统计 / 默认波特率
   void handleAtSend(AsyncWebServerRequest *req);
@@ -176,6 +178,7 @@ class WebPanel {
   void handleLogList(AsyncWebServerRequest *req);
   void handleLogClear(AsyncWebServerRequest *req);
 
+#if ENABLE_LCD
   // 屏幕：查询 / 设置开关、亮度与自动行为（自动熄屏 / 自动返回状态页）
   void handleDispGet(AsyncWebServerRequest *req);
   void handleDispPost(AsyncWebServerRequest *req, JsonVariant &json);
@@ -186,6 +189,7 @@ class WebPanel {
 
   // 屏幕实时预览：抓取当前帧缓冲编码为 JPEG（image/jpeg）返回（方案 B 的 /api/screen）
   void handleScreenGet(AsyncWebServerRequest *req);
+#endif
 
   // 系统汇总状态
   void handleStatus(AsyncWebServerRequest *req);
@@ -260,11 +264,13 @@ class WebPanel {
   void handleEmailTest(AsyncWebServerRequest *req);
   void handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json);
 
+#if ENABLE_MQTT
   // MQTT：配置读取 / 总开关 / 测试发布 / 配置保存
   void handleMqttGet(AsyncWebServerRequest *req);
   void handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json);
   void handleMqttTest(AsyncWebServerRequest *req);
   void handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json);
+#endif
 
   // 推送通道：配置读取 / 类型清单 / 总开关 / 测试发送 / 配置保存
   void handlePushGet(AsyncWebServerRequest *req);

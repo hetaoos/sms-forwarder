@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <stdint.h>
 
 // ---------------- 编译期功能开关（唯一归一化入口）----------------
@@ -11,6 +12,12 @@
 #endif
 #ifndef ENABLE_FIRMWARE_UPGRADE
 #define ENABLE_FIRMWARE_UPGRADE 1
+#endif
+#ifndef ENABLE_LCD
+#define ENABLE_LCD 1
+#endif
+#ifndef ENABLE_LED
+#define ENABLE_LED 1
 #endif
 
 // 全局配置：所有引脚 / 网络参数集中在这里，通信模组不写死常量

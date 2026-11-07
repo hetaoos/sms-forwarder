@@ -68,6 +68,9 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   // OTA 是否可用（编译期开关 + 设备分区表是否具备双槽）。前端据此决定是否展示升级入口
   doc["otaCompiled"] = (ENABLE_FIRMWARE_UPGRADE != 0);
   doc["otaAvailable"] = otaPartitionAvailable();
+  // LCD / RGB 灯是否编译进固件：ENABLE_LCD / ENABLE_LED=0 时前端隐藏对应 UI 入口
+  doc["lcdCompiled"] = (ENABLE_LCD != 0);
+  doc["ledCompiled"] = (ENABLE_LED != 0);
 
   // ---- MQTT 推送连接状态（仪表盘 / 配置页共用，SSE status 事件实时推送）----
   // compiled 供前端决定 MQTT 菜单是否出现：ENABLE_MQTT=0 时不能再让配置页露出来。

@@ -209,30 +209,13 @@ class MqttService {
  public:
   void begin(WifiManager &, SmsService &, TimeSync &, LogStore &) {}
   void tick() {}
-  void reconfigure() {}
-
-  bool enabled() const { return false; }
-  bool setEnabled(bool) { return false; }
-  static bool isConfigured() { return false; }
-  bool notifyEnabled(uint32_t) const { return false; }
-  bool notifyTest() { return false; }
   void notifyStartup() {}
-  void notifyOnline() {}
   void notifySms(const String &, const String &, uint32_t, int8_t) {}
   void notifySim(uint8_t, bool) {}
   void notifyCall(const String &, uint32_t, int8_t) {}
 
-  bool saveConfig(const String &, const String &, const String &, const String &,
-                  const String &, const String &, uint16_t, bool, uint32_t, bool) {
-    return false;
-  }
-  String configJson() const {
-    return "{\"ok\":true,\"enabled\":false,\"configured\":false,\"compiled\":false}";
-  }
-  void exportTo(JsonObject &) const {}
-  bool importFrom(const JsonObject &) { return true; }  // 旧备份里的 mqtt 节直接忽略
-
   // 发件箱里若残留旧固件的 mqtt 通道，判为 skipped 直接结单，不重试
+  // （Outbox 始终编译，故该方法必须存在于替身）
   bool publishSmsOnce(const String &, const String &, uint32_t, int8_t,
                       bool &skipped, String &err) {
     skipped = true;

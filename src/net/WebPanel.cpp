@@ -30,13 +30,6 @@ namespace {
 void sendJsonDoc(AsyncWebServerRequest *req, const JsonDocument &doc);
 void sendErr(AsyncWebServerRequest *req, int code, const char *msg);
 
-#if !ENABLE_MQTT
-// MQTT 编译期关闭时，配置类接口统一给出明确错误，避免第三方脚本把
-// 「配置保存失败」误判成 NVS 故障。菜单已由 /api/status 的 mqtt.compiled 隐藏。
-void mqttCompiledOff(AsyncWebServerRequest *req) {
-  sendErr(req, 404, "MQTT 未编译进固件（ENABLE_MQTT=0）");
-}
-#endif
 
 // 取字符串参数；req：请求对象；name：参数名；def：缺省值
 // 参数存在时返回其值（指针生命周期跟随请求），否则返回 def
@@ -579,17 +572,23 @@ void WebPanel::setupRoutes() {
 
   // ---- RGB ----
   // 切换到下一个预设颜色，返回最新 RGB 状态
+#if ENABLE_LED
   _server.on("/api/led", HTTP_GET, [this](AsyncWebServerRequest *req) { handleLedNext(req); });
+#endif
 
   // 查询 RGB 状态：{"ok":true,"color":名,"rgb":[r,g,b],"index":n,"bright":0-100}
+#if ENABLE_LED
   _server.on("/api/rgb", HTTP_GET, [this](AsyncWebServerRequest *req) { handleRgbGet(req); });
+#endif
 
   // 设置 RGB：JSON，三个维度可任意组合（都可选）：
   //   {"c":索引}        走预设（0-4，越界 400）
   //   {"r":n,"g":n,"b":n}  任意颜色（0-255，越界钳制）
   //   {"bright":0-100}  亮度百分比（越界钳制，实时折算输出）
+#if ENABLE_LED
   _server.on("/api/rgb", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleRgbPost(req, json); });
+#endif
 
   // ---- 模组调试（AT 命令） ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
@@ -639,20 +638,28 @@ void WebPanel::setupRoutes() {
 
   // ---- 屏幕开关 / 亮度 ----
   // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
+#if ENABLE_LCD
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) { handleDispGet(req); });
+#endif
 
   // 屏幕实时预览：抓取帧缓冲编码 JPEG 返回（image/jpeg，方案 B）；前端 <img> 轮询实现 ~1-2fps
+#if ENABLE_LCD
   _server.on("/api/screen", HTTP_GET, [this](AsyncWebServerRequest *req) { handleScreenGet(req); });
+#endif
 
   // 设置屏幕：JSON {"on":bool?,"bright":0-100?}，两个字段都可选
   // （只传其一即可；bright 越界自动钳制）；返回最新状态
+#if ENABLE_LCD
   _server.on("/api/disp", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleDispPost(req, json); });
+#endif
 
   // 远程按键注入：POST {"key":"up"|"down"|"ok"|"back"，可选 "event":"click"|"long"|"repeat"}
   // 仅 click 默认可不传；事件经队列交给主循环 UI 状态机（与物理按键同路径）
+#if ENABLE_LCD
   _server.on("/api/key", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleKeyPost(req, json); });
+#endif
 
   // ---- 系统 ----
   // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
@@ -864,20 +871,26 @@ void WebPanel::setupRoutes() {
 
   // 总开关：JSON {"enabled":true|false} —— 只翻转启用位，不动其余配置
   // （停用时销毁客户端停止连接，已保存的连接/主题配置保留）
+#if ENABLE_MQTT
   _server.on("/api/mqtt/enabled", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleMqttEnabled(req, json); });
+#endif
 
   // 测试发布：只发布一条测试事件并立即返回（{"ok":true}），真正的发布由
   // MqttService::tick 在 loop 任务完成（与事件同一条链路）。
   // 这里绝不能同步发布：本回调运行于 async_tcp 任务，其栈不足以支撑 MQTT 握手。
+#if ENABLE_MQTT
   _server.on("/api/mqtt/test", HTTP_POST, [this](AsyncWebServerRequest *req) { handleMqttTest(req); });
+#endif
 
   // ---- 以下是父路径 /api/mqtt，必须排在上述子路径之后 ----
   // 配置读取：{"ok":true,"enabled":bool,"configured":bool,"scheme":"mqtt|mqtts|ws|wss",
   //   "server":"host[:port]","user":"..","hasPass":bool,"clientId":"..","topicPrefix":"..",
   //   "keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n}
   // 密码不回显（hasPass 表示是否已保存），避免泄露
+#if ENABLE_MQTT
   _server.on("/api/mqtt", HTTP_GET, [this](AsyncWebServerRequest *req) { handleMqttGet(req); });
+#endif
 
   // 配置保存：JSON {"scheme":"..","server":"host[:port]","user":"..","pass":"..",
   //   "clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,
@@ -885,8 +898,10 @@ void WebPanel::setupRoutes() {
   // pass 为空串表示保持已保存的密码不变（表单不回显）；enabled 为 MQTT
   // 总开关（缺省 false）；notifyTypes 为位掩码（bit0=启动 bit1=SIM bit2=短信
   // bit3=上线 bit16=日志）；保存后立即重建客户端生效。
+#if ENABLE_MQTT
   _server.on("/api/mqtt", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleMqttPost(req, json); });
+#endif
 
   // ================= 推送通道 =================
   // 顺序：/api/push/<子路径> 先注册，/api/push（父路径）放最后
@@ -1311,15 +1326,20 @@ void WebPanel::handleAuthPost(AsyncWebServerRequest *req, JsonVariant &json) {
 }
 
 // ---- RGB ----
+#if ENABLE_LED
 void WebPanel::handleLedNext(AsyncWebServerRequest *req) {
   _led.next();
   sendJson(req, stateRgbJson(_led));
 }
+#endif
 
+#if ENABLE_LED
 void WebPanel::handleRgbGet(AsyncWebServerRequest *req) {
   sendJson(req, stateRgbJson(_led));
 }
+#endif
 
+#if ENABLE_LED
 void WebPanel::handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "请求格式错误");
@@ -1351,6 +1371,7 @@ void WebPanel::handleRgbPost(AsyncWebServerRequest *req, JsonVariant &json) {
   }
   sendJson(req, stateRgbJson(_led));
 }
+#endif
 
 // ---- 模组调试（AT 命令） ----
 void WebPanel::handleAtSend(AsyncWebServerRequest *req) {
@@ -1473,12 +1494,15 @@ void WebPanel::handleLogClear(AsyncWebServerRequest *req) {
 }
 
 // ---- 屏幕 ----
+#if ENABLE_LCD
 void WebPanel::handleDispGet(AsyncWebServerRequest *req) {
   sendJson(req, stateDispJson(_display, _ui));
 }
+#endif
 
 // 屏幕实时预览（方案 B）：抓取当前帧缓冲编码为 JPEG 直接返回
 // PSRAM 缓冲区由 shared_ptr（free 删除器）持有，流式发送完成后随响应对象析构释放
+#if ENABLE_LCD
 void WebPanel::handleScreenGet(AsyncWebServerRequest *req) {
   _display.requestScreenPreview();   // 标记“有人正在看预览”，驱动主循环按需生成 JPEG 缓存
   size_t len = 0;
@@ -1503,7 +1527,9 @@ void WebPanel::handleScreenGet(AsyncWebServerRequest *req) {
   res->addHeader("Cache-Control", "no-store");  // 实时画面，禁用缓存
   req->send(res);
 }
+#endif
 
+#if ENABLE_LCD
 void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "请求格式错误");
@@ -1527,8 +1553,10 @@ void WebPanel::handleDispPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (jsonInt(json["idleSec"], v)) _ui.setIdleSec((uint16_t)v);
   sendJson(req, stateDispJson(_display, _ui));
 }
+#endif
 
 // 远程按键注入：把 Web 端的 UP/DOWN/OK/BACK 当作物理按键驱动设备 UI
+#if ENABLE_LCD
 void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>() || !json["key"].is<const char *>()) {
     sendErr(req, 400, "缺少按键参数");
@@ -1550,6 +1578,7 @@ void WebPanel::handleKeyPost(AsyncWebServerRequest *req, JsonVariant &json) {
   KeyInject::instance().push(key, ev);
   sendOk(req);
 }
+#endif
 
 void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {
   JsonDocument doc;
@@ -2371,20 +2400,14 @@ void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
 }
 
 // ---- MQTT ----
+#if ENABLE_MQTT
 void WebPanel::handleMqttGet(AsyncWebServerRequest *req) {
-#if !ENABLE_MQTT
-  mqttCompiledOff(req);
-  return;
-#endif
   sendJson(req, _mqtt.configJson());
 }
-
-void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
-#if !ENABLE_MQTT
-  (void)json;
-  mqttCompiledOff(req);
-  return;
 #endif
+
+#if ENABLE_MQTT
+void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
   bool on = false;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
     sendErr(req, 400, "请求格式错误");
@@ -2396,12 +2419,10 @@ void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) 
   }
   sendJson(req, _mqtt.configJson());
 }
-
-void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
-#if !ENABLE_MQTT
-  mqttCompiledOff(req);
-  return;
 #endif
+
+#if ENABLE_MQTT
+void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
   if (!_mqtt.enabled()) {
     sendErr(req, 400, "MQTT 未启用，请先打开总开关");
     return;
@@ -2423,13 +2444,10 @@ void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
   doc["queued"] = true;
   sendJsonDoc(req, doc);
 }
-
-void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
-#if !ENABLE_MQTT
-  (void)json;
-  mqttCompiledOff(req);
-  return;
 #endif
+
+#if ENABLE_MQTT
+void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "请求格式错误");
     return;
@@ -2457,6 +2475,7 @@ void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
   }
   sendJson(req, _mqtt.configJson());
 }
+#endif
 
 // ---- 推送通道 ----
 void WebPanel::handlePushGet(AsyncWebServerRequest *req) {
@@ -2688,18 +2707,26 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonObject oAuth  = doc["auth"].to<JsonObject>();
   JsonObject oEmail = doc["email"].to<JsonObject>();
   JsonObject oSms   = doc["sms"].to<JsonObject>();
+#if ENABLE_MQTT
   JsonObject oMqtt  = doc["mqtt"].to<JsonObject>();
+#endif
   JsonObject oPush  = doc["push"].to<JsonObject>();
   JsonObject oBlack = doc["blacklist"].to<JsonObject>();
+#if ENABLE_LCD
   JsonObject oDisp  = doc["disp"].to<JsonObject>();
+#endif
   _wifi.exportAllTo(oWifi);
   _auth.exportTo(oAuth);
   _email.exportTo(oEmail);
   _sms.exportTo(oSms);
+#if ENABLE_MQTT
   _mqtt.exportTo(oMqtt);
+#endif
   _push.exportTo(oPush);
   _blacklist.exportTo(oBlack);
+#if ENABLE_LCD
   _ui.exportTo(oDisp);
+#endif
   JsonObject oSched = doc["sched"].to<JsonObject>();
   SystemService::instance().exportTo(oSched);
   JsonObject oTz = doc["timezone"].to<JsonObject>();
@@ -2793,6 +2820,7 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+#if ENABLE_MQTT
   if (doc["mqtt"].is<JsonObject>()) {
     if (!_mqtt.importFrom(doc["mqtt"].as<JsonObject>())) {
       sendErr(req, 500, "MQTT 配置写入失败");
@@ -2800,6 +2828,7 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+#endif
   if (doc["push"].is<JsonObject>()) {
     if (!_push.importFrom(doc["push"].as<JsonObject>())) {
       sendErr(req, 500, "推送配置写入失败");
@@ -2814,6 +2843,7 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+#if ENABLE_LCD
   if (doc["disp"].is<JsonObject>()) {
     if (!_ui.importFrom(doc["disp"].as<JsonObject>())) {
       sendErr(req, 500, "屏幕设置写入失败");
@@ -2821,6 +2851,7 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+#endif
   if (doc["sched"].is<JsonObject>()) {
     if (!SystemService::instance().importFrom(doc["sched"].as<JsonObject>())) {
       sendErr(req, 500, "定时重启配置写入失败");

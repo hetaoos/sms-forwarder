@@ -1,5 +1,9 @@
 #include "hal/RgbLed.h"
 
+#include "app/Config.h"  // ENABLE_LED（编译期开关，默认 1）
+
+#if ENABLE_LED
+
 #include <Arduino.h>
 
 // 预设颜色表：索引 0=OFF, 1=RED, 2=GREEN, 3=BLUE, 4=WHITE
@@ -51,3 +55,5 @@ void RgbLed::apply() {
   uint8_t b = (uint8_t)((uint16_t)_cur.b * _bright / 100);
   rgbLedWrite(RGB_BUILTIN, r, g, b);
 }
+
+#endif  // ENABLE_LED

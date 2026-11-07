@@ -116,6 +116,8 @@ struct SmsPreview {
 // 同时是「屏幕设置」的归属通信模组（与邮件 / MQTT / 推送 / 黑名单同套路）：
 // 背光亮度、无操作自动熄屏、无操作自动退回状态页三项自身持有并落 NVS，
 // 对外提供读写接口与导入导出，供 Web「屏幕显示」页直接操作。
+#if ENABLE_LCD
+
 class UIMenu {
  public:
   // 菜单槽位上限：与 UI 层 ui::Ui 的 kMaxMenuRows 保持一致（超出部分由 UI 滚动查看）
@@ -362,3 +364,53 @@ class UIMenu {
   AccUserFn _accUserFn;           // 未注入时用户名显示「-」
   AccResetFn _accResetFn;         // 未注入时重置项无响应
 };
+
+#else  // !ENABLE_LCD —— 编译期关闭 LCD：菜单状态机（含 4 键导航）整体不编译，
+       // 改由头文件空实现替身顶住装配代码；物理按键因此无响应（无菜单可驱动）
+
+// 纯 inline 的空实现替身：覆盖所有调用点，全部无状态、无副作用。
+// 与 ENABLE_MQTT 同套路：UIMenu.cpp 全实现不编译，这里顶住装配代码。
+// 注意：按键事件仍可能被 Keypad 采集，但 handle() 为空——关闭 LCD 后菜单与按键
+// 整体失效，这正是「按键、LCD 菜单需要 LCD 启用才启用」的语义。
+class UIMenu {
+ public:
+  explicit UIMenu(Display &) {}
+
+  // 装配期注入（App::init 无条件调用）
+  void begin() {}
+  void setStatusProvider(std::function<void(StatusInfo &)>) {}
+  using SmsListFn = std::function<int(SmsPreview *, int, int &)>;
+  void setSmsListProvider(SmsListFn) {}
+  using RgbFn = std::function<void(uint8_t)>;
+  void setRgbControl(RgbFn) {}
+  using OtaCheckFn = std::function<void()>;
+  using OtaUpgradeFn = std::function<void(const String &)>;
+  using SysFn = std::function<void()>;
+  void setOtaCheckFn(OtaCheckFn) {}
+  void setOtaUpgradeFn(OtaUpgradeFn) {}
+  void setRestartFn(SysFn) {}
+  void setResetFn(SysFn) {}
+  using AccUserFn = std::function<String()>;
+  using AccResetFn = std::function<String()>;
+  void setAccountUserFn(AccUserFn) {}
+  void setAccountResetFn(AccResetFn) {}
+
+  // 短信到达与渲染调度（App::tick 无条件调用）
+  void showSms(const SmsPreview &) {}
+  void render() {}
+  void renderStatus(const StatusInfo &) {}
+  bool inPopup() const { return false; }
+  void renderPopup() {}
+  bool inView() const { return false; }
+  void renderView() {}
+  bool inStatusMode() const { return false; }
+  bool dirty() const { return false; }
+
+  void tick() {}
+
+  // 屏幕设置（stateDispJson / 配置回显）
+  uint16_t autoOffSec() const { return 0; }
+  uint16_t idleSec() const { return 0; }
+};
+
+#endif  // ENABLE_LCD
