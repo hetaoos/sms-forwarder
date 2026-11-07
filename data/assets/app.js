@@ -1870,18 +1870,30 @@ function pageSms() {
     },
     showDetail(m) { this.detail = m; },
 
-    // 把正文里的网址识别成可点击链接（新窗口打开）；先转义防 XSS。
-    // 匹配范围：http(s):// 完整网址、www. 开头、以及裸域名（example.com / sub.example.co.uk 等，
-    // 末段为字母 TLD，故不误伤纯数字 1.2.3、IP 192.168.0.1；结尾标点自动留在链接外）。
-    linkify(text) {
+    // 渲染短信正文：先转义防 XSS，再（1）识别网址为可点击链接（新窗口打开），
+    // （2）把落库时已解析出的验证码（code）精确高亮。二者用单次正则合并处理，
+    // 避免 URL 与验证码互相破坏（URL 优先匹配，验证码不会误入 href 内部）。
+    // 匹配范围：http(s):// 完整网址、www. 开头、以及裸域名（example.com 等，末段字母 TLD
+    // 故不误伤纯数字 1.2.3 / IP 192.168.0.1）；结尾标点自动留在链接外。
+    renderSms(text, code) {
       if (!text) return '';
       const esc = s => s.replace(/[&<>"']/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
       const safe = esc(text);
-      const re = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}(?:\/[^\s<>"'()]*)?)/gi;
-      return safe.replace(re, (m) => {
-        const href = /^https?:\/\//i.test(m) ? m : 'http://' + m;
-        return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + m + '</a>';
+      let re;
+      if (code && code.length) {
+        // 把验证码转义为正则字面量，作为“或”分支加入匹配（仅当正文确实包含时才会命中）
+        const codeEsc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        re = new RegExp('(https?:\\/\\/[^\\s<>"\']+|www\\.[^\\s<>"\']+|[a-z0-9]+(?:[.-][a-z0-9]+)*\\.[a-z]{2,}(?:\\/[^\\s<>"\'()]*)?)|(' + codeEsc + ')', 'gi');
+      } else {
+        re = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}(?:\/[^\s<>"'()]*)?)/gi;
+      }
+      return safe.replace(re, (m, url, cd) => {
+        if (url) {
+          const href = /^https?:\/\//i.test(url) ? url : 'http://' + url;
+          return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+        }
+        return '<span class="sms-code">' + cd + '</span>';
       });
     },
 

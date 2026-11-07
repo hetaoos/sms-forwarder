@@ -76,8 +76,9 @@ uint32_t SmsStore::add(const SmsMessage &msg) {
     _log.addf(LogLevel::kError, "sms", "短信写入失败：无法创建文件 #%u", (unsigned)id);
     return 0;
   }
-  f.printf("%u,%s,%s,%u,%d\r\n\r\n", (unsigned)id, msg.incoming ? "in" : "out",
-           msg.phone.c_str(), (unsigned)msg.ts, (int)msg.modem);
+  f.printf("%u,%s,%s,%u,%d,%s\r\n\r\n", (unsigned)id, msg.incoming ? "in" : "out",
+           msg.phone.c_str(), (unsigned)msg.ts, (int)msg.modem,
+           msg.code.c_str());  // 第 6 字段：解析出的验证码（无则为空）
   f.print(msg.content);
   f.close();
   _maxId = id;
@@ -342,13 +343,15 @@ bool SmsStore::readHeader(uint32_t id, SmsMessage &out) {
   int p3 = header.indexOf(',', p2 + 1);
   if (p3 < 0) return false;
   int p4 = header.indexOf(',', p3 + 1);
+  int p5 = p4 < 0 ? -1 : header.indexOf(',', p4 + 1);  // 第 6 字段：验证码
 
   out = SmsMessage();
   out.id = id;
   out.incoming = header.substring(p1 + 1, p2) == "in";
   out.phone = header.substring(p2 + 1, p3);
   out.ts = (uint32_t)header.substring(p3 + 1, p4 < 0 ? header.length() : p4).toInt();
-  out.modem = p4 < 0 ? -1 : (int8_t)header.substring(p4 + 1).toInt();
+  out.modem = p4 < 0 ? -1 : (int8_t)header.substring(p4 + 1, p5 < 0 ? header.length() : p5).toInt();
+  out.code = p5 < 0 ? String() : header.substring(p5 + 1);
   return true;
 }
 
@@ -369,13 +372,15 @@ bool SmsStore::readFull(uint32_t id, SmsMessage &out) {
   int p3 = header.indexOf(',', p2 + 1);
   if (p3 < 0) return false;
   int p4 = header.indexOf(',', p3 + 1);
+  int p5 = p4 < 0 ? -1 : header.indexOf(',', p4 + 1);  // 第 6 字段：验证码
 
   out = SmsMessage();
   out.id = id;
   out.incoming = header.substring(p1 + 1, p2) == "in";
   out.phone = header.substring(p2 + 1, p3);
   out.ts = (uint32_t)header.substring(p3 + 1, p4 < 0 ? header.length() : p4).toInt();
-  out.modem = p4 < 0 ? -1 : (int8_t)header.substring(p4 + 1).toInt();
+  out.modem = p4 < 0 ? -1 : (int8_t)header.substring(p4 + 1, p5 < 0 ? header.length() : p5).toInt();
+  out.code = p5 < 0 ? String() : header.substring(p5 + 1);
   // 去掉正文前的空行（readString 从当前位置继续，空行只剩一个 \r\n）
   if (content.startsWith("\n")) content = content.substring(1);
   else if (content.startsWith("\r\n")) content = content.substring(2);

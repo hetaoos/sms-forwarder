@@ -609,6 +609,40 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.15 已完成：验证码随短信记录持久化 + 前端按结果高亮（2026-11-07）
+
+**状态**：代码完成，默认 + `API_TOKEN_REQUIRE_EXCHANGE=1` 编译均 SUCCESS、`buildfs` SUCCESS、
+`node --check` 通过，**未刷机实测**、**未提交 git**；改过 `data/`，刷机时需 `uploadfs`。
+
+**① 后端：验证码存进记录，不再每次识别**
+- `SmsMessage`（`src/sms/SmsRecord.h`）新增 `String code` 字段。
+- `SmsStore` 落库时把 `code` 作为首行 CSV 的**第 6 字段**写入（`id,in/out,phone,ts,modem,code`），
+  `readHeader`/`readFull` 解析该字段；**旧 5 字段记录向后兼容**（`code` 解析为空）。
+- `EmailService::parseSmsMeta` 由 private 提升为 public；`SmsService` 在收/发短信落库的三处入口
+  （收到、不完整长短信、发出）调用新增的文件内辅助 `attachVerifyCode()` 一次性解析填入 `code`。
+- 列表接口（`WebPanel`）与 SSE `sms` 事件（`SmsService::latestJson`）直接下发已存的 `m.code`，**请求时不再解析**。
+
+**② 前端：按返回的 `code` 精确高亮**
+- `pageSms` 的 `linkify` 升级为 `renderSms(text, code)`：先转义防 XSS，再用**单次正则合并**
+  处理「URL 链接」与「验证码高亮」（URL 优先匹配，验证码不会误入 `href` 内部）。
+- 详情正文 `x-html="renderSms(detail.content, detail.code)"`；列表预览同步改为
+  `x-html="renderSms(preview(msg.content), msg.code)"`；新增 `.sms-code` 高亮样式。
+
+**关键文件**：`src/sms/SmsRecord.h`、`src/sms/SmsStore.cpp`、`src/sms/SmsService.cpp`、
+`src/net/EmailService.h`、`src/net/WebPanel.cpp`、`data/assets/app.js`、`data/pages/sms.html`、`data/assets/app.css`。
+
+**验证结果（已做）**：两种编译 SUCCESS；`buildfs` SUCCESS（`app.js.gz`/`app.css.gz`/`sms.html.gz`）；
+`node --check` 通过；`read_lints` 0 错误。
+
+**验收（待设备验证）**：① 新短信落库后，详情与列表预览中验证码高亮、且每次刷新列表/详情不再重新识别；
+② 含验证码的正文配 URL 时链接仍可点、验证码不被破坏；③ 旧固件已存记录（无 `code`）正常显示、不报错；
+④ 回归：邮件通知、短信收发、SSE 增量并入不受影响。
+
+**备注**：旧记录（升级前写入）不会自动回填 `code`（格式无该字段），仅新短信高亮；如需为存量记录一次性回填，
+可另开一个小任务（在 `SmsStore::begin()` 加载时扫描重算并写回）。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -956,4 +990,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 实现 API 访问令牌传输保护（§2.12，按 §3.2 全部采纳）：NVS 只存 verifier（v1 明文自动迁移）、新增 `/api/token/challenge`+`/api/token/exchange` 换短时效票据、`authorized()` 改 ticket-only（raw Bearer 兼容默认保留）、`GET /api/token` 脱敏；README 与本文 §3.2 / §2.12 / §4 同步 | 代码完成，两种编译 + `buildfs` SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | 2026-11-07 | 完成 SSE 补全（§2.13）：日志页/发件箱页接入实时推送（日志增量 `log` 事件、发件箱变更脏信号 `outbox` 事件），移除两页 5s 轮询（SSE 离线时回退）；`Outbox` 加 `revision()`/`bumpRev()` | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | 2026-11-07 | 完成短信列表 SSE 增量并入（§2.14）：`latestJson` 补 `dir`/`content`，`pageSms` 首页未筛选时把新短信纯前端前插（免整页重拉），多条/筛选/翻页态回退整页对账 | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
+| 2026-11-07 | 完成验证码随短信记录持久化 + 前端按结果高亮（§2.15）：`SmsMessage` 加 `code` 字段、`SmsStore` 落库写第 6 CSV 字段并兼容旧记录、`SmsService` 收/发落库时一次性解析填入（复用 `EmailService::parseSmsMeta`）、列表/SSE 直接下发；前端 `renderSms` 按 `code` 精确高亮 | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

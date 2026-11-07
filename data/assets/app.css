@@ -333,6 +333,8 @@ input.mono{font-family:var(--mono)}
 .detail-modal{max-width:560px}
 /* 详情正文里的网址：可点击、新窗口打开 */
 .detail-modal .v a{color:var(--primary);text-decoration:underline;word-break:break-all}
+/* 验证码高亮（详情与列表预览共用）：落库时已解析，按返回的 code 精确高亮 */
+.sms-code{background:#fff2cc;color:#b35900;font-weight:700;padding:1px 5px;border-radius:4px;letter-spacing:.5px}
 .send-modal{max-width:430px}
 .send-modal .field{margin-bottom:14px}
 .send-modal .field label{display:flex;align-items:center}

@@ -214,6 +214,11 @@ class EmailService {
   // 超出时只发纯文本兜底。
   static constexpr int kMaxHtmlChars = 6000;
 
+  // 短信元数据解析（移植自参考实现）：从正文解析发送者名称与验证码。
+  // 邮件通知与短信落库（解析验证码）共用；verifyCode 空表示未识别到。
+  static void parseSmsMeta(const String &message, String &senderName,
+                           String &verifyCode);
+
  private:
   // 队列单元的事件类型
   enum Kind : uint8_t {
@@ -334,13 +339,6 @@ class EmailService {
   // millis() 时长 -> 中文可读串（移植自参考实现 MsgContext::formatUptime）
   static String formatUptime(uint32_t ms);
 
-  // ---------------- 短信元数据解析（移植自参考实现）----------------
-  // 从短信正文解析发送者名称与验证码：
-  //   发送者名称：扫描全部 【...】/[[...]]/[...]，优先取最靠近开头或结尾的括号内容
-  //   验证码：优先取关键词附近的 4~6 位数字串，无关键词时取首个 4~6 位数字串
-  // （关键词匹配、边界判定等辅助函数为 .cpp 内部自由函数，不进头文件）
-  static void parseSmsMeta(const String &message, String &senderName,
-                           String &verifyCode);
 
   WifiManager *_wifi = nullptr;  // WiFi 管理器（连接状态 / IP）
   SmsService *_sms = nullptr;    // 短信服务（通信模组与 SIM 状态）

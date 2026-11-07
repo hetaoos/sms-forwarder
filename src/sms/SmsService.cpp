@@ -1,5 +1,14 @@
 #include "sms/SmsService.h"
 
+#include "net/EmailService.h"  // parseSmsMeta：落库时解析短信验证码（一次写入，请求时不再识别）
+
+// 落库前解析验证码：复用 EmailService 的短信元数据解析，写入记录，
+// 避免列表 / 详情 / SSE 每次请求都重新识别。定义于文件顶部，供下方各落库点使用。
+static void attachVerifyCode(SmsMessage &m) {
+  String senderName;  // 占位：此处仅取验证码
+  EmailService::parseSmsMeta(m.content, senderName, m.code);
+}
+
 #include "app/TaskWatchdog.h"  // 发送 / 查询常驻任务注册 TWDT 并喂狗
 #include "log/LogStore.h"
 
@@ -761,6 +770,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
   msg.incoming = false;
   msg.phone = num;
   msg.content = text;
+  attachVerifyCode(msg);
   msg.ts = nowTs();  // 已同步为纪元秒，未同步为开机秒数（前端按 >=1.6e9 区分）
   msg.modem = port;
   bool storedOk = false;
@@ -2142,6 +2152,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
   msg.incoming = true;
   msg.phone = sender;
   msg.content = fullText;
+  attachVerifyCode(msg);
   msg.ts = epoch ? epoch : nowTs();
   msg.modem = port;
   uint32_t id = _store.add(msg);
@@ -2626,6 +2637,7 @@ bool SmsService::queryPort(uint8_t port) {
     msg.incoming = true;
     msg.phone = h.sender;
     msg.content = content;
+    attachVerifyCode(msg);
     msg.ts = epoch ? epoch : nowTs();
     msg.modem = port;
     uint32_t id = _store.add(msg);
@@ -3008,6 +3020,7 @@ String SmsService::latestJson() {
     doc["content"] = m.content;                // 含正文，SSE 增量并入时无需再回拉
     doc["ts"] = m.ts;
     doc["modem"] = m.modem;
+    doc["code"] = m.code;                       // 落库时已解析，直接下发
   }
   String out;
   serializeJson(doc, out);

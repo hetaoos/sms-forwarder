@@ -1824,6 +1824,7 @@ void WebPanel::handleSmsList(AsyncWebServerRequest *req) {
     o["content"] = m.content;
     o["ts"] = m.ts;
     o["modem"] = m.modem;
+    o["code"] = m.code;  // 落库时已解析的验证码，供前端高亮
   }
   sendJsonDoc(req, doc);
 }
