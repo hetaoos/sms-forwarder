@@ -333,6 +333,8 @@ function goLogin() {
  * 所有页面组件只读 Alpine.store('live')，不再自行轮询状态接口；
  * REST 接口原样保留给第三方客户端使用。 */
 let es = null;
+// SSE 事件 -> 当前打开页面的回调槽位（页面 init 时注册、cleanup 时清空）
+let _logSink = null, _outboxSink = null;
 let pollTimer = null;
 
 // 全局实时状态仓：SSE 事件写入，各页面组件只读绑定
@@ -451,6 +453,9 @@ function connectSSE() {
   on('sms', d => { live.sms = d; });
   on('smsports', d => { live.smsports = d.modems || []; });
   on('smsstats', d => { live.smsstats = d; });
+  // 运行日志增量（仿 at）与发件箱变更脏信号：转交给当前打开页的槽位
+  on('log', d => { if (_logSink) _logSink(d); });
+  on('outbox', () => { if (_outboxSink) _outboxSink(); });
   es.onopen = () => {
     setConn('online');
     restSnapshot();   // 兜底快照：补齐建连前数据与断线期记录
@@ -2787,12 +2792,12 @@ function pagePush() {
   };
 }
 
-/* ---------- 运行日志（PSRAM 环形缓冲：分页 + 级别/关键字过滤 + 自动刷新） ----------
- * 后端无 SSE 事件源（日志为低频事件，且 diff 基线意义不大），采用 5s 轮询；
- * 轮询 GET 不走 apiOp（失败不弹 toast，避免离线时刷屏）。 */
+/* ---------- 运行日志（PSRAM 环形缓冲：分页 + 级别/关键字过滤 + 实时追加） ----------
+ * 后端经 SSE `log` 事件增量推送新记录（仿 at 历史），前端 applyTail 并入；
+ * SSE 不可用时回退 5s 轮询（GET 不走 apiOp，失败不弹 toast，避免离线刷屏）。 */
 /* ---------- 发件箱（持久化不丢消息转发队列）----------
  * 数据来自 GET /api/outbox；每条记录含各通道投递回执。
- * 5s 轮询整页重拉，页面离开时由 onCleanup 清理定时器。 */
+ * 后端经 SSE `outbox` 事件推「脏信号」即时刷新；SSE 不可用时回退 5s 轮询。 */
 function pageOutbox() {
   const CH = {
     pending:   ['待投',      '#8a8f98'],
@@ -2813,11 +2818,15 @@ function pageOutbox() {
     init() {
       this.reload();
       this.loadPorts();
+      // SSE 驱动：收到 outbox 脏信号即刷新当前视图；SSE 不可用时（conn=offline）回退 5s 轮询
+      _outboxSink = () => { if (this.auto && !document.hidden) this.reload(true); };
       this.timer = setInterval(() => {
-        if (this.auto && !document.hidden && !this.loading) this.reload(true);
+        if (this.auto && !document.hidden && Alpine.store('live').conn === 'offline')
+          this.reload(true);
       }, 5000);
       onCleanup(() => {
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        _outboxSink = null;
       });
     },
 
@@ -2953,17 +2962,41 @@ function pageLogs() {
     init() {
       this.loadStats();
       this.reload();
-      // 5s 轮询走增量（tick），不再整页重拉：后者会重建列表导致闪烁与滚动跳动。
-      // 后台标签页暂停（document.hidden），切页由 onCleanup 清理
+      // SSE 驱动：收到 log 事件即增量追加（applyTail）；SSE 不可用时（conn=offline）回退 5s 轮询
+      _logSink = (d) => this.applyTail(d.logs, d.total);
       this.timer = setInterval(() => {
-        if (this.auto && !document.hidden && !this.loading) this.tick();
+        if (this.auto && !document.hidden && Alpine.store('live').conn === 'offline')
+          this.tick();
       }, 5000);
       onCleanup(() => {
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        _logSink = null;
       });
     },
     // 增量拉取：只取 ID 大于 lastId 的新记录并插入列表顶部（最新在前），
     // 已在看其它页时不改动可见列表，仅同步计数与基线
+    // 增量并入新日志（REST 拉取与 SSE 事件共用）：got 为升序新记录数组，total 为匹配总数
+    applyTail(got, total) {
+      if (!this.lastId) return;   // 还没基线（REST 尚未拉取），等下次 reload 补齐
+      if (typeof total === 'number' && this.level === '' && !this.q) {
+        this.total = total;                       // 仅在无过滤时同步全局条数
+        if (this.stats.max) this.stats.total = total;
+      }
+      // 只追加比当前基线更新的；SSE 可能重发已展示记录（连接/REST 时序窗口），由 id 去重
+      const fresh = (got || []).filter(e => e.id > this.lastId);
+      if (!fresh.length) return;
+      const box = this.$refs.box;
+      const prevTop = box ? box.scrollTop : 0;
+      const prevH = box ? box.scrollHeight : 0;
+      if (this.page === 1) {
+        this.logs = fresh.concat(this.logs);                 // fresh 升序，新记录在前
+        if (this.logs.length > this.pageSize) this.logs = this.logs.slice(0, this.pageSize);
+      }
+      this.lastId = fresh[fresh.length - 1].id;
+      this.$nextTick(() => {
+        if (box && prevTop > 0) box.scrollTop = prevTop + (box.scrollHeight - prevH);
+      });
+    },
     async tick() {
       // 还没有基线（视图为空）：静默整页重拉一次拿到基线，后续即走增量
       if (!this.lastId) { this.reload(true); return; }
@@ -2975,25 +3008,9 @@ function pageLogs() {
         const r = await apiFetch('/api/logs?' + q.toString());
         if (!r.ok) return;
         const j = await r.json();
-        this.total = j.total || 0;
-        if (this.stats.max) this.stats.total = this.total;   // 同步顶部「当前条数」
-        const got = j.logs || [];
-        if (!got.length) return;
-        // 插入前记录滚动位置：顶部追加会让下方内容下移，需补偿，避免阅读时跳动
-        const box = this.$refs.box;
-        const prevTop = box ? box.scrollTop : 0;
-        const prevH = box ? box.scrollHeight : 0;
-        if (this.page === 1) {
-          this.logs = got.concat(this.logs);                 // got 升序，新记录在前
-          if (this.logs.length > this.pageSize) this.logs = this.logs.slice(0, this.pageSize);
-        }
-        // 基线推进：取回的条数已满 limit 时只推进到末尾一条，下次继续补齐；
-        // 未满说明后面已无匹配记录，可直接推进到服务端最新 ID
-        this.lastId = got[got.length - 1].id;
-        if (got.length < limit && j.last) this.lastId = j.last;
-        this.$nextTick(() => {
-          if (box && prevTop > 0) box.scrollTop = prevTop + (box.scrollHeight - prevH);
-        });
+        this.applyTail(j.logs, j.total);
+        // 基线推进：取回的条数未满 limit 且服务端给出最新 ID 时，直接推进到最新，避免漏推
+        if (j.last) this.lastId = j.last;
       } catch (e) {}
     },
     // silent=true：不切 loading 态（轮询兜底用，避免空列表时「加载中…」闪烁）

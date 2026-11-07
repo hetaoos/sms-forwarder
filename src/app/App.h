@@ -57,18 +57,19 @@ class App {
   SerialBridge _bridge;     // 双串口 AT 透传桥
   SmsService _sms{_bridge}; // 短信服务（通信模组收发 + 文件存储）
   TimeSync _time;           // 时间同步（NTP 为主，SIM NITZ 兜底；依赖 _bridge/_sms）
-  // SSE 状态推送总线（需 _ui 以输出屏幕设置，故排在 _ui 之后）
-  StatusBus _events{_wifi, _bridge, _led, _display, _ui, _sms, _time};
-  AdminStore _auth;         // 管理账号存储（NVS，JSON）
-  EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
-  MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
-  PushService _push;        // 统一 webhook 推送通道（广播 / 故障转移策略）
-  BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
   // 持久化发件箱：短信先落盘再逐通道投递，重启续投（须在 _panel 之前声明）
   Outbox _outbox;
   // 设备日志环形存储（PSRAM，Web 分页查询 + 串口镜像）；
   // 指向全局唯一实例（devLog()），其余通信模组取的也是同一份
   LogStore &_log = devLog();
+  // SSE 状态推送总线（需 _ui 以输出屏幕设置，且引用 _log/_outbox 推送日志/发件箱事件，
+  // 故排在这二者之后、_panel 之前）
+  StatusBus _events{_wifi, _bridge, _led, _display, _ui, _sms, _time, _log, _outbox};
+  AdminStore _auth;         // 管理账号存储（NVS，JSON）
+  EmailService _email;      // SMTP 邮件通知（模板 + 通知类型 + 发送队列）
+  MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
+  PushService _push;        // 统一 webhook 推送通道（广播 / 故障转移策略）
+  BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
   // HTTP 控制台（依赖上述通信模组）；_ui 用于读写屏幕设置（亮度 / 自动熄屏 / 自动返回）
   WebPanel _panel{_bridge, _led, _wifi, _display, _ui, _auth, _events, _sms, _time,
                   _email, _log, _mqtt, _push, _blacklist, _outbox};

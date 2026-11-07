@@ -17,9 +17,9 @@ LogStore &_log = devLog();
 // wifi/bridge/led/display/ui/sms/time：各通信模组引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
                      Display &display, UIMenu &ui, SmsService &sms,
-                     TimeSync &time)
+                     TimeSync &time, LogStore &log, Outbox &outbox)
     : _wifi(wifi), _bridge(bridge), _led(led), _display(display), _ui(ui),
-      _sms(sms), _time(time) {}
+      _sms(sms), _time(time), _log(log), _outbox(outbox) {}
 
 // 注册 SSE handler；onConnect/onDisconnect 用于维护客户端列表与上限
 void StatusBus::begin(AsyncWebServer &server) {
@@ -37,6 +37,8 @@ void StatusBus::begin(AsyncWebServer &server) {
 void StatusBus::tick() {
   if (_clients.empty()) {
     _baseline = false;
+    _lastLogId = 0;        // 无客户端时放弃日志基线，下次连接重新播种
+    _lastOutboxRev = 0;    // 发件箱修订号同理
     return;
   }
   uint32_t now = millis();
@@ -117,6 +119,42 @@ void StatusBus::tick() {
     _lastSmsStats = js;
   }
 
+  // ---- 运行日志：增量推送新记录（仿 at 历史）----
+  // 与前端 logs 页增量拉取同口径：只发 lastId 之后、本函数不加过滤（前端按自身
+  // level/q 过滤），total 为全局条数（前端无过滤时才同步计数）。
+  if (_log.size() && _log.lastId() != _lastLogId) {
+    std::vector<LogStore::Entry> inc;
+    int total = 0;
+    _log.tail(_lastLogId, 200, -1, "", inc, total);
+    if (!inc.empty()) {
+      JsonDocument doc;
+      doc["total"] = total;
+      JsonArray a = doc["logs"].to<JsonArray>();
+      for (const auto &e : inc) {
+        JsonObject o = a.add<JsonObject>();
+        o["id"] = e.id;
+        o["ts"] = e.ts;
+        o["level"] = e.level;
+        o["tag"] = e.tag;
+        o["msg"] = e.msg;
+      }
+      String out;
+      serializeJson(doc, out);
+      publish("log", out);
+    }
+    // 推进基线：本批已满上限则只到末条（避免漏推），否则直接到最新
+    _lastLogId = (inc.size() >= 200) ? inc.back().id : _log.lastId();
+  }
+
+  // ---- 发件箱：变更时推脏信号（前端收到即刷新当前视图）----
+  {
+    uint32_t rev = _outbox.revision();
+    if (rev != _lastOutboxRev) {
+      _lastOutboxRev = rev;
+      publish("outbox", "{}");
+    }
+  }
+
   _baseline = true;
 }
 
@@ -144,6 +182,8 @@ void StatusBus::onClientConnect(AsyncEventSourceClient *client) {
               (unsigned)resumeFrom);
   }
   _lastHistId = resumeFrom < _lastHistId ? resumeFrom : _lastHistId;
+  // 日志增量基线播种到当前最新：只推「连接之后」的新记录，避免首连涌出全部历史
+  _lastLogId = _log.lastId();
 
   publishSnapshot(client);
   _log.addf(LogLevel::kInfo, "sse", "SSE 客户端已连接（%u/%u）",

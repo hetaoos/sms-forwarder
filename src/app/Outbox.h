@@ -71,6 +71,10 @@ class Outbox {
   int failedCount() const;
   bool mounted() const { return _fsOk; }
 
+  // 变更修订号（单调递增）：任何影响用户可见状态的操作（入队 / 投递结果回写 /
+  // 重试 / 删除 / 清空 / 淘汰）后自增，供 StatusBus 的 SSE 推送做「脏信号」判断
+  uint32_t revision() const { return _rev; }
+
  private:
   static constexpr uint8_t kRecv = 0;  // 收到的短信 -> 转发
   static constexpr uint8_t kSend = 1;  // 主动发出的短信
@@ -163,6 +167,10 @@ class Outbox {
   void lock() const { xSemaphoreTake(_mutex, portMAX_DELAY); }
   void unlock() const { xSemaphoreGive(_mutex); }
 
+  // 变更修订号自增（见 revision()）：在一切影响用户可见状态的操作后调用；
+  // 不持锁也可调用（仅作 SSE 脏信号提示，偶发漏增至多延迟一次刷新，无正确性影响）
+  void bumpRev() { _rev++; }
+
   EmailService *_email = nullptr;
   MqttService  *_mqtt = nullptr;
   PushService  *_push = nullptr;
@@ -171,6 +179,7 @@ class Outbox {
   LogStore     *_log = nullptr;
 
   bool _fsOk = false;
+  uint32_t _rev = 1;        // 变更修订号（SSE 脏信号用，见 revision()）
   uint32_t _maxId = 0;
   uint32_t _lastTickMs = 0;
   std::vector<Rec> _recs;

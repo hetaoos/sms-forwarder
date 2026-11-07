@@ -552,6 +552,41 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.13 已完成：SSE 补全（日志 + 发件箱实时推送）（2026-11-07）
+
+**状态**：代码完成，默认 + `API_TOKEN_REQUIRE_EXCHANGE=1` 编译均 SUCCESS、`buildfs` SUCCESS、
+`node --check` 通过，**未刷机实测**、**未提交 git**；改过 `data/`，刷机时需 `uploadfs`。
+
+**① 运行日志接入 SSE（增量追加，仿 `at`）**
+- `StatusBus` 增加 `LogStore &_log` 引用与 `_lastLogId` 增量基线：`onClientConnect` 时基线播种到当前
+  最新（避免首连涌出全量历史）；`tick()` 每轮用 `_log.tail(after, 200)` 取新记录，推送 `log` 事件
+  `{"total":n,"logs":[...]}`（同 `/api/logs` 增量形态、ID 升序）。
+- 前端 `pageLogs` 抽出 `applyTail(got, total)`，REST 增量拉取与 SSE `log` 事件共用；收到事件只并入
+  `id > 基线` 的新记录（连接/REST 时序窗口内的重发由 id 去重），仅在无过滤时同步全局条数。
+
+**② 发件箱接入 SSE（变更脏信号）**
+- `Outbox` 新增 `revision()` 单调递增修订号，所有可见变更点（`enqueueSms`/`enqueueOutgoingSms`
+  入队、`applyResult`/`onSendDone`/`checkSendTimeout`/`markFailoverSkipped` 状态回写、
+  `retry`/`clearDone`/`deleteOne`、`sweep` 确有明显淘汰/回写时）后 `bumpRev()`。
+- `StatusBus` 缓存 `_lastOutboxRev`，`tick()` 检测到变化时推送 `outbox` 事件（`{}` 脏信号）；
+  前端 `pageOutbox` 收到即刷新当前视图。
+
+**③ 前端去轮询 + 优雅回退**
+- 日志页 / 发件箱页 `init()` 注册各自 SSE 槽位（`_logSink`/`_outboxSink`），5s 定时器改为
+  **仅当 SSE 离线（`conn==='offline'`）才轮询**；`connectSSE()` 新增 `log`/`outbox` 订阅。
+
+**关键文件**：`src/net/StatusBus.h/.cpp`、`src/app/Outbox.h/.cpp`、`src/app/App.h`、
+`data/assets/app.js`、README SSE 事件表。
+
+**验证结果（已做）**：默认 + 关 raw Bearer 变体编译 SUCCESS；`buildfs` SUCCESS，镜像含 `app.js.gz`；
+`node --check data/assets/app.js` 通过。
+
+**验收（待设备验证）**：① 产生新日志时日志页不轮询即实时出现（有过滤按条件并入）；② 发件箱有
+转发/重试/删除/清空时页面即时刷新、无 5s 延迟；③ SSE 断开降级轮询后两页回退 5s 轮询且数据仍更新；
+④ 回归：状态/AT/短信等原有 SSE 事件、并发上限 8、`Last-Event-ID` 续传不受影响。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -897,4 +932,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | §3.1 方案定稿：5 项决策确认（A+B 同批 / v1 默认保留 / 记住密码改存 verifier / 阈值不改 / 会话修复同批）；协议改为直接 verifier 版 v2，含 NVS `auth` v1→v2 迁移与回滚警告；新增「API 访问令牌传输保护」为下一步讨论项；同步 §3 / §4 / §6 | **方案已确认，待实施**，代码未动 |
 | 2026-11-07 | 实现登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（§2.11，按 §3.1 A+B 同批）：新增 `CryptoUtil` / `LoginLimiter` / `sha256.js`，`AdminStore` v1→v2 迁移与导出脱敏，v2 挑战应答 + 三层限流 + 429，v1 兼容开关 `LOGIN_REQUIRE_PROOF`，会话过期 / LRU 与遗留 sid 修复；README 与本文 §0 / §1.2 / §2.11 / §3 / §4 / §5 / §7 同步 | 代码完成，三种编译配置 + `buildfs` 均 SUCCESS，`node --check` / SHA-256 对照 / 语法检查通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | 2026-11-07 | 实现 API 访问令牌传输保护（§2.12，按 §3.2 全部采纳）：NVS 只存 verifier（v1 明文自动迁移）、新增 `/api/token/challenge`+`/api/token/exchange` 换短时效票据、`authorized()` 改 ticket-only（raw Bearer 兼容默认保留）、`GET /api/token` 脱敏；README 与本文 §3.2 / §2.12 / §4 同步 | 代码完成，两种编译 + `buildfs` SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
+| 2026-11-07 | 完成 SSE 补全（§2.13）：日志页/发件箱页接入实时推送（日志增量 `log` 事件、发件箱变更脏信号 `outbox` 事件），移除两页 5s 轮询（SSE 离线时回退）；`Outbox` 加 `revision()`/`bumpRev()` | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

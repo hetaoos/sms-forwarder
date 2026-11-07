@@ -14,6 +14,8 @@
 #include "serial/SerialBridge.h"
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
+#include "app/Outbox.h"     // SSE 增量推送发件箱变更（脏信号）
+#include "log/LogStore.h"   // SSE 增量推送运行日志
 
 // 状态推送总线：通过 SSE（cfg::kSsePath）向所有已连接浏览器实时广播
 // 设备状态，取代前端对各状态接口的定时轮询。
@@ -32,7 +34,7 @@ class StatusBus {
   // wifi/bridge/led/display/ui/sms/time：各通信模组引用（不持有所有权）
   // ui：取屏幕设置（自动熄屏 / 自动返回状态页）随屏幕状态一并推送
   StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led, Display &display,
-            UIMenu &ui, SmsService &sms, TimeSync &time);
+            UIMenu &ui, SmsService &sms, TimeSync &time, LogStore &log, Outbox &outbox);
 
   // 把 SSE handler 注册到服务器（由 WebPanel::begin 调用，需在 server.begin 前）
   void begin(AsyncWebServer &server);
@@ -63,6 +65,8 @@ class StatusBus {
   UIMenu &_ui;             // 菜单状态机（屏幕设置的持有者）
   SmsService &_sms;        // 短信服务引用
   TimeSync &_time;         // 时间同步引用
+  LogStore &_log;          // 设备日志环形存储（SSE 日志增量推送用）
+  Outbox  &_outbox;        // 持久化发件箱（SSE 变更脏信号用）
 
   AsyncEventSource _events{cfg::kSsePath};
   std::vector<AsyncEventSourceClient *> _clients;  // 客户端列表（按接入顺序）
@@ -81,4 +85,6 @@ class StatusBus {
   uint32_t _lastSmsId = 0;   // 上次已推送的最新短信 ID
   String _lastSmsPorts;      // 上次已推送的通信模组配置 JSON
   String _lastSmsStats;      // 上次已推送的短信存储统计 JSON
+  uint32_t _lastLogId = 0;     // 已推送的最新日志 ID（0 = 下次连接重新基线）
+  uint32_t _lastOutboxRev = 0;  // 已推送的发件箱变更修订号（见 Outbox::revision）
 };

@@ -325,6 +325,7 @@ void Outbox::tick() {
     bool ok = writeRec(r);
     if (ok) {
       _recs.push_back(r);
+      bumpRev();
       unlock();
       _log->addf(LogLevel::kInfo, "outbox", "发件箱登记 #%u：%s %s，%u 个通道待投",
                  (unsigned)r.id, r.kind == kSend ? "发出至" : "来自",
@@ -502,6 +503,7 @@ void Outbox::applyResult(uint32_t id, const String &key, bool ok, bool submitted
     break;
   }
   unlock();
+  if (found) bumpRev();
   if (!found) {
     _log->addf(LogLevel::kWarn, "outbox", "发件箱 #%u 回写失败：记录已不存在",
                (unsigned)id);
@@ -513,11 +515,13 @@ void Outbox::applyResult(uint32_t id, const String &key, bool ok, bool submitted
 void Outbox::onSendDone(uint32_t recId, const String &key, uint32_t sid,
                         bool stored, const String &err) {
   SendDoneFn cb;
+  bool changed = false;
   lock();
   for (auto &r : _recs) {
     if (r.id != recId || r.removed) continue;
     for (auto &c : r.ch) {
       if (c.key != key || c.state != ChState::kSending) continue;
+      changed = true;
       if (sid != 0) {
         c.state = ChState::kOk;
         c.err = stored ? String("已发出 · 短信记录 #") + String(sid)
@@ -541,6 +545,7 @@ void Outbox::onSendDone(uint32_t recId, const String &key, uint32_t sid,
     break;
   }
   unlock();
+  if (changed) bumpRev();
   if (cb) cb(sid, stored, err);
 }
 
@@ -549,6 +554,7 @@ void Outbox::onSendDone(uint32_t recId, const String &key, uint32_t sid,
 void Outbox::checkSendTimeout() {
   std::vector<SendDoneFn> callbacks;
   const uint32_t now = millis();
+  bool anyChanged = false;
   lock();
   for (auto &r : _recs) {
     if (r.removed || r.kind != kSend || !r.inflightAtMs) continue;
@@ -562,6 +568,7 @@ void Outbox::checkSendTimeout() {
     }
     r.inflightAtMs = 0;
     if (!changed) continue;
+    anyChanged = true;
     r.dirty = true;
     writeRec(r);
     r.dirty = false;
@@ -571,6 +578,7 @@ void Outbox::checkSendTimeout() {
                (unsigned)r.id);
   }
   unlock();
+  if (anyChanged) bumpRev();
   for (auto &fn : callbacks) {
     fn(SmsService::kIdSentUnstored, false, "发送结果未回传（可能已发出）");
   }
@@ -578,6 +586,7 @@ void Outbox::checkSendTimeout() {
 
 void Outbox::markFailoverSkipped(uint32_t id) {
   // 调用方须持有 _mutex：故障转移策略下第一个成功的通道之后，其余 push 通道无需再投
+  bool changed = false;
   for (auto &r : _recs) {
     if (r.id != id || r.removed) continue;
     for (auto &c : r.ch) {
@@ -585,27 +594,32 @@ void Outbox::markFailoverSkipped(uint32_t id) {
       if (c.state == ChState::kPending || c.state == ChState::kFailed) {
         c.state = ChState::kSkipped;
         r.dirty = true;
+        changed = true;
       }
     }
     if (r.dirty) { writeRec(r); r.dirty = false; }
     break;
   }
+  if (changed) bumpRev();
 }
 
 void Outbox::sweep() {
   // 调用方须持有 _mutex
   fs::FS &u = userfs::fs();
+  bool swept = false;
 
   // 删除 Web 侧标记的记录
   for (auto it = _recs.begin(); it != _recs.end();) {
     if (!it->removed) { ++it; continue; }
     u.remove(filePath(it->id));
     it = _recs.erase(it);
+    swept = true;
   }
   // 回写待落盘的修改（retry / 手动删除之外的状态变更）
   for (auto &r : _recs) {
     if (!r.dirty) continue;
     if (writeRec(r)) r.dirty = false;
+    swept = true;
   }
   // FIFO 淘汰最旧的「已完成」回执；未完成记录永不淘汰（不丢消息的前提）
   while (_recs.size() > cfg::kOutboxKeepDone) {
@@ -627,7 +641,9 @@ void Outbox::sweep() {
     }
     u.remove(filePath(victim->id));
     _recs.erase(victim);
+    swept = true;
   }
+  if (swept) bumpRev();
 }
 
 // ---------------- Web API ----------------
@@ -718,15 +734,18 @@ bool Outbox::retry(uint32_t id) {
     }
   }
   unlock();
+  if (found) bumpRev();
   return found;
 }
 
 void Outbox::clearDone() {
   lock();
+  bool any = false;
   for (auto &r : _recs) {
-    if (recDone(r)) r.removed = true;
+    if (recDone(r)) { r.removed = true; any = true; }
   }
   unlock();
+  if (any) bumpRev();
 }
 
 bool Outbox::deleteOne(uint32_t id) {
@@ -734,6 +753,7 @@ bool Outbox::deleteOne(uint32_t id) {
   for (auto &r : _recs) {
     if (r.id == id && !r.removed) {
       r.removed = true;
+      bumpRev();
       unlock();
       return true;
     }
