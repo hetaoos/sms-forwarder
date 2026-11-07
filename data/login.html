@@ -29,12 +29,13 @@
     </div>
     <div class="field">
       <label>密码</label>
-      <input id="p" name="pass" type="password" autocomplete="current-password" required>
+      <!-- 不设 required：使用已保存的 verifier 时密码框为空也能提交，校验在脚本里做 -->
+      <input id="p" name="pass" type="password" autocomplete="current-password">
     </div>
     <div class="login-remember">
       <label for="remember">
         <input type="checkbox" id="remember" name="remember">
-        <span>保存账号密码</span>
+        <span>保存登录凭据</span>
       </label>
     </div>
     <div class="login-err" id="err"></div>
@@ -46,6 +47,8 @@
   </div>
 </div>
 
+<!-- 纯 HTTP 局域网下 window.crypto.subtle 不可用，用内置纯 JS SHA-256 兜底 -->
+<script src="/assets/sha256.js"></script>
 <script>
 'use strict';
 // 已登录则直接进入目标页
@@ -59,18 +62,73 @@ const form = document.getElementById('loginForm');
 const err = document.getElementById('err');
 const btn = document.getElementById('btn');
 const remember = document.getElementById('remember');
+const u = document.getElementById('u');
+const p = document.getElementById('p');
 
-// 本地保存的账号密码（localStorage）
+// 本地保存的登录凭据：{user, verifier}（verifier 是密码等价物，只在本机有效；
+// 绝不保存明文密码）。旧版 {user, pass} 记录一律丢弃。
 const SAVED_KEY = 'savedLogin';
+let saved = null;
+let passwordEdited = false;
+let rateTimer = null;
+
 function loadSavedLogin() {
   try {
     const s = JSON.parse(localStorage.getItem(SAVED_KEY) || 'null');
-    if (s && s.user) {
-      document.getElementById('u').value = s.user;
-      document.getElementById('p').value = s.pass || '';
+    if (s && s.user && s.verifier && s.verifier.length === 64) {
+      u.value = s.user;
       remember.checked = true;
+      saved = s;
+      p.placeholder = '已保存登录凭据，可直接登录';
+    } else if (s && s.user) {
+      u.value = s.user;
+      localStorage.removeItem(SAVED_KEY);
     }
   } catch (e) {}
+}
+p.addEventListener('input', () => { passwordEdited = true; });
+
+// 优先用浏览器原生 Web Crypto（HTTPS / localhost），否则用内置纯 JS 实现
+async function sha256(text) {
+  if (window.crypto && window.crypto.subtle && window.crypto.subtle.digest && window.TextEncoder) {
+    try {
+      const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      const bytes = new Uint8Array(buf);
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) out += ('0' + bytes[i].toString(16)).slice(-2);
+      return out;
+    } catch (e) {}
+  }
+  if (window.SmsfSha256 && window.SmsfSha256.hex) {
+    try { return window.SmsfSha256.hex(text); } catch (e) {}
+  }
+  return null;
+}
+
+function resetButton() {
+  btn.disabled = false;
+  btn.textContent = '登 录';
+}
+function showRateLimit(sec) {
+  sec = parseInt(sec, 10);
+  if (!isFinite(sec) || sec < 1) sec = 1;
+  if (sec > 900) sec = 900;
+  let left = sec;
+  btn.disabled = true;
+  if (rateTimer) clearTimeout(rateTimer);
+  function tick() {
+    if (left <= 0) {
+      rateTimer = null;
+      err.textContent = '';
+      resetButton();
+      return;
+    }
+    err.textContent = '尝试过于频繁，请 ' + left + ' 秒后重试';
+    btn.textContent = '请稍候 ' + left + 's';
+    left--;
+    rateTimer = setTimeout(tick, 1000);
+  }
+  tick();
 }
 
 form.addEventListener('submit', async ev => {
@@ -79,31 +137,79 @@ form.addEventListener('submit', async ev => {
   btn.disabled = true;
   btn.textContent = '登录中…';
   try {
-    const user = document.getElementById('u').value.trim();
-    const pass = document.getElementById('p').value;
-    const body = JSON.stringify({ user: user, pass: pass });
+    const user = u.value.trim();
+    const pass = p.value;
+    const canUseSaved = !!(saved && saved.user === user && saved.verifier && !passwordEdited);
+    if (!user || (!pass && !canUseSaved)) {
+      err.textContent = '请输入用户名和密码';
+      resetButton();
+      return;
+    }
+    let body = null;
+    let usedVerifier = null;
+    let fromSaved = canUseSaved;
+
+    // 提交时才取挑战，用户输入密码的时间不计入 30s 窗口
+    const ch = await fetch('/api/login/challenge', { cache: 'no-store' });
+    if (ch.status === 429) {
+      const info = await ch.json().catch(() => ({}));
+      showRateLimit(info.retryAfter || 5);
+      return;
+    }
+    if (ch.ok) {
+      const c = await ch.json();
+      const verifier = fromSaved ? saved.verifier : await sha256(String(c.salt) + ':' + pass);
+      if (verifier) {
+        const proof = await sha256(verifier + ':' + c.ts + ':' + c.nonce);
+        if (proof) {
+          body = { v: 2, user: user, ts: c.ts, nonce: c.nonce, proof: proof };
+          usedVerifier = verifier;
+        }
+      }
+    }
+    if (!body) {
+      // L2 降级：无哈希能力 / 挑战不可用，退回 v1 明文（仍受服务端限流保护）
+      console.warn('SMSF: SHA-256 或挑战不可用，降级为明文登录');
+      body = { user: user, pass: pass };
+    }
+
     const r = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: body
+      body: JSON.stringify(body)
     });
+    if (r.status === 429) {
+      const info = await r.json().catch(() => ({}));
+      showRateLimit(info.retryAfter || 5);
+      return;
+    }
     if (r.ok) {
-      // 勾选保存：写入 localStorage；未勾选：清除已保存的凭据
       try {
-        if (remember.checked) {
-          localStorage.setItem(SAVED_KEY, JSON.stringify({ user: user, pass: pass }));
+        if (remember.checked && usedVerifier) {
+          localStorage.setItem(SAVED_KEY, JSON.stringify({ user: user, verifier: usedVerifier }));
         } else {
           localStorage.removeItem(SAVED_KEY);
         }
       } catch (e) {}
       goHome(); return;
     }
-    err.textContent = r.status === 401 ? '用户名或密码错误' : ('登录失败（' + r.status + '）');
+    if (r.status === 401) {
+      if (fromSaved) {
+        // 设备改密码 / NVS 迁移后 salt 变化，旧 verifier 失效
+        try { localStorage.removeItem(SAVED_KEY); } catch (e) {}
+        saved = null;
+        err.textContent = '保存的登录凭据已失效，请输入密码';
+        p.focus();
+      } else {
+        err.textContent = '用户名或密码错误（或登录已超时，请重试）';
+      }
+    } else {
+      err.textContent = '登录失败（' + r.status + '）';
+    }
   } catch (e) {
     err.textContent = '网络错误，请重试';
   }
-  btn.disabled = false;
-  btn.textContent = '登 录';
+  resetButton();
 });
 
 loadSavedLogin();

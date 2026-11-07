@@ -9,6 +9,7 @@
 #include "hal/RgbLed.h"
 #include "log/LogStore.h"
 #include "net/AdminStore.h"
+#include "net/LoginLimiter.h"   // 登录限流 + 一次性挑战 nonce（§3.1）
 #include "net/EmailService.h"
 #include "net/MqttService.h"
 #include "net/StatusBus.h"
@@ -40,7 +41,10 @@
 //   2. 访问令牌（Bearer）：长期有效的 API 令牌，持久化于 NVS，重启不失效，
 //      供脚本 / 第三方客户端使用；需在系统设置「API 访问令牌」中启用，
 //      启用时自动生成，可在该页重置；关闭时 Bearer 调用一律拒绝。
-// 账号密码存于 NVS（AdminStore），修改后登录会话作废（API 令牌独立保留）。
+// 账号存于 NVS（AdminStore）：只存「salt + verifier = SHA256(salt:pass)」，不存明文密码；
+// Web 登录默认走 /api/login/challenge 下发的 nonce + ts 挑战，前端提交 proof，
+// v1 明文登录为兼容分支（编译期 LOGIN_REQUIRE_PROOF=1 可禁用）。
+// 登录失败由 LoginLimiter 做全局 / IP+用户名 / 挑战端点三层限流；修改账号后登录会话作废。
 class WebPanel {
  public:
   // 注入各通信模组引用（不持有所有权）
@@ -92,18 +96,28 @@ class WebPanel {
   // 生成 32 位十六进制随机凭证（esp_random 硬件熵源，用于 sid / Bearer 令牌）
   static String genSecret();
 
-  // 内存凭证表操作：新增（满时返回 false）、移除、查找
-  static bool storeAdd(String *store, uint8_t &count, const String &v);
-  static void storeRemove(String *store, uint8_t &count, const String &v);
-  static bool storeHas(const String *store, uint8_t count, const String &v);
+  // 内存凭证表操作：stamps 与 store 平行记录签发时刻（millis）。
+  // 新增时先惰性清掉过期项，表满则淘汰最旧；查找时同样按 kSessionTtlMs 判过期。
+  static bool storeAdd(String *store, uint32_t *stamps, uint8_t &count,
+                       const String &v, uint32_t nowMs);
+  static void storeRemove(String *store, uint32_t *stamps, uint8_t &count,
+                          const String &v);
+  static bool storeHas(String *store, uint32_t *stamps, uint8_t &count,
+                       const String &v, uint32_t nowMs);
+
+  // 取客户端 IPv4 作为限流键（remoteIP() 不可用返回 0）
+  static uint32_t clientIpKey(AsyncWebServerRequest *req);
 
   AsyncWebServer _server{cfg::kHttpPort};  // 异步 HTTP 服务器（端口见配置）
   String _sessions[cfg::kMaxSessions];     // 有效会话 Cookie 值（重启失效）
   String _tokens[cfg::kMaxSessions];       // 有效 Bearer 访问令牌（重启失效）
+  uint32_t _sessionStamps[cfg::kMaxSessions] = {};  // 会话签发时刻（millis，惰性过期/LRU）
+  uint32_t _tokenStamps[cfg::kMaxSessions] = {};    // 令牌签发时刻
   uint8_t _sessionCount = 0;               // 会话表当前数量
   uint8_t _tokenCount = 0;                 // 令牌表当前数量
   bool _apiTokenEnabled = false;           // API 访问令牌功能开关（NVS，默认关闭）
   String _apiToken;                        // 持久化 API 访问令牌（NVS，重启不失效）
+  LoginLimiter _loginLimiter;              // 登录限流 + 一次性挑战 nonce（纯内存，重启清零）
 
   // 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于
   // kNvsKeyToken（沿用 apitoken 键）；缺失/解析失败视为关闭，启用但令牌缺失则生成并写回
@@ -125,7 +139,8 @@ class WebPanel {
   void handleIndex(AsyncWebServerRequest *req);
   void handleLoginPage(AsyncWebServerRequest *req);
 
-  // 认证：登录 / 登出 / 会话探测
+  // 认证：挑战下发 / 登录 / 登出 / 会话探测
+  void handleLoginChallenge(AsyncWebServerRequest *req);
   void handleLogin(AsyncWebServerRequest *req, JsonVariant &json);
   void handleLogout(AsyncWebServerRequest *req);
   void handleSession(AsyncWebServerRequest *req);

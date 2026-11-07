@@ -15,6 +15,7 @@
 #include "app/UserFs.h"      // userfs::format()：出厂复位清空用户数据
 #include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
 #include "net/StateJson.h"
+#include "utils/CryptoUtil.h"  // FNV 哈希等登录限流工具
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
 #include <esp_system.h>            // esp_restart()
@@ -128,6 +129,22 @@ void sendErr(AsyncWebServerRequest *req, int code, const char *msg) {
   String out;
   serializeJson(doc, out);
   req->send(code, "application/json", out);
+}
+
+// 登录限流 429：{"ok":false,"error":"..","retryAfter":<秒>} + Retry-After 头。
+// 前端按 retryAfter 倒计时禁用按钮；绝不 delay()，async_tcp 任务必须立即返回。
+void sendRateLimited(AsyncWebServerRequest *req, uint32_t retrySec) {
+  if (!retrySec) retrySec = 1;
+  JsonDocument doc;
+  doc["ok"] = false;
+  doc["error"] = "尝试过于频繁，请稍后再试";
+  doc["retryAfter"] = retrySec;
+  String out;
+  serializeJson(doc, out);
+  AsyncWebServerResponse *resp = req->beginResponse(429, "application/json", out);
+  resp->addHeader("Retry-After", String(retrySec));
+  resp->addHeader("Cache-Control", "no-store");
+  req->send(resp);
 }
 
 // 统一成功响应：{"ok":true}
@@ -279,14 +296,17 @@ String WebPanel::genSecret() {
 // 判断请求是否已认证：会话 Cookie（sid）或 Bearer 访问令牌任一有效即可
 // req：请求对象
 bool WebPanel::authorized(AsyncWebServerRequest *req) {
+  uint32_t now = millis();
   String sid = cookieValue(req, cfg::kCookieName);
-  if (sid.length() && storeHas(_sessions, _sessionCount, sid)) return true;
+  if (sid.length() &&
+      storeHas(_sessions, _sessionStamps, _sessionCount, sid, now)) return true;
   if (req->hasHeader("Authorization")) {
     String a = req->getHeader("Authorization")->value();
     if (a.startsWith("Bearer ")) {
       String t = a.substring(7);
       if (t.length() && _apiTokenEnabled &&
-          (storeHas(_tokens, _tokenCount, t) || t == _apiToken)) return true;
+          (storeHas(_tokens, _tokenStamps, _tokenCount, t, now) ||
+           t == _apiToken)) return true;
     }
   }
   return false;
@@ -296,6 +316,10 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
 void WebPanel::invalidateAllSessions() {
   _sessionCount = 0;
   _tokenCount = 0;
+  for (uint8_t i = 0; i < cfg::kMaxSessions; i++) {
+    _sessionStamps[i] = 0;
+    _tokenStamps[i] = 0;
+  }
   _log.addf(LogLevel::kInfo, "http", "已注销全部会话与访问令牌");
 }
 
@@ -364,30 +388,72 @@ String WebPanel::resetApiToken() {
   return _apiToken;
 }
 
-// 凭证表新增：store 数组；count：数量引用；v：凭证值；满返回 false
-bool WebPanel::storeAdd(String *store, uint8_t &count, const String &v) {
-  if (!v.length() || count >= cfg::kMaxSessions) return false;
-  store[count++] = v;
+// 凭证表新增：stamps 与 store 平行记录签发时刻（millis）。
+// 先惰性清掉过期项；表满时淘汰最旧而不是拒绝登录（旧实现 8 次登录即 500，
+// 是现成的 DoS）。nowMs 用单调的 millis()，不依赖已同步时钟。
+bool WebPanel::storeAdd(String *store, uint32_t *stamps, uint8_t &count,
+                        const String &v, uint32_t nowMs) {
+  if (!v.length()) return false;
+  for (uint8_t i = 0; i < count;) {
+    if ((nowMs - stamps[i]) >= cfg::kSessionTtlMs) {
+      store[i] = store[--count];
+      stamps[i] = stamps[count];
+    } else {
+      i++;
+    }
+  }
+  uint8_t idx = count;
+  if (count >= cfg::kMaxSessions) {
+    uint32_t oldest = 0xFFFFFFFFu;
+    idx = 0;
+    for (uint8_t i = 0; i < count; i++) {
+      if (stamps[i] <= oldest) {
+        oldest = stamps[i];
+        idx = i;
+      }
+    }
+  } else {
+    count++;
+  }
+  store[idx] = v;
+  stamps[idx] = nowMs;
   return true;
 }
 
-// 凭证表移除：找到后与末位交换删除（数组无序）
-void WebPanel::storeRemove(String *store, uint8_t &count, const String &v) {
+// 凭证表移除：找到后与末位交换删除（数组无序），时间戳同步搬移
+void WebPanel::storeRemove(String *store, uint32_t *stamps, uint8_t &count,
+                           const String &v) {
   for (uint8_t i = 0; i < count; i++) {
     if (store[i] == v) {
       store[i] = store[--count];
+      stamps[i] = stamps[count];
       return;
     }
   }
 }
 
-// 凭证表查找：store 数组；count：数量；v：凭证值
-bool WebPanel::storeHas(const String *store, uint8_t count, const String &v) {
+// 凭证表查找：命中且未过期才通过；过期项就地清掉（惰性回收）
+bool WebPanel::storeHas(String *store, uint32_t *stamps, uint8_t &count,
+                        const String &v, uint32_t nowMs) {
   if (!v.length()) return false;
   for (uint8_t i = 0; i < count; i++) {
-    if (store[i] == v) return true;
+    if (store[i] != v) continue;
+    if ((nowMs - stamps[i]) >= cfg::kSessionTtlMs) {
+      store[i] = store[--count];
+      stamps[i] = stamps[count];
+      return false;
+    }
+    return true;
   }
   return false;
+}
+
+// 取客户端 IPv4 作为限流键；连接已断开等异常返回 0（只会被并到同一个全局桶）
+uint32_t WebPanel::clientIpKey(AsyncWebServerRequest *req) {
+  if (!req || !req->client()) return 0;
+  IPAddress ip = req->client()->remoteIP();
+  return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
+         ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
 }
 
 // req：请求对象；json：要发送的 JSON 文本
@@ -435,13 +501,18 @@ void WebPanel::setupRoutes() {
   _server.serveStatic("/", LittleFS, "/", "no-store");
 
   // ---- 认证 ----
-  // 登录：JSON 请求体 {"user":"..","pass":".."} -> 下发 sid Cookie +
-  // 返回 {"ok":true,"user":"..","token":".."}。
-  // 用 AsyncCallbackJsonWebHandler 重载：body 由库自动累积（无副作用），
-  // 解析与业务逻辑经中间件链在认证之后执行；Content-Type 必须是
-  // application/json，否则该处理器不匹配（JSON-only API）。
-  // Cookie 为 HttpOnly + SameSite=Strict（浏览器自动携带且不随跨站请求
-  // 发送，防 CSRF）；返回的 token 供脚本/第三方客户端以 Bearer 头使用
+  // 登录挑战（长路径先注册，见上方注册顺序规则）：免认证 GET 返回
+  // salt / nonce / ts；前端算 verifier = SHA256(salt:pass)、
+  // proof = SHA256(verifier:ts:nonce) 后提交。该端点同样受每 IP / 全局频率
+  // 闸门约束，nonce 一次性消费（§3.1）。
+  _server.on("/api/login/challenge", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleLoginChallenge(req); });
+
+  // 登录：v2 JSON {"v":2,"user","ts","nonce","proof"}（Web 默认，不含明文密码）；
+  // v1 JSON {"user","pass"} 为兼容分支，编译期 LOGIN_REQUIRE_PROOF=1 可禁用。
+  // 用 AsyncCallbackJsonWebHandler 重载：Content-Type 必须是 application/json。
+  // Cookie 为 HttpOnly + SameSite=Strict（防 CSRF）；返回的 token 供脚本以
+  // Bearer 头使用。失败统一 401 文案，限流命中返回 429 + retryAfter。
   _server.on("/api/login", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleLogin(req, json); });
 
@@ -907,8 +978,9 @@ void WebPanel::setupRoutes() {
 // req：请求对象；next：放行到下一环
 void WebPanel::handleAuthMiddleware(AsyncWebServerRequest *req, ArMiddlewareNext next) {
   String url = req->url();
-  if (url == "/api/login" || url == "/api/logout" || url == "/api/session") {
-    next();  // 登录相关端点无需已认证
+  if (url == "/api/login/challenge" || url == "/api/login" ||
+      url == "/api/logout" || url == "/api/session") {
+    next();  // 登录 / 挑战 / 登出 / 会话探测无需已认证
     return;
   }
   if (url.startsWith("/api/") && !authorized(req)) {
@@ -928,22 +1000,96 @@ void WebPanel::handleLoginPage(AsyncWebServerRequest *req) {
 }
 
 // ---- 认证 ----
+// 登录挑战：下发 salt / nonce / ts。ts 是设备 millis() 的回显值（不是纪元秒），
+// 服务端据此判新鲜度，完全不依赖 NTP / 浏览器时钟。
+void WebPanel::handleLoginChallenge(AsyncWebServerRequest *req) {
+  uint32_t now = millis();
+  uint32_t retrySec = 0;
+  if (_loginLimiter.challengeGate(clientIpKey(req), now, retrySec)) {
+    sendRateLimited(req, retrySec);
+    return;
+  }
+  uint32_t ts = 0;
+  String nonce = _loginLimiter.issueNonce(now, ts);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["v"] = 2;
+  doc["alg"] = "sha256-verifier";
+  doc["salt"] = _auth.salt();
+  doc["nonce"] = nonce;
+  doc["ts"] = ts;
+  doc["ttlMs"] = cfg::kLoginNonceTtlMs;
+  // 挑战响应一次性：禁止任何中间缓存，避免 nonce 被复用
+  String out;
+  serializeJson(doc, out);
+  AsyncWebServerResponse *resp = req->beginResponse(200, "application/json", out);
+  resp->addHeader("Cache-Control", "no-store");
+  req->send(resp);
+}
+
+// v2（Web 默认）：{"v":2,"user","ts","nonce","proof"}，不含明文密码；
+// v1（兼容）：{"user","pass"}，LOGIN_REQUIRE_PROOF=1 时编译期禁用。
 void WebPanel::handleLogin(AsyncWebServerRequest *req, JsonVariant &json) {
-  if (!json.is<JsonObject>() || !json["user"].is<const char *>() ||
-      !json["pass"].is<const char *>()) {
+  if (!json.is<JsonObject>() || !json["user"].is<const char *>()) {
     sendErr(req, 400, "请求格式错误");
     return;
   }
+  const uint32_t now = millis();
+  const uint32_t ip = clientIpKey(req);
   String user = json["user"].as<String>();
-  String pass = json["pass"].as<String>();
-  if (!_auth.check(user, pass)) {
+  const uint32_t userHash = crypto::fnv1a(user);
+  uint32_t retrySec = 0;
+  if (_loginLimiter.blocked(ip, userHash, now, retrySec)) {
+    sendRateLimited(req, retrySec);
+    return;
+  }
+
+  const bool v2 = json["v"].is<int>() && json["v"].as<int>() == 2;
+  bool ok = false;
+  if (v2) {
+    String nonce = json["nonce"].as<String>();
+    String proof = json["proof"].as<String>();
+    uint32_t tsEcho = json["ts"].as<uint32_t>();
+    if (nonce.length() != 32 || proof.length() != 64) {
+      sendErr(req, 400, "请求格式错误");
+      return;
+    }
+    uint32_t ts = 0;
+    // nonce 无论成败 / 过期都一次性消费：重放、篡改 ts 都按一次失败计
+    bool nonceOk = _loginLimiter.consumeNonce(nonce, ts, now);
+    ok = nonceOk && tsEcho == ts && _auth.checkProof(user, ts, nonce, proof);
+  } else {
+#if !LOGIN_REQUIRE_PROOF
+    if (!json["pass"].is<const char *>()) {
+      sendErr(req, 400, "请求格式错误");
+      return;
+    }
+    ok = _auth.check(user, json["pass"].as<String>());
+#else
+    // 明文登录已禁用：统一 401 文案，不提示「已禁用」以免被探测
+    sendErr(req, 401, "用户名或密码错误");
+    return;
+#endif
+  }
+
+  if (!ok) {
+    uint32_t lockMs = _loginLimiter.noteFailure(ip, userHash, now);
+    if (lockMs) {
+      _log.addf(LogLevel::kWarn, "auth",
+                "登录失败达阈值，来源 ...%u 已锁定 %u 秒",
+                (unsigned)(ip & 0xFF), (unsigned)(lockMs / 1000));
+    }
     sendErr(req, 401, "用户名或密码错误");
     return;
   }
+  _loginLimiter.noteSuccess(ip, userHash);
+
   String sid = genSecret();
   String token = genSecret();
-  if (!storeAdd(_sessions, _sessionCount, sid) ||
-      !storeAdd(_tokens, _tokenCount, token)) {
+  if (!storeAdd(_sessions, _sessionStamps, _sessionCount, sid, now) ||
+      !storeAdd(_tokens, _tokenStamps, _tokenCount, token, now)) {
+    // 任一表写入失败都要回退，避免遗留一个仍然有效的 sid
+    storeRemove(_sessions, _sessionStamps, _sessionCount, sid);
     sendErr(req, 500, "登录会话过多，请稍后再试");
     return;
   }
@@ -959,10 +1105,12 @@ void WebPanel::handleLogin(AsyncWebServerRequest *req, JsonVariant &json) {
 
 void WebPanel::handleLogout(AsyncWebServerRequest *req) {
   String sid = cookieValue(req, cfg::kCookieName);
-  if (sid.length()) storeRemove(_sessions, _sessionCount, sid);
+  if (sid.length()) storeRemove(_sessions, _sessionStamps, _sessionCount, sid);
   if (req->hasHeader("Authorization")) {
     String a = req->getHeader("Authorization")->value();
-    if (a.startsWith("Bearer ")) storeRemove(_tokens, _tokenCount, a.substring(7));
+    if (a.startsWith("Bearer ")) {
+      storeRemove(_tokens, _tokenStamps, _tokenCount, a.substring(7));
+    }
   }
   String cookie = String(cfg::kCookieName) +
                   "=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";

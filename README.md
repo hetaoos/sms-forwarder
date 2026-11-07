@@ -131,8 +131,14 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
     AP 热点密码可配置（编译期 `-DAP_PASS_DEFAULT` 或网页 `/api/wifi/appass`），
     未设置时为开放热点
   - 网页与 API 在所有模式下统一认证，支持 **Cookie 会话**与 **Bearer 访问令牌**
-    两种方式；管理账号（用户名/密码）可在「系统设置」页修改，以 JSON 对象
-    形式存于 NVS（`appcfg` / `auth`），修改后全部登录态立即作废
+    两种方式；管理账号（用户名/密码）可在「系统设置」页修改，NVS
+    `appcfg/auth` 只存 `salt` + `verifier = SHA256(salt:pass)`，**不存明文密码**，
+    修改后全部登录态立即作废
+  - Web 登录默认走 **SHA-256 挑战应答**：`GET /api/login/challenge` 下发
+    `salt/nonce/ts`，前端提交 `proof = SHA256(verifier:ts:nonce)`，请求体不含
+    明文密码；nonce 30 秒有效且一次性消费，登录失败有全局 / IP / 账号三层限流
+    （429 + `retryAfter`）。v1 明文登录为兼容分支，编译期
+    `-DLOGIN_REQUIRE_PROOF=1` 可禁用；详见「约定与认证」
   - 出厂管理账号可编译期注入（`-DWEB_AUTH_USER_DEFAULT` / `-DWEB_AUTH_PASS_DEFAULT`），
     两者必须同时有值才采用，任一为空/缺失则整体回落 `admin` / `admin123`
   - 配网采用 AP+STA 双栈：连网成功后页面不中断，重启后按配置直连；
@@ -283,7 +289,9 @@ pio device monitor -e esp32s3
 4. 连接成功后页面持续可用（双栈模式）；重启后将按保存的顺序自动连接
 
 已保存配置存放在 NVS：命名空间 `appcfg`，键 `wifi`，值为 JSON 对象（管理账号
-另存于同命名空间的键 `auth`：`{"ver":1,"user":"..","pass":".."}`）：
+另存于同命名空间的键 `auth`：
+`{"ver":2,"user":"..","salt":"<32hex>","verifier":"<64hex>"}`，不含明文密码；
+旧版 v1 明文记录 `{"ver":1,"user":"..","pass":".."}` 开机自动迁移）：
 
 ```json
 {
@@ -469,16 +477,17 @@ Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HT
 （`Content-Type: application/json`，非 JSON 的 POST 不匹配处理器）；
 所有响应（含错误）均为 JSON，错误形如
 `{"ok":false,"error":"描述"}` 并带合适的状态码（400 参数错 /
-401 未认证 / 403 禁止 / 413 请求体过大 / 500 服务端失败），未匹配路径返回
+401 未认证 / 403 禁止 / 413 请求体过大 / 429 登录限流 / 500 服务端失败），未匹配路径返回
 `{"ok":false,"error":"接口不存在"}`（404）。
 
 页面与静态资源（`/`、`/login`、`/assets/*`、`/pages/*`）公开（不含敏感数据）；
-全部 API 统一在 `/api/` 前缀下，除登录/登出/会话探测外均需认证。支持两种认证方式：
+全部 API 统一在 `/api/` 前缀下，除登录挑战 / 登录 / 登出 / 会话探测外均需认证。支持两种认证方式：
 
 1. **会话 Cookie（浏览器）**：`POST /api/login` 成功后服务端下发 `sid`
    Cookie（`HttpOnly; SameSite=Strict; Path=/`，有效期 7 天），浏览器自动携带；
    `HttpOnly` 使 JS 读不到、`SameSite=Strict` 使 Cookie 不随跨站请求发送，
-   第三方网页无法借登录态发起 CSRF 调用。
+   第三方网页无法借登录态发起 CSRF 调用。服务端会话同样按 7 天惰性过期，
+   表满时淘汰最旧（不再出现「第 9 次登录返回 500」）。
 2. **Bearer 访问令牌（脚本/第三方客户端）**：登录响应体返回 `token`，
    之后请求带 `Authorization: Bearer <token>` 头即可，无需 Cookie。
    另有**持久化 API 令牌**（默认关闭，在系统设置页启用）：存于 NVS（`apitoken`），
@@ -488,15 +497,52 @@ Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HT
 `POST /api/logout` 作废当前会话与令牌。未认证访问返回 401
 `{"ok":false,"error":"未授权"}`。
 
+#### 登录：SHA-256 挑战应答（v2，Web 默认）
+
+管理账号在 NVS `appcfg/auth` 里只存
+`{"ver":2,"user":"..","salt":"<32hex>","verifier":"<64hex>"}`，
+`verifier = SHA256(salt + ":" + pass)`，**不存明文密码**；旧版 v1 明文记录
+（`{"ver":1,"user","pass"}`）开机自动迁移，密码不变。
+
+1. `GET /api/login/challenge`（免认证，`Cache-Control: no-store`）返回
+   `{"ok":true,"v":2,"alg":"sha256-verifier","salt":"..","nonce":"<32hex>","ts":<设备millis>,"ttlMs":30000}`。
+   `ts` 是设备 `millis()` 回显值，不依赖 NTP / 浏览器时钟。
+2. 前端算 `verifier = SHA256(salt + ":" + pass)`、
+   `proof = SHA256(verifier + ":" + ts + ":" + nonce)`，均为 64 位小写 hex；
+   `POST /api/login` 提交
+   `{"v":2,"user":"..","ts":<ts>,"nonce":"..","proof":"<64hex>"}`，**请求体不含密码**。
+   服务端用 NVS 中的 verifier 重算 proof 做恒定时间比较；nonce 30 秒有效、
+   **无论成败一次性消费**，重放 / 超时 / 篡改 `ts` 均按登录失败计。
+3. 浏览器能力分级：`crypto.subtle` 只在安全上下文（HTTPS / localhost）暴露，
+   设备是 `http://<局域网IP>:80`，用 IP 访问时必然不可用；因此登录页内置
+   `assets/sha256.js`（纯 JS SHA-256，自带 UTF-8 编码）作为默认实现，
+   原生 Web Crypto 可用时才走 `crypto.subtle.digest`。两者都不可用（无 JS 的脚本）
+   时自动降级到 v1，并打印控制台告警。
+4. **v1 兼容分支**：`{"user":"..","pass":".."}` 明文登录默认保留（脚本 / 旧前端），
+   服务端用 `SHA256(salt + pass)` 重算 verifier 校验；编译期
+   `-DLOGIN_REQUIRE_PROOF=1` 可彻底禁用，禁用后 v1 一律 401。
+5. **限流**：全局（每分钟 20 次「失败 + 挑战」）、来源（IP + 用户名，5 分钟内
+   失败 5 次锁 60 秒、再犯翻倍封顶 15 分钟）、挑战端点（每 IP 每分钟 30 次）三层；
+   命中返回 `429 {"ok":false,"error":"尝试过于频繁，请稍后再试","retryAfter":<秒>}`
+   + `Retry-After` 头，前端按秒倒计时。计数只用 `millis()` 且仅存内存、重启清零，
+   不会在 HTTP handler 里 `delay()`。
+
+> **安全边界**：设备是纯 HTTP，`salt/nonce/ts/proof` 仍随包可见，proof 可离线字典爆破；
+> 本机制的实际收益是密码明文不再进入网络 / NVS / 日志 / 备份，以及防重放 + 限流，
+> **不能替代 HTTPS**。`POST /api/auth` 的新密码 / `passOld` 与保留的 v1 分支仍是明文。
+> **不支持跨该版本回滚**：NVS 升级为 v2 后刷回旧固件，旧固件读不到 `pass`
+> 会回落出厂 `admin/admin123` 并覆写账号；OTA 只升不降，回滚前先导出备份。
+
 ### 认证与令牌
 
 | 方法与路径 | 请求体 | 响应 |
 |-----------|--------|------|
-| `POST /api/login` | `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密错 401、会话满 500 |
+| `GET /api/login/challenge` | 无 | `{"ok":true,"v":2,"alg":"sha256-verifier","salt":"..","nonce":"..","ts":<millis>,"ttlMs":30000}`；免认证，受每 IP / 全局限流，超限 429 |
+| `POST /api/login` | v2 `{"v":2,"user":"..","ts":<ts>,"nonce":"..","proof":"<64hex>"}`；兼容 v1 `{"user":"admin","pass":"admin123"}` | 200 + `Set-Cookie: sid=...`，`{"ok":true,"user":"admin","token":"..."}`；账密 / proof 错或 nonce 失效 401、格式错 400、限流 429、会话写入失败 500 |
 | `POST /api/logout` | 无 | `{"ok":true}` + 清除 Cookie，作废当前会话/令牌 |
 | `GET /api/session` | 无 | 已登录 `{"ok":true,"user":"admin"}`，否则 401 |
 | `GET /api/auth` | 无 | 当前用户名 `{"ok":true,"user":"admin"}`（密码不回传） |
-| `POST /api/auth` | `{"user":"新用户","pass":"新密码","passOld":"当前密码"}` | `{"ok":true}`；当前密码不符 403、长度超限 400、NVS 写入失败 500；成功后全部会话/令牌作废 |
+| `POST /api/auth` | `{"user":"新用户","pass":"新密码","passOld":"当前密码"}` | `{"ok":true}`；当前密码不符 403、长度超限 400、NVS 写入失败 500；成功后全部会话/令牌作废。新密码 / 旧密码字段仍是**明文 HTTP**（与 v1 兼容同属已知残留） |
 | `GET /api/token` | 无 | `{"ok":true,"enabled":bool,"token":".."}` |
 | `POST /api/token` | `{"enabled":bool}` | 开关持久化 API 令牌（启用且无令牌时自动生成），返回 `{"ok":true,"enabled":bool}` |
 | `POST /api/token/reset` | 无（普通 POST） | 重新生成令牌并写 NVS，旧令牌立即失效；未启用 403 |
@@ -715,7 +761,7 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 
 | 方法与路径 | 请求体 | 说明 |
 |-----------|--------|------|
-| `GET /api/config/export` | - | 下载 `sms_forwarder_config_YYYYMMDD.json`（`application/octet-stream`），含 `wifi/auth/email/sms/mqtt/push/blacklist/disp/sched/timezone`（含密码等敏感信息；导出文件名按设备时区生成，时钟不可信时用默认名） |
+| `GET /api/config/export` | - | 下载 `sms_forwarder_config_YYYYMMDD.json`（`application/octet-stream`），含 `wifi/auth/email/sms/mqtt/push/blacklist/disp/sched/timezone`；`auth` 节已脱敏（`ver/user/salt/verifier`，**不含明文管理密码**，仍可凭备份恢复登录），但 `wifi`/`email`/`mqtt` 等节仍含明文密码，备份需妥善保管；导出文件名按设备时区生成，时钟不可信时用默认名 |
 | `POST /api/config/import` | 原始 JSON（`application/json`，>64KB 返回 413） | 导入并落盘，返回 `{"ok":true,"msg":".."}` 后 2 秒重启；导入即作废全部会话 |
 
 ### 崩溃转储
@@ -792,7 +838,8 @@ SSE 不可用时自动降级为 2 秒轮询。
 
 ## 脚本示例
 
-下面示例用 Bearer 令牌调用各接口（先用 `/api/login` 换取 `token`）：
+下面示例用 Bearer 令牌调用各接口（先用 **v1 兼容登录**换取 `token`；浏览器默认走
+v2 挑战应答，脚本也可在「系统设置 - API 访问令牌」启用持久化令牌后直接带 Bearer 头）：
 
 ```bash
 TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
@@ -898,8 +945,9 @@ src/
 │   └── fonts/            编译进 flash 的图标与 Logo 字体 C 文件
 ├── net/                  网络层
 │   ├── WifiManager.h/.cpp  WiFi 连接管理 + NVS 配网 + AP 模式 + 热点密码
-│   ├── AdminStore.h/.cpp  管理账号存储（NVS JSON，可网页修改）
-│   ├── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / LittleFS 静态服务
+│   ├── AdminStore.h/.cpp  管理账号（NVS 只存 salt+verifier，v1 明文自动迁移）
+│   ├── LoginLimiter.h/.cpp 登录三层限流 + 一次性挑战 nonce（纯内存）
+│   ├── WebPanel.h/.cpp   HTTP 路由 / 认证中间件 / 登录挑战 / LittleFS 静态服务
 │   ├── StatusBus.h/.cpp   SSE 实时推送（/api/sse，diff 比对只推变化）
 │   ├── StateJson.h        状态快照 JSON 序列化（REST 与 SSE 共用）
 │   ├── EmailService.h/.cpp  SMTP 邮件通知：HTML 模板 + 通知类型 + 发送队列 + 排程
@@ -927,10 +975,11 @@ src/
 │   └── LogStore.h/.cpp    PSRAM 环形日志缓冲（定长条目 / FIFO / 分级 / 分页查询）
 └── utils/
     ├── HttpSession.h/.cpp  HTTPS 会话 RAII 封装（跳过证书校验）
+    ├── CryptoUtil.h/.cpp   SHA-256 / 随机 hex / 恒定时间比较 / FNV 哈希
     ├── TlsTurn.h/.cpp      全局 TLS 并发通道计数信号量（最多 4 个）
     └── tls_mem.h/.cpp      mbedTLS 大块分配重定向到 PSRAM
 data/
-├── login.html            独立登录页（POST /api/login，成功后跳回目标页）
+├── login.html            独立登录页（v2 挑战应答 / 429 倒计时 / 记住凭据存 verifier）
 ├── index.html            控制台外壳：左侧分组菜单 + 顶栏 + hash 路由内容区
 ├── ui_cn.ttf             中文字库（GB2312，TinyTTF 运行时渲染，不参与 gzip）
 ├── pages/                内容页片段（按菜单懒加载，纯静态无敏感数据）
@@ -952,6 +1001,7 @@ data/
 └── assets/               静态资源（改后需重新 uploadfs）
     ├── app.css           设计系统与布局样式
     ├── app.js            菜单配置 / hash 路由 / 认证封装 / 各页 Alpine 组件
+    ├── sha256.js         纯 JS SHA-256（纯 HTTP 下 crypto.subtle 不可用时的默认实现）
     └── vendor/
         └── alpine.min.js Alpine.js 3.x 运行时（本地内置，AP 模式无外网可用）
 lib/

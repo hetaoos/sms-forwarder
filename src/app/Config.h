@@ -68,6 +68,26 @@ constexpr size_t kApPassMaxLen = 63;                    // WPA2 口令长度上�
 constexpr const char *kCookieName = "sid";        // 登录会话 Cookie 名（HttpOnly + SameSite=Strict）
 constexpr uint8_t kMaxSessions = 8;               // 内存中同时有效的会话 / 访问令牌数上限
 constexpr uint32_t kCookieMaxAge = 604800;        // 会话 Cookie 有效期（秒，7 天）
+constexpr uint32_t kSessionTtlMs = kCookieMaxAge * 1000u;  // 服务端会话/令牌惰性过期（与 Cookie 对齐）
+
+// ---------------- 登录限流 / 挑战应答（§3.1）----------------
+// 编译期开关：1 = 禁止 v1 明文登录（Web / 脚本都必须走 v2 challenge-proof）。
+// 默认 0 保留兼容；正式发布可在 platformio.ini 的 build_flags 加 -D LOGIN_REQUIRE_PROOF=1。
+#ifndef LOGIN_REQUIRE_PROOF
+#define LOGIN_REQUIRE_PROOF 0
+#endif
+constexpr bool kLoginRequireProof = LOGIN_REQUIRE_PROOF != 0;
+constexpr uint8_t kLoginNonceMax = 16;             // 未消费的挑战 nonce 表容量（满时淘汰最旧）
+constexpr uint32_t kLoginNonceTtlMs = 30000;       // 挑战有效期 30s（millis 单调时钟）
+constexpr uint8_t kLoginBucketMax = 16;            // 按 IP + 用户名 的失败计数表容量
+constexpr uint8_t kLoginChallengeBucketMax = 8;    // 按 IP 的挑战频率表容量
+constexpr uint32_t kLoginRateWindowMs = 60000;      // 全局桶 / 挑战桶窗口 1 分钟
+constexpr uint8_t kLoginGlobalFailMax = 20;         // 全局每分钟「失败 + 挑战」上限
+constexpr uint8_t kLoginChallengePerIpMax = 30;     // 每 IP 每分钟挑战次数上限
+constexpr uint32_t kLoginFailWindowMs = 300000;     // 单来源失败计数窗口 5 分钟
+constexpr uint8_t kLoginFailMax = 5;                // 窗口内失败次数阈值
+constexpr uint32_t kLoginLockBaseMs = 60000;        // 首次锁定时长 60s
+constexpr uint32_t kLoginLockMaxMs = 900000;        // 阶梯锁定上限 15 分钟
 
 // ---------------- NVS 配置存储 ----------------
 // 按功能分区存放 JSON：WiFi 配置整体是一个 JSON 对象

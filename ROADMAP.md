@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏仓库入口（§2.9；「前端规划中菜单」按需求否决、已整段撤销）、⑦ 时区可配（默认东八区）与时间失真修复（§2.10）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑦ 的两种配置编译结果（默认 RAM 36.7% / Flash 48.2%，双开关关闭 36.5% / 45.9%）见 §2.10。全部改动**尚未刷机实测**、**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏仓库入口（§2.9；「前端规划中菜单」按需求否决、已整段撤销）、⑦ 时区可配（默认东八区）与时间失真修复（§2.10）、⑧ 登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（§2.11）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑦ 的两种配置编译结果（默认 RAM 36.7% / Flash 48.2%，双开关关闭 36.5% / 45.9%）见 §2.10。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -53,6 +53,7 @@
 - BACK 长按全场景一致（§2.9）：状态页 / 菜单 / 文本页 / 弹窗统一熄屏，长按期间的 `kRepeat` 全部吞掉，修掉了「熄屏后立刻被自己的连发唤醒」这一实际缺陷。
 - 时区可配、默认东八区（§2.10）：Web「系统设置 - 设备时区」可改 UTC-12:00 ~ +14:00（含半时区 / 45 分钟时区），落盘 NVS `appcfg/tz`，即时生效不重启；`/api/timezone` 与配置备份 `timezone` 节；所有 Web 列表按**设备时区**而非浏览器时区显示。
 - 时间戳口径统一（§2.10）：`cfg::kEpochFloorSec` 一处定义、`TimeSync::stamp()` 一处供给，消除裸 `time(nullptr)` 的 1970 小值与多套阈值造成的失真；未同步仍兼容「开机秒数 / 开机 X」。
+- 登录安全（§2.11）：NVS `auth` 只存 `salt + verifier`（v1 明文开机自动迁移）、Web 默认走 `salt/nonce/ts` 的 SHA-256 挑战应答（请求体不含密码、nonce 一次性消费）、全局/IP/账号三层限流（429 + `retryAfter`）、三层浏览器能力降级（原生 Web Crypto → 内置纯 JS SHA-256 → v1 明文兼容）、会话 7 天惰性过期 + LRU；配置导出 `auth` 节不再含明文密码。
 
 ### 1.3 构建与验证命令
 
@@ -471,6 +472,52 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.11 已完成：登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（2026-11-07）
+
+**状态**：代码完成，三种编译配置均 SUCCESS（默认 RAM 37.0% / Flash 48.4%；双开关关闭 SUCCESS；`LOGIN_REQUIRE_PROOF=1` SUCCESS）、`buildfs` SUCCESS、前端语法与 SHA-256 对照测试通过，**未刷机实测**、**未提交 git**；改过 `data/`，刷机时需 `uploadfs`。按 §3.1「已确认决策」**A + B 同批** 落地（跳过 `sha256-pass` 中间态）。
+
+**① NVS 不再存明文密码**（`AdminStore`）
+- `appcfg/auth` 升为 v2 `{"ver":2,"user","salt","verifier"}`，`verifier = SHA256(salt + ":" + pass)`；`begin()` 读到 v1 明文时派生 verifier、生成 salt 并写回 v2（密码不变；落盘失败只告警，下次开机重试）；`update()` 每次换新 salt；`exportTo()` 只导出 `user/salt/verifier`、`importFrom()` 同时接受 v2 与 v1 备份（v1 自动升级）。
+- `check()` 改为派生比对，v1 登录 / `POST /api/auth` 的 `passOld` / LCD 随机重置三条路径自动适配，故 `settings.html`、`app.js` **未改**（见 §3.1「定稿调整」）。新增 `checkProof()` 与 `salt()`。
+
+**② 挑战应答**（`WebPanel`）
+- `GET /api/login/challenge`：免认证（已加白名单，长路径先注册）、`Cache-Control: no-store`，返回 `v=2 / alg=sha256-verifier / salt / nonce / ts / ttlMs`。`ts` 是设备 `millis()` 回显值，不用 `TimeSync::stamp()`；nonce 表 16 条、30s TTL、惰性清理、满时淘汰最旧、**无论成败一次性消费**。
+- `POST /api/login` 按 `v` 分流：v2 提交 `{"v":2,"user","ts","nonce","proof"}`，`proof = SHA256(verifier + ":" + ts + ":" + nonce)`，服务端用 NVS verifier 重算 + 恒定时间比较，**请求体不含密码**；v1 明文兼容**默认保留**，编译期 `LOGIN_REQUIRE_PROOF=1` 可禁用（禁用后统一 401）。失败（含 nonce 重放 / 过期 / ts 不符）统一 `401 "用户名或密码错误"`。
+
+**③ 三层限流**（新增 `src/net/LoginLimiter.h/.cpp`）
+- 全局 20 次/分钟（失败 + 挑战）、来源 `remoteIP() + FNV(user)` 5 次/5 分钟锁 60s 起 ×2 封顶 15 分钟、挑战端点每 IP 30 次/分钟；命中 `429 {"ok":false,"error":"..","retryAfter":<秒>}` + `Retry-After` + `no-store`。
+- 全部只用 `millis()`、纯内存、重启清零，不落 NVS、不 `delay()`；进入锁定时打一条 `auth` 日志（含 IP 末段）。`kLogin*` 常量集中在 `Config.h`。
+
+**④ 前端**（`data/login.html` + 新增 `data/assets/sha256.js`）
+- `sha256.js` 是自带 UTF-8 编码的纯 JS SHA-256（约 2KB）；`crypto.subtle` 可用（HTTPS / localhost）时优先原生，否则走内置实现，两者都不可用降级 v1 并 `console.warn`。提交时**才**取挑战（用户输密码时间不占 30s 窗口）；429 按 `retryAfter` 倒计时；「保存登录凭据」改存 `{user, verifier}`，旧明文记录丢弃，401 且来自保存凭据时清缓存并提示重新输入（设备换 salt 后旧 verifier 失效）。
+- 密码框去掉 `required` 改由脚本校验，否则使用已保存 verifier 时空密码框会被原生约束验证拦住、无法提交。
+
+**⑤ 会话表修复**（`WebPanel`）
+- 会话 / 令牌表加签发时间戳，按 `kSessionTtlMs`（7 天）惰性过期 + 满时淘汰最旧（修掉「第 9 次登录返回 500」）；登录时两张表任一写入失败都回滚已写入的 sid（不再遗留有效会话）。
+
+**关键文件（实际）**：`src/utils/CryptoUtil.h/.cpp`（新增：mbedtls 单次 SHA-256 / 随机 hex / 恒定时间比较 / FNV）、`src/net/LoginLimiter.h/.cpp`（新增）、`src/net/AdminStore.h/.cpp`、`src/net/WebPanel.h/.cpp`、`src/app/Config.h`（`kLogin*`、`kSessionTtlMs`、`LOGIN_REQUIRE_PROOF`）、`data/login.html`、`data/assets/sha256.js`（新增）、`README.md`、本文。
+
+**验证结果（已做）**
+- 默认：`PLATFORMIO_BUILD_DIR=.pio/verify_login pio run -e esp32s3` → **SUCCESS**（RAM 37.0% / Flash 48.4%）。
+- 双开关关闭：`PLATFORMIO_BUILD_DIR=.pio/verify_login_off PLATFORMIO_BUILD_FLAGS="-D ENABLE_MQTT=0 -D ENABLE_FIRMWARE_UPGRADE=0" pio run -e esp32s3` → **SUCCESS**。
+- 禁用 v1：`PLATFORMIO_BUILD_DIR=.pio/verify_login_proof PLATFORMIO_BUILD_FLAGS="-D LOGIN_REQUIRE_PROOF=1" pio run -e esp32s3` → **SUCCESS**。
+- `PLATFORMIO_BUILD_DIR=.pio/verify_login pio run -e esp32s3 -t buildfs` → **SUCCESS**，`littlefs.bin` 含 `sha256.js.gz` / `login.html.gz`；`firmware.elf` 含 `/api/login/challenge`、`sha256-verifier`、限流与「v1 → v2」迁移日志字符串。
+- `node --check data/assets/sha256.js` 通过；纯 JS SHA-256 与 Node `crypto.createHash('sha256')` 对 9 组用例（空串 / 短串 / 中文 / emoji / 55、56、64、119、1000 字节的补齐边界）输出完全一致；`login.html` 内联脚本 `new Function()` 语法检查通过；`read_lints` 0 错误。
+- 协议一致性人工核对：前端 `sha256(salt + ':' + pass)` ↔ `AdminStore::deriveVerifier()`；前端 `sha256(verifier + ':' + c.ts + ':' + c.nonce)` ↔ `AdminStore::checkProof()`；`ts` JSON number ↔ `as<uint32_t>()`、`String(ts)` 十进制拼接，分隔符与 UTF-8/小写 hex 口径一致。
+
+**验收（待设备验证，按 §3.1「验收」9 项 / §6 第 11 项）**
+1. 刷固件 + `uploadfs` 后，浏览器用设备 IP 直连：`window.crypto.subtle` 为 `undefined`，走 L1 内置 SHA-256 仍能登录；抓包确认 v2 请求体只有 `salt/nonce/ts/proof`、**无明文密码**。
+2. 重放同一 `{nonce,ts,proof}` → 401；篡改字段 → 401；challenge 后等 35s 再提交 → 401。
+3. 连续 5 次错密码 → 第 6 次 429 + `Retry-After`、前端倒计时，到期恢复；换 IP 仍受全局桶；限流期间不产生有效 sid。
+4. **NVS 迁移**：旧固件（`auth` v1 明文）升上来 → 开机日志「管理账号已从明文迁移为加盐哈希（v1 → v2）」、原密码仍可登录；导出 `auth` 节无 `pass`；导入 v1 旧备份与新备份都能登录；改密码、LCD 随机重置、`passOld` 校验正常。
+5. 旧脚本 v1 明文登录可用；刷 `LOGIN_REQUIRE_PROOF=1` 固件后 v1 返回 401；Bearer 令牌客户端与 SSE 不受影响。
+6. 记住凭据：`localStorage` 只有 `verifier`；重开登录页免输密码可登录；设备改密码后旧 verifier 失效并提示重新输入。
+7. 连续 10 次成功登录不再 500；`logout` / `/api/session` / AP 配网模式回归正常。
+
+**已知取舍**（详见 §3.1「已知取舍与风险」）：纯 HTTP 下 `proof` 仍可离线字典爆破（单次 SHA-256 加盐不是慢 KDF）；**不支持跨该版本回滚**（旧固件读不到 `pass` 会回落 `admin/admin123` 并覆写账号）；v1 兼容与 `POST /api/auth` 的新密码 / `passOld` 仍是明文；`localStorage` 的 verifier 是密码等价物、只限制爆炸半径；导出脱敏**只覆盖 `auth` 节**，`wifi/email/mqtt` 明文仍在。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -481,7 +528,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 |---|---|---|---|---|
 | ~~持久化「不丢消息」转发队列~~ ✅ 已实现，见 §2.5 | 短信事件已改走发件箱；**非短信事件**仍是邮件/推送队列深 6、满则丢最旧、重启即丢，后续可扩展 | `src/app/Outbox.*`、三个服务的单次投递接口 | 大 | 断电重启后未送达消息继续补发；每条短信可查各通道投递结果 |
 | TLS 证书校验 + OTA 固件验签 | 全部出网 TLS 跳过校验，OTA 无签名/哈希 | `src/utils/HttpSession.cpp:27`、`src/net/EmailService.cpp:200`、`src/net/MqttService.cpp:533`、`src/ota/Ota.cpp` | 中 | 可配置 CA/指纹；校验失败有明确日志；保留兼容开关 |
-| 登录限流 + 口令哈希 + 导出脱敏 | 默认 `admin/admin123`、NVS 明文存密码、导出含明文、`handleLogin` 无失败计数 | `src/net/AdminStore.cpp`、`src/net/WebPanel.cpp:885`、`src/net/WifiManager.cpp:415` | 中 | 连续失败锁定；NVS 存加盐哈希；导出可选脱敏 |
+| ~~登录限流 + 口令哈希 + 导出脱敏~~ ✅ 已实现，见 §2.11（方案 §3.1） | NVS `auth` v2 只存 salt+verifier、v1 自动迁移；登录默认挑战应答 + 三层限流；导出 `auth` 节脱敏 | `src/net/AdminStore.*`、`src/net/LoginLimiter.*`、`src/utils/CryptoUtil.*`、`src/net/WebPanel.*`、`data/login.html` | 中 | 连续失败锁定；NVS 存加盐哈希；导出可选脱敏（**待设备验证**） |
 | MQTT 命令面设备侧鉴权 | 任何能发 `<prefix>/<id>/command` 的主体可执行 `send_at`/`restart`/`send_sms` | `src/net/MqttService.cpp:300-360` | 小 | 命令带签名或白名单，非法命令被拒且记日志 |
 | ~~显式任务/硬件看门狗~~ ✅ 已实现，见 §2.7 | 4 个常驻任务已订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、原因持久化 + 自检 API | `src/app/TaskWatchdog.*`、`App.cpp`、`SerialBridge.*`、`SmsService.cpp` | 中 | 关键任务注册 WDT，卡死自动重启并记原因 |
 
@@ -529,6 +576,130 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 **前端体验**
 - 深色主题、短信详情页、图表页、手机号脱敏显示（验证码打码 + 二次确认查看）。
 
+### 3.1 方案存档（已实施，待设备验证）：登录限流 + 前端 SHA-256 挑战应答（2026-11-07）
+
+**状态**：**已按 A + B 同批实施**，代码实现、编译与前端验证结果见 §2.11；本章保留为设计依据与协议契约，**设备验收仍待执行**。5 项决策于 2026-11-07 确认（见「已确认决策」）。「API 访问令牌传输保护」列入「下一步讨论」，**不在本批范围**。注意下文「现状与硬约束」记录的是**改造前**的旧实现，勿据此判断当前代码。
+
+#### 现状与硬约束
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `POST /api/login` 收 JSON `{"user","pass"}`，`AdminStore::check()` 明文 `==` 比对，**无任何失败计数 / 延时** | `WebPanel.cpp:931-958`、`AdminStore.cpp:94-96` |
+| 2 | 设备是 `http://<局域网IP>:80`；**`window.crypto.subtle` 只在安全上下文（HTTPS / localhost）暴露**，用 IP 访问时是 `undefined`（可在设备页面 `console.log(window.crypto.subtle)` 实测）。所以「浏览器支不支持 SHA-256」在本项目几乎必然落到**不支持原生 API** 的分支 | `Config.h:251`、§5；`crypto.getRandomValues` 在非安全上下文仍可用，但本方案不需要前端随机源 |
+| 3 | 设备时钟可能未同步，`TimeSync::stamp()` 未同步时返回开机秒数，**不能拿来做绝对时间窗口**；`millis()` 才是单调可靠的计时源 | §2.10、`TimeSync.h:72-75` |
+| 4 | 所有 handler 跑在 `async_tcp` 小栈任务，禁止 `delay()` / 大栈 / 多轮哈希；限流只能「记时间 → 提前返回」 | `WebPanel.h:117-119`、§5 |
+| 5 | 会话表 `String[8]` 无过期、满即拒绝登录（8 次登录就能把合法用户挡在门外）；`handleLogin` 令牌表写失败返回 500 时，已写入的 sid 不会回退（遗留有效会话） | `WebPanel.h:100-104`、`WebPanel.cpp:943-949` |
+| 6 | 认证白名单是 3 个精确 URL，新增端点必须加入；且长路径必须先注册 | `WebPanel.cpp:908-919`、`398-415` |
+| 7 | 本库可用 `req->client()->remoteIP()` 做按 IP 维度限流 | `.pio/libdeps/esp32s3/ESPAsyncWebServer/src/Middleware.cpp:180` |
+| 8 | 固件已有 mbedtls（HMAC-SHA256 在 `PushChannels.cpp:57-67`，文件内 `static` 不可直接复用）；单次 SHA-256 用 `mbedtls/sha256.h` 即可，handler 内耗时 <1ms | §5 TLS 段 |
+
+#### 目标与非目标
+
+- **目标**：① 登录失败限流（防在线爆破 / 撞库）；② Web 默认（v2）登录请求不再携带明文密码，服务端一次性挑战防重放；③ 浏览器「有 / 没有原生 SHA-256」都有可用路径；④ 不破坏现有脚本客户端与配置备份。
+- **非目标**：**不宣称等同 HTTPS**。纯 HTTP 下抓包者可见 `nonce`/`ts`/`proof`/`salt`，可离线字典爆破、抢先重放（只造成合法登录失败，不能提权）；根治要靠 §3 P2「本地 Web 可选 HTTPS」+ AP 热点 WPA2。本批的「导出脱敏」**只覆盖 `auth` 账号节**，`wifi`/`email`/`mqtt` 的明文 `pass` 导出、MQTT 命令鉴权、AP 开放热点仍是 §3 的其它待办。
+
+#### 实施范围与协议（A + B 同批，已确认）
+
+**一次性做到位**：限流 + 挑战应答 + NVS 口令哈希 + 导出脱敏 + 记住密码改存 verifier + 会话表修复，同一批改完、同一批验收（不再分两次动 `AdminStore`）。因同批做，**跳过 `sha256-pass` 中间态**：前端只实现 verifier 版 proof，不做「服务端用明文重算」的临时算法；challenge 仍带 `v`/`alg`，供后续换 KDF 时平滑升级。
+
+**数据格式契约**（前后端必须一致：UTF-8 拼接、小写 hex、十进制 ts）：
+- `salt`：`esp_random()` 16 字节 → 32 位小写 hex，随账号存 NVS / 由 challenge 下发；
+- `verifier = SHA256(salt_hex + ":" + pass)` → 64 位小写 hex，**NVS 只存它，不存明文 `pass`**；
+- `proof = SHA256(verifier_hex + ":" + ts + ":" + nonce)` → 64 位小写 hex；
+- 服务端一律恒定时间比较（固定 64 字节逐字节异或累计）。
+
+**协议**
+
+1. `GET /api/login/challenge`（免认证：加入白名单；按 `WebPanel.cpp:398-415` 的注册顺序规则放在 `/api/login` **之前**）
+   返回 `{"ok":true,"v":2,"alg":"sha256-verifier","salt":"<32hex>","nonce":"<32hex>","ts":<设备millis>,"ttlMs":30000}`。
+   - `nonce` 用 `esp_random()` 16 字节（复用 `genSecret()`），存服务端表 `nonce[32]` + `issuedAtMs`；**随机串由设备下发而不是浏览器自生成**：不依赖浏览器随机源，且设备能用自身 `millis()` 判新鲜度，不受 NTP / 浏览器时钟偏差影响。
+   - `ts` 是设备 `millis()` 回显值（不是纪元秒），前端原样回传；服务端按 `millis() - issuedAtMs <= ttlMs` 校验，**不用 `TimeSync::stamp()`**。
+   - nonce 表 TTL 惰性清理、满时淘汰最旧；每次登录**无论成败一次性消费**，杜绝重放。
+2. `POST /api/login` 两条路径（按请求体有无 `v`/`nonce`/`proof` 分流）：
+   - **v2（Web 默认）**：`{"v":2,"user":"..","ts":<ts>,"nonce":"..","proof":"<64hex>"}`，**不含 `pass`**；服务端用 NVS 里的 `verifier` 重算 proof 比对（`AdminStore::checkProof()`）。
+   - **v1（兼容，默认保留）**：原 `{"user","pass"}` 契约不变；服务端用 `SHA256(salt + pass)` 重算 verifier 比对，即只改 `AdminStore::check()` 内部实现。脚本客户端、旧前端、LCD 重置后的首次登录都走这条。
+   - 校验顺序：限流 → 字段 → nonce 存在且未过期 → **消费 nonce** → 用户名 / proof；失败统一 `401 "用户名或密码错误"`（不区分用户不存在 / nonce 失效，防枚举），`429` / `400` 单独可区分；成功响应与 `Set-Cookie` 完全不变（`sendJsonDocWithCookie`），`goHome()` 不用改。
+3. **NVS 迁移（同批）**：`appcfg/auth` 从 `{"ver":1,"user","pass"}` 升到 `{"ver":2,"user","salt","verifier"}`；`loadFromNvs()` 读到 v1 时派生 verifier、生成 salt 并写回 v2（开机一次性、低频）。`update()` 改密码时换新 salt 并派生新 verifier；`exportTo()` 输出 `user/salt/verifier`（**不含明文 `pass`**，仍可凭备份恢复登录）；`importFrom()` 同时接受 v2 与 v1 明文备份（v1 自动升级）。
+4. **定稿调整（相对上一版方案）**：`POST /api/auth` 的 `passOld` **不再改走 proof**，保持明文契约，由 `check()` 一处改动覆盖 v1 登录 / `passOld` / LCD 重置三条路径，避免把「改密码」页也卷进协议改造；`data/pages/settings.html` 与 `data/assets/app.js` 因此**不改**。新密码字段仍是明文 HTTP，与已确认保留的 v1 兼容属于同一残留面（见「已知取舍」）。
+
+#### 浏览器能力分级（「支持 sha256」的真实含义）
+
+| 级别 | 判定 | 做法 | 本项目命中 |
+|---|---|---|---|
+| L0 | `window.crypto && crypto.subtle && crypto.subtle.digest` 可用（HTTPS / localhost） | 原生 `crypto.subtle.digest('SHA-256', ...)` | 极少 |
+| L1 | `subtle` 不可用（**纯 HTTP 局域网 IP**） | **自带纯 JS SHA-256**：新增 `data/assets/sha256.js`，约 2KB（gzip 后 <1.5KB），自带 UTF-8 编码，不依赖 `TextEncoder` / secure context，兼容老浏览器 | **默认命中** |
+| L2 | 连 JS 哈希都跑不了 / 命令行脚本 / 旧前端 | 保留 v1 明文 `{"user","pass"}` 兼容分支（同样受限流保护）；脚本客户端改用持久化 API 令牌（`/api/token`），不再用密码登录；提供 `requireProof` 开关（默认关闭，验收通过后可开启）一刀切禁掉 v1 | 第三方脚本 |
+
+> 结论：**不是「不支持就放弃哈希」，而是「原生 API 不可用就换纯 JS 实现」**，覆盖率接近 100%；L2 只是给无 JS 的脚本留的后路，同样落在限流与统一 401 文案内。
+
+#### 限流设计
+
+- **计时一律 `millis()`**（相对窗口 / 单调），不落 NVS：重启清零，避免断电后把自己锁死；攻击者无法远程重启（`/api/system/restart` 需认证，见 `WebPanel.cpp:568`），物理接触场景本就不在本方案防护范围。计数只在内存，不写 NVS，也就没有磨损问题。
+- **三个维度**（阈值已确认，见「已确认决策」）：
+  - 全局桶：所有来源合计每分钟最多 `kLoginGlobalFailMax`（= 20）次失败 / 挑战，防伪造 IP 绕过；
+  - 来源桶：键 = `remoteIP()` + 用户名 FNV，表 16 条惰性淘汰（NAT 后多人共 IP 时靠用户名再分一层）；
+  - 挑战端点：每 IP 每分钟最多 `kLoginChallengePerIpMax`（= 30）次，防刷爆 nonce 表。
+- **阶梯锁定**：窗口 `kLoginFailWindowMs`（5 分钟）内失败 `kLoginFailMax`（5）次 → 锁 `kLoginLockBaseMs`（60s），再犯 ×2，上限 `kLoginLockMaxMs`（15 分钟）；成功清掉该键。锁定期**直接返回** `429 {"ok":false,"error":"尝试过于频繁，请稍后再试","retryAfter":<秒>}` + `Retry-After` 头，**绝不 `delay()` / `vTaskDelay()`**。
+- **计入失败**：账号或 proof 错、nonce 无效 / 过期 / 重放、v1 明文失败；纯字段格式错误（`400`）不计，避免误伤。前端按 `retryAfter` 倒计时禁用按钮（仅体验，不是安全边界）。
+- **可观测**：`auth` 分类节流日志（含 IP 末段，不刷屏），可用 `/api/logs?q=限流` 取证。
+- 常量全部集中 `src/app/Config.h`：`kLoginNonceTtlMs` / `kLoginNonceMax` / `kLoginFailWindowMs` / `kLoginFailMax` / `kLoginLockBaseMs` / `kLoginLockMaxMs` / `kLoginGlobalFailMax` / `kLoginChallengePerIpMax`（照现有 `k` 前缀 + 中文注释风格）。
+
+#### 同批修复与「记住密码」（已确认）
+
+- 会话表加 `issuedAtMs` + 7 天惰性过期 + 满时淘汰最旧：修掉「第 9 次登录返回 500」这个现成 DoS；
+- `handleLogin` 先确认两张凭证表都有空位再一起写入，修令牌表写失败时遗留有效 sid；
+- **记住密码改存 verifier**：`localStorage['savedLogin']` 从 `{user, pass}` 改为 `{user, verifier}`，不再存明文密码。回填时**不往密码框塞假密码**，置 `usingSaved=true` 直接拿保存的 verifier 算 proof；用户一旦在密码框触发 `input` 就置 `false`，改用 challenge 下发的 `salt` + 输入密码现场派生 verifier。设备改密码 / 重新迁移后 salt 变化会让旧 verifier 失效 → 401 时清掉保存项并提示「密码已变更，请重新输入」。
+  > **必须讲清**：verifier 是「密码等价物」，拿到它能直接构造 v2 proof 登录本机，所以这**不是安全存储**，只是把泄露范围限制在本设备（不会把用户可能在其它站点复用的明文密码交出去）；`localStorage` 仍是 XSS / 本机用户可读的平面。
+
+#### 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `src/net/WebPanel.h/.cpp` | 新增 `handleLoginChallenge`；`handleLogin` v1/v2 分流与 proof 校验；nonce 表 + 限流桶；中间件白名单 + 路由注册顺序；SHA-256 / hex / 恒定时间比较（匿名命名空间或 `src/utils` 薄封装，实现时择一）；会话过期 / LRU |
+| `src/net/AdminStore.h/.cpp` | NVS v1→v2 迁移、`salt/verifier`、`check()` 改派生比对、`checkProof()`、`exportTo()` 脱敏（仅账号节）、`importFrom()` 兼容 v1、`update()` 换 salt |
+| `src/app/Config.h` | `kLogin*` 限流常量与 `auth` 格式版本 |
+| `data/login.html`、新增 `data/assets/sha256.js` | 能力检测 L0/L1/L2、challenge → verifier → proof、429 倒计时、v2 请求体去掉明文 `pass`、记住密码改存 verifier |
+| `data/pages/settings.html`、`data/assets/app.js` | **不改**（`POST /api/auth` 契约保持，见「定稿调整」） |
+| `README.md` | 新端点、v1/v2 协议、429 契约、NVS 迁移与**回滚警告**、脱敏口径、降级与安全边界 |
+| 本文 | 实施后按 §2/§3/§4/§5/§6/§7 同步状态 |
+
+#### 验收（编译 + 设备）
+
+1. 两种编译配置均 SUCCESS（§1.3）；改过 `data/` 必须 `uploadfs`；`node --check data/assets/sha256.js` 通过（`app.js` 本批不改），`login.html` 内联脚本在浏览器控制台确认无报错。
+2. 浏览器用设备 IP 直连：`window.crypto.subtle` 为 `undefined`，走 L1 纯 JS SHA-256 仍能登录；抓包确认 v2 请求体**无明文密码**，只有 `salt`/`nonce`/`ts`/`proof`。
+3. 重放同一 `{nonce,ts,proof}` → 401（nonce 一次性）；篡改 `ts`/`nonce`/`proof` → 401；challenge 后等 35s 再提交 → 401。
+4. 连续 5 次错密码 → 第 6 次 `429` + `Retry-After`，到期恢复；错用户名同样计数；换 IP 仍受全局桶；限流期间不产生有效 sid。
+5. **NVS 迁移**：从旧固件（`auth` v1 明文）升级 → 开机自动写成 v2、原密码仍可登录；`GET /api/config/export` 的 `auth` 节只有 `user/salt/verifier`、无 `pass`；导入新备份与导入 v1 旧备份后都能登录；改密码、LCD 随机重置密码、`POST /api/auth` 的 `passOld` 校验均正常。
+6. 旧脚本 v1 明文登录仍可用（默认）；打开 `requireProof` 后 v1 返回 401；Bearer API 令牌客户端不受影响。
+7. 连续 10 次成功登录不再 500；`logout` / `/api/session` / SSE / AP 配网模式回归正常。
+8. 记住密码：勾选后 `localStorage` 只有 `verifier`、无明文 `pass`；重开登录页免输密码可登录；设备改密码后旧 verifier 失效并提示重新输入。
+9. 回归非认证链路：收 / 发短信、发件箱、时区显示等按 §6 不受影响。
+
+#### 已知取舍与风险
+
+- 纯 HTTP 下 `salt`/`nonce`/`ts`/`proof` 随包可见，`proof` 可离线字典爆破（单次 SHA-256 加盐**不是慢 KDF**）；实际收益是**密码明文不再进网络 / NVS / 日志 / 备份** + 防重放 + 限流，不能防嗅探后的离线爆破或会话劫持。
+- **不支持跨该版本回滚**：NVS 改 v2 后刷回旧固件，会因读不到 `pass` 字段而回落出厂 `admin/admin123` 并覆写账号；OTA 只升不降，README / 升级说明必须写明，回滚前先导出备份。
+- **v1 兼容是既定残留**：默认保留期间攻击者仍可直接发明文密码（同样被限流），`POST /api/auth` 的新密码 / `passOld` 也仍明文；只有 `requireProof` 能关掉登录面的明文。`wifi`/`email`/`mqtt` 明文导出、AP 开放热点、MQTT 命令鉴权仍是 §3 其它待办。
+- `localStorage` 存 verifier **不是安全存储**（密码等价物，仅限制爆炸半径），salt 变化会让保存项失效。
+- 按 IP 限流在 NAT 下可能误伤，故叠加用户名维度、锁定封顶 15 分钟；计数重启清零，不落 NVS。
+- 单次 SHA-256 可在 handler 内做（<1ms）；派生 verifier 只在开机迁移 / 改密码 / 导入备份等低频路径，后续若引入 PBKDF2 多轮派生必须放主循环，别在 `async_tcp` 里迭代。
+- 新增 JS 受 `script/uploadfs_gz.py` 自动 gzip；`Cache-Control: no-store`（`WebPanel.cpp:67-88`）保证不缓存旧登录页。
+
+#### 已确认决策（2026-11-07）
+
+| # | 决策 | 结论 |
+|---|---|---|
+| 1 | 阶段 B（NVS 口令哈希 + 导出脱敏） | **同批做**；跳过 `sha256-pass` 中间态，直接 verifier 版 v2 |
+| 2 | v1 明文兼容 | **默认保留**；`requireProof` 作为可选开关保留（默认关），不影响现有脚本 |
+| 3 | 记住密码 | **改存 verifier**，不存明文密码；按「同批修复与记住密码」契约实现 |
+| 4 | 限流阈值 | **合适，不改**：5 次 / 5 分钟，锁 60s 起 ×2 封顶 15 分钟，全局 20 次/分钟，challenge 30 次/分钟·IP |
+| 5 | 会话过期 / LRU 与遗留 sid | **同批修** |
+
+#### 下一步讨论（不纳入本批实施）
+
+- **API 访问令牌的传输保护（本次提出，待讨论）**：现状 `/api/token` GET 明文返回持久化令牌（UI 掩码只是前端展示）、NVS `apitoken` 明文存 `token`、登录响应 `token` 明文、Bearer 头在纯 HTTP 上明文传输；令牌无过期（临时 token 重启失效、持久化 token 直到手动重置）。**本批的挑战应答只覆盖登录密码，令牌链路完全不动**。待讨论方向（先不选定）：① 令牌也改成 verifier + 每请求签名 / 证明；② 用令牌换取短期票据；③ 直接上 HTTPS 一并根治；④ 只收敛暴露面（默认关闭、掩码、缩短有效期、限流）。讨论时一并明确 `authorized()` 要求 `_apiTokenEnabled`（默认关闭，登录返回的临时 token 默认不可用）这一现状是否要改。
+- 相关残留（同属后续讨论）：慢 KDF（PBKDF2-HMAC-SHA256）与前端同款实现；`POST /api/auth` 新密码 / `passOld` 的非明文改造；配置导出 `wifi`/`email`/`mqtt` 的 `pass` 脱敏；AP 开放热点、MQTT 命令鉴权、§3 P2 本地 HTTPS。
+
 ---
 
 ## 4. 推荐实施顺序
@@ -536,7 +707,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
 3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）、BACK 长按 + 侧栏仓库入口（§2.9；规划中菜单按需求不做）、时区可配 + 时间失真（§2.10）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS。
-4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
+4. **安全三件套**：✅ 登录限流 + 口令哈希 + 前端挑战应答已完成（§2.11，方案 §3.1，**待设备验证**）→ 余下 TLS 证书校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）与 MQTT 命令鉴权；API 访问令牌传输保护另行讨论（§3.1「下一步讨论」）。
 5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
 > 每个阶段结束都应：编译通过 → 更新本文档 §2/§7 → 在 `README.md` 同步 API/配置变更 → 需要设备验证的写清楚验收步骤。
@@ -568,9 +739,11 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 - OTA tag 格式 `<VERSION>-<提交时间>-<sha7>`，由 `script/inject_app_version.py` 编译期注入；产物名 `ota-<tag>-<platform>.bin`，`APP_PLATFORM` 必须与 CI 一致。
 
 **配置与认证**
-- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / remark / blacklist / disp / sched / lastts`（`remark` 为设备备注纯字符串，`{remark}` 占位符取值，§2.8）；`coredump`（崩溃时间 / 版本）与 `wdt`（复位原因 / 卡死任务 / 累计次数）是独立命名空间（不随出厂复位清除）。
-- 出厂管理账号 `admin/admin123`（编译期 `-DWEB_AUTH_*_DEFAULT` 可覆盖）；配置导出**含明文密码**。
-- 所有 `/api/`（除 login/logout/session）需 Cookie `sid` 或 Bearer 或持久化 API 令牌。
+- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / remark / blacklist / disp / sched / tz / lastts`（`remark` 为设备备注纯字符串，`{remark}` 占位符取值，§2.8）；`coredump`（崩溃时间 / 版本）与 `wdt`（复位原因 / 卡死任务 / 累计次数）是独立命名空间（不随出厂复位清除）。
+- 管理账号 `appcfg/auth` 为 **v2**：`{"ver":2,"user","salt","verifier"}`，`verifier = SHA256(salt:pass)`，**不存明文密码**；旧 v1 明文记录开机自动迁移（§2.11）。**不支持回滚到旧固件**：旧固件读不到 `pass` 会回落 `admin/admin123` 并覆写账号，OTA 只升不降、回滚前先导出备份。出厂账号 `admin/admin123`（编译期 `-DWEB_AUTH_*_DEFAULT` 可覆盖）。
+- 配置导出 `auth` 节只含 `user/salt/verifier`；`wifi / email / mqtt` 等节**仍含明文密码**，备份需妥善保管。
+- 所有 `/api/`（除 `login/challenge`、`login`、`logout`、`session` 四个端点）需 Cookie `sid` 或 Bearer 或持久化 API 令牌；登录限流、挑战应答与 v1 兼容开关见 §2.11 / §3.1。
+- **前端哈希的硬约束**：`window.crypto.subtle` 只在安全上下文（HTTPS / localhost）暴露，设备是 `http://<局域网IP>:80`，用 IP 访问时必然是 `undefined`；登录页已内置 `data/assets/sha256.js` 纯 JS 实现（§2.11）。限流 / nonce / 会话过期一律用 `millis()`，不要用未同步时返回开机秒数的 `TimeSync::stamp()`；会话与令牌表 7 天惰性过期、满时淘汰最旧。
 
 **其它**
 - 所有出网 TLS 目前 `setInsecure()`，OTA 无签名 → P0 待修。
@@ -595,6 +768,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 8. 改推送模板 / 模组快照后，按 §2.8「验收」核对占位符取值、ICCID 采集与备注持久化；改过 `AT+CCID` 静态采集步骤（`idStep`）时重点看初始化仍能正常到 `kReady`。
 9. 改按键状态机后按 §2.9「验收」回归四种显示态的 BACK 长按 / 短按、唤醒、UP/DOWN/OK 连发；改 `data/assets/app.js` 后跑 `node --check`，改过 `data/` 必须重新 `uploadfs` 才能在设备上看生效。
 10. 改时间 / 时区后按 §2.10「验收」回归默认 +480、改成半时区、重启沿用、导入导出与未同步显示；新增记录时间戳必须用 `TimeSync::stamp()`，判断时钟可信一律用 `cfg::kEpochFloorSec`，不要再直接 `time(nullptr)`。
+11. 改登录 / 认证链路后按 §3.1「验收」回归：v1 / v2 两条登录路径、nonce 重放与 TTL、429 限流、NVS `auth` v1→v2 迁移与回滚警告、导出脱敏、记住密码 verifier 失效、会话过期 / LRU、Bearer 令牌与 SSE 不受影响；改过 `data/` 必须 `uploadfs`。
 
 ---
 
@@ -618,4 +792,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 时区可配 + 时间失真（§2.10）：`TimeSync` 可配置 POSIX TZ（默认 UTC+8，NVS `appcfg/tz`，支持半时区）、`GET\|POST /api/timezone`、Web 设置页与仪表盘显示、配置备份 `timezone` 节；新增 `cfg::kEpochFloorSec` 与 `TimeSync::stamp()` 统一时间戳口径，前端列表改按设备时区格式化；README 新增「时间与时区」章节 | 代码完成，两种配置编译 SUCCESS（36.7%/48.2% 与 36.5%/45.9%）、`node --check` 与沙箱校验通过，**待设备验证**（需 `uploadfs`） |
 | 2026-11-07 | 按需求调整：Web 侧栏 / 登录页移除项目简介文案，只保留仓库链接（§2.9）；`TimeSync::loadTimezone()` 在首次启动或值越界时把默认东八区 `tz=480` 显式写回 NVS，并修 `x-for` / `x-model` 时序导致设置页首屏下拉未选中当前时区的问题（§2.10） | 代码完成，两种配置编译 SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`） |
 | 2026-11-07 | 主题微调：侧栏菜单滚动条轨道改为与菜单同色 `#191c24`（标准 `scrollbar-color` + WebKit 两套写法）；模组调试「类型 / 模组」分段控件底色由硬编码 `#11131a` 改为 `var(--bg-soft)`，浅色文字对比度 3.10:1 → 5.58:1；表单控件 `color-scheme` 跟随页面主题，避免系统深色 + 页面浅色时原生下拉颜色错乱 | 代码完成，CSS 括号平衡 / 对比度校验通过，**待设备验证**（需 `uploadfs`） |
+| 2026-11-07 | 新增「登录限流 + 前端 SHA-256 挑战应答」方案（§3.1）：服务端下发 nonce/ts 一次性挑战、浏览器原生或内置纯 JS SHA-256 双实现、全局/IP/账号三层限流；明确纯 HTTP 下 `crypto.subtle` 不可用、计时用 `millis()`、不阻塞 `async_tcp`；同步 §3 / §4 / §5 | **仅方案，待确认**，代码未动 |
+| 2026-11-07 | §3.1 方案定稿：5 项决策确认（A+B 同批 / v1 默认保留 / 记住密码改存 verifier / 阈值不改 / 会话修复同批）；协议改为直接 verifier 版 v2，含 NVS `auth` v1→v2 迁移与回滚警告；新增「API 访问令牌传输保护」为下一步讨论项；同步 §3 / §4 / §6 | **方案已确认，待实施**，代码未动 |
+| 2026-11-07 | 实现登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（§2.11，按 §3.1 A+B 同批）：新增 `CryptoUtil` / `LoginLimiter` / `sha256.js`，`AdminStore` v1→v2 迁移与导出脱敏，v2 挑战应答 + 三层限流 + 429，v1 兼容开关 `LOGIN_REQUIRE_PROOF`，会话过期 / LRU 与遗留 sid 修复；README 与本文 §0 / §1.2 / §2.11 / §3 / §4 / §5 / §7 同步 | 代码完成，三种编译配置 + `buildfs` 均 SUCCESS，`node --check` / SHA-256 对照 / 语法检查通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |
