@@ -1,5 +1,7 @@
 #include "push/PushService.h"
 #include "log/LogStore.h"
+#include "sms/ModemSnapshot.h"  // ModemSnapshot：模板的模组专属占位符数据源
+#include "sms/SmsService.h"     // SmsService::modemSnapshot()
 #include "utils/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
 #include <WiFi.h>
@@ -48,6 +50,12 @@ static bool isHttpPush(PushType t) {
 // 本身与具体某封信无关，且启动/在线时模组多半还没就绪，发了也发不出。
 static bool smsPushSkipped(MsgType t) {
   return t == MSG_TYPE_SIM || t == MSG_TYPE_BOOT || t == MSG_TYPE_ONLINE;
+}
+
+// 快照里的「-」代表未采集到，模板占位符应渲染为空串而不是字面量的减号
+static String snapshotField(const char *v) {
+  String s(v ? v : "");
+  return (s.length() && s != "-") ? s : String();
 }
 
 // 归一化 modemSlot：<=0（含缺失 / 空串 / 0 / 非法值）一律视为「自动挑就绪模组」
@@ -455,10 +463,28 @@ MessageContext PushService::buildMsgContext(const PushJob& job, const String& me
   ctx.deviceId    = deviceId();
   ctx.deviceName  = deviceName();
   ctx.uptime      = MsgContext::formatUptime(millis());
-  ctx.remark      = "";           // 本框架暂不配置设备备注
+  {
+    Guard g(_mutex);              // 递归锁：配置读写与本函数可能嵌套
+    ctx.remark = _remark;         // NVS appcfg/remark，推送通道页可改
+  }
   ctx.messageType = messageType;
   ctx.simSlot     = (job.modem >= 0) ? ("SIM" + String(job.modem + 1)) : "";
   ctx.modemIndex  = (job.modem >= 0) ? String(job.modem + 1) : "";
+
+  // 模组专属字段：job.modem 为 0 基，modemSnapshot() 的 port 为 1 基。
+  // 测试推送 modem=-1（无来源模组）时保持空串；快照不加锁，最多读数差一拍。
+  if (_sms && job.modem >= 0) {
+    ModemSnapshot ms;
+    if (_sms->modemSnapshot((uint8_t)(job.modem + 1), ms)) {
+      ctx.carrier = snapshotField(ms.oper);    // {carrier}
+      ctx.to      = snapshotField(ms.num);     // {to}
+      ctx.iccid   = snapshotField(ms.iccid);   // {iccid}
+      if (ms.csq >= 0 && ms.csq <= 31) {       // {signal}：与 Web 页 csqDbm 同口径
+        ctx.signal = String(-113 + 2 * (int)ms.csq) + " dBm (CSQ " +
+                     String((int)ms.csq) + ")";
+      }
+    }
+  }
   return ctx;
 }
 
@@ -544,6 +570,7 @@ String PushService::configJson() const {
   doc["ok"] = true;
   doc["enabled"] = _enabled;
   doc["strategy"] = (int)_strategy;
+  doc["remark"] = _remark;
   // configured：存在任一有效（启用且字段齐全）通道
   bool configured = false;
   for (int i = 0; i < _count; i++) {
@@ -629,6 +656,12 @@ bool PushService::saveFromJson(const JsonObject& o) {
     int s = o["strategy"] | (int)_strategy;
     _strategy = (s == (int)PUSH_STRATEGY_FAILOVER) ? PUSH_STRATEGY_FAILOVER
                                                   : PUSH_STRATEGY_BROADCAST;
+    // remark 可选：只在显式提供时更新，兼容旧前端与 /api/push/enabled 这类部分保存
+    if (o["remark"].is<const char*>()) {
+      String r = o["remark"].as<String>();
+      if (r.length() > cfg::kPushRemarkMaxLen) r = r.substring(0, cfg::kPushRemarkMaxLen);
+      _remark = r;
+    }
 
     int cnt = 0;
     if (o["channels"].is<JsonArray>()) {
@@ -680,6 +713,7 @@ void PushService::exportTo(JsonObject& o) const {
   Guard g(_mutex);
   o["enabled"] = _enabled;
   o["strategy"] = (int)_strategy;
+  o["remark"] = _remark;
   JsonArray arr = o["channels"].to<JsonArray>();
   for (int i = 0; i < _count; i++) {
     const PushChannel& ch = _channels[i];
@@ -706,6 +740,11 @@ bool PushService::importFrom(const JsonObject& o) {
     int s = o["strategy"] | (int)_strategy;
     _strategy = (s == (int)PUSH_STRATEGY_FAILOVER) ? PUSH_STRATEGY_FAILOVER
                                                   : PUSH_STRATEGY_BROADCAST;
+    if (o["remark"].is<const char*>()) {
+      String r = o["remark"].as<String>();
+      if (r.length() > cfg::kPushRemarkMaxLen) r = r.substring(0, cfg::kPushRemarkMaxLen);
+      _remark = r;
+    }
     int cnt = 0;
     if (o["channels"].is<JsonArray>()) {
       JsonArray arr = o["channels"].as<JsonArray>();
@@ -736,9 +775,17 @@ bool PushService::importFrom(const JsonObject& o) {
 bool PushService::loadConfig() {
   Preferences prefs;
   String json;
+  String remark;
   if (prefs.begin(cfg::kNvsNamespace, true)) {
     json = prefs.getString(cfg::kNvsKeyPush, "");
+    remark = prefs.getString(cfg::kNvsKeyRemark, "");
     prefs.end();
+  }
+  if (remark.length() > cfg::kPushRemarkMaxLen)
+    remark = remark.substring(0, cfg::kPushRemarkMaxLen);
+  {
+    Guard g(_mutex);
+    _remark = remark;   // 独立键：即使推送通道配置为空 / 解析失败，备注仍生效
   }
   if (!json.length()) {
     _log.addf(LogLevel::kInfo, "push", "NVS 无推送配置，使用默认值（总开关关，无通道）");
@@ -806,6 +853,7 @@ bool PushService::persistConfig() {
   Preferences prefs;
   if (!prefs.begin(cfg::kNvsNamespace, false)) return false;
   size_t written = prefs.putString(cfg::kNvsKeyPush, out);
+  size_t remarkWritten = prefs.putString(cfg::kNvsKeyRemark, _remark);
   prefs.end();
-  return written == out.length();
+  return written == out.length() && remarkWritten == (size_t)_remark.length();
 }

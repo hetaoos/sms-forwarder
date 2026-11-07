@@ -231,10 +231,12 @@ void Outbox::snapshotChannels(Rec &r) const {
   mail.key = "email";
   mail.label = "邮件通知";
   r.ch.push_back(mail);
+#if ENABLE_MQTT
   Channel mq;
   mq.key = "mqtt";
   mq.label = "MQTT";
   r.ch.push_back(mq);
+#endif
 
   // 快照当下启用且字段齐全的 webhook 通道，索引固化在 key 里（push:<idx>）。
   // 用户随后改配置不会影响已入队记录：新增通道不补发，删掉的通道投递时判跳过。

@@ -73,8 +73,11 @@ bool App::begin() {
   // LCD「工具箱」页动作（检查新版本并更新 / 重启 / 恢复出厂）。
   // 回调只负责「发起」：耗时动作在 Ota 后台任务或延迟重启任务里执行，不阻塞主循环。
   // 恢复出厂与 Web「系统维护」的出厂复位同语义：清空 NVS 配置 + 格式化用户数据分区
+  // ENABLE_FIRMWARE_UPGRADE=0 时不注册 OTA 动作（LCD 工具箱点了也不会误触发）
+#if ENABLE_FIRMWARE_UPGRADE
   _ui.setOtaCheckFn([]() { Ota::startVersionCheck(); });
   _ui.setOtaUpgradeFn([](const String &tag) { Ota::startOnlineUpgrade(tag); });
+#endif
   _ui.setRestartFn([]() {
     xTaskCreate(
         [](void *) {
@@ -331,7 +334,7 @@ void App::collectStatus(StatusInfo &out) {
       }
     }
 
-#if defined(ENABLE_MQTT) && ENABLE_MQTT
+#if ENABLE_MQTT
     out.mqttOn = MqttService::isEnabled();
     out.mqttCfg = MqttService::isConfigured();
     out.mqttConn = MqttService::connected();

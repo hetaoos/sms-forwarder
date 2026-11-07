@@ -37,6 +37,7 @@
                  运营商：<b x-text="(m.operCode ? (m.operCode + (operCn(m.operCode) ? ' · ' + operCn(m.operCode) : '')) : (m.oper || '-'))"></b></div>
             <div>注册：<b x-text="m.reg || '-'"></b><span x-show="m.act" x-text="' · ' + actText(m.act)"></span></div>
             <div>IMEI：<b x-text="m.imei || '-'"></b></div>
+            <div x-show="m.iccid">ICCID：<b x-text="m.iccid"></b></div>
           </div>
         </template>
         <div class="bar" style="margin-top:10px">

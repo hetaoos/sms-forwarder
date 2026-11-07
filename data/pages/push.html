@@ -31,6 +31,20 @@
     </div>
   </div>
 
+  <!-- 设备备注：推送模板 {remark} 的数据源，落盘 NVS，重启不丢 -->
+  <div class="card" x-show="loaded">
+    <h3>设备备注</h3>
+    <p class="hint" style="margin:0 0 10px">
+      自定义模板里的 <code>{remark}</code> 会替换成这里的内容，便于区分多台设备、多张卡
+      （例如「机房 A · 备用卡」）。最多 64 字节，点「保存备注」落盘后重启仍生效。
+    </p>
+    <div class="bar">
+      <input class="inp" type="text" maxlength="64" x-model="cfg.remark" style="max-width:420px"
+             placeholder="例如：机房 A · 备用卡" autocomplete="off">
+      <button class="btn ghost sm" :disabled="saving" @click="save()">保存备注</button>
+    </div>
+  </div>
+
   <!-- 策略 -->
   <div class="card" x-show="loaded && cfg.enabled">
     <h3>推送策略</h3>
@@ -127,12 +141,19 @@
         <tbody>
           <tr><td><code>{from}</code></td><td>发件人号码</td><td>+8613800138000</td></tr>
           <tr><td><code>{message}</code></td><td>短信内容</td><td>您的验证码是 123456</td></tr>
-          <tr><td><code>{timestamp}</code></td><td>时间戳（UTC ISO 8601）</td><td>2026-10-20T08:30:00Z</td></tr>
+          <tr><td><code>{timestamp}</code></td><td>事件时间戳（已同步为纪元秒，未同步为开机秒数）</td><td>1760941800</td></tr>
           <tr><td><code>{date}</code></td><td>本地时间</td><td>2026-10-20 16:30:00</td></tr>
-          <tr><td><code>{deviceName}</code></td><td>设备名称</td><td>SMS-Forwarder</td></tr>
-          <tr><td><code>{simSlot}</code></td><td>卡槽编号（0/1）</td><td>0</td></tr>
-          <tr><td><code>{modemIndex}</code></td><td>通信模组序号</td><td>0</td></tr>
-          <tr><td><code>{uptime}</code></td><td>系统运行时长</td><td>3d 2h 15m</td></tr>
+          <tr><td><code>{deviceId}</code></td><td>设备唯一 ID（12 位十六进制）</td><td>a1b2c3d4e5f6</td></tr>
+          <tr><td><code>{deviceName}</code></td><td>设备名称</td><td>SMS-Forwarder-a1b2c3d4e5f6</td></tr>
+          <tr><td><code>{simSlot}</code></td><td>SIM 槽位</td><td>SIM1</td></tr>
+          <tr><td><code>{modemIndex}</code></td><td>通信模组序号（从 1 开始）</td><td>1</td></tr>
+          <tr><td><code>{carrier}</code></td><td>运营商（AT+COPS?，优先中文名）</td><td>中国移动</td></tr>
+          <tr><td><code>{to}</code></td><td>本机号码（AT+CNUM）</td><td>+8613900139000</td></tr>
+          <tr><td><code>{iccid}</code></td><td>SIM 卡 ICCID（AT+CCID）</td><td>89860012345678901234</td></tr>
+          <tr><td><code>{signal}</code></td><td>信号强度（AT+CSQ 换算）</td><td>-73 dBm (CSQ 20)</td></tr>
+          <tr><td><code>{remark}</code></td><td>设备备注（本页上方配置）</td><td>机房 A · 备用卡</td></tr>
+          <tr><td><code>{message_type}</code></td><td>消息类型（旧别名 <code>{trigger_type}</code>）</td><td>短信</td></tr>
+          <tr><td><code>{uptime}</code></td><td>系统运行时长</td><td>3天2小时15分钟</td></tr>
           <tr><td><code>{channelName}</code></td><td>通道名称</td><td>我的 Bark</td></tr>
           <tr><td><code>{channelType}</code></td><td>通道类型</td><td>bark</td></tr>
         </tbody>

@@ -167,6 +167,7 @@ class PushService {
   SmsService *_sms = nullptr;   // 短信服务（SMS 备份通道发送入口；未注入时该通道判失败）
 
   bool     _enabled = false;                   // 推送总开关（NVS 无记录默认关）
+  String   _remark;                            // 设备备注（独立 NVS 键 cfg::kNvsKeyRemark，模板 {remark}）
   PushStrategy _strategy = PUSH_STRATEGY_BROADCAST;
   PushChannel  _channels[MAX_PUSH_CHANNELS];
   int          _count = 0;                     // 有效通道数（遍历以此为界）

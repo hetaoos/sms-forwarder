@@ -199,4 +199,46 @@ class MqttService {
   // 限流只控制入队速率，可靠性由 esp-mqtt outbox 保证。
 };
 
+#else  // !ENABLE_MQTT —— 编译期关闭 MQTT
+
+// 空实现替身：让 App / WebPanel / Outbox 的装配代码无需到处写 #if，
+// 同时 MqttService.cpp 整个实现（esp-mqtt 客户端、TLS、命令队列）不会进固件。
+// 只覆盖「未被 #if ENABLE_MQTT 保护」的全部调用点，全部 inline、无状态、无副作用。
+// 配置接口返回失败 / compiled:false，避免旧配置导入或误调用时静默假装成功。
+class MqttService {
+ public:
+  void begin(WifiManager &, SmsService &, TimeSync &, LogStore &) {}
+  void tick() {}
+  void reconfigure() {}
+
+  bool enabled() const { return false; }
+  bool setEnabled(bool) { return false; }
+  static bool isConfigured() { return false; }
+  bool notifyEnabled(uint32_t) const { return false; }
+  bool notifyTest() { return false; }
+  void notifyStartup() {}
+  void notifyOnline() {}
+  void notifySms(const String &, const String &, uint32_t, int8_t) {}
+  void notifySim(uint8_t, bool) {}
+  void notifyCall(const String &, uint32_t, int8_t) {}
+
+  bool saveConfig(const String &, const String &, const String &, const String &,
+                  const String &, const String &, uint16_t, bool, uint32_t, bool) {
+    return false;
+  }
+  String configJson() const {
+    return "{\"ok\":true,\"enabled\":false,\"configured\":false,\"compiled\":false}";
+  }
+  void exportTo(JsonObject &) const {}
+  bool importFrom(const JsonObject &) { return true; }  // 旧备份里的 mqtt 节直接忽略
+
+  // 发件箱里若残留旧固件的 mqtt 通道，判为 skipped 直接结单，不重试
+  bool publishSmsOnce(const String &, const String &, uint32_t, int8_t,
+                      bool &skipped, String &err) {
+    skipped = true;
+    err = "MQTT 未编译进固件";
+    return false;
+  }
+};
+
 #endif // ENABLE_MQTT

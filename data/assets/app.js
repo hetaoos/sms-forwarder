@@ -379,7 +379,10 @@ function connTitle() {
 // 同时作为不支持 EventSource 时的定时轮询降级
 async function restSnapshot() {
   const live = Alpine.store('live');
-  try { const r = await fetch('/api/status'); if (r.ok) live.status = await r.json(); } catch (e) {}
+  try {
+    const r = await fetch('/api/status');
+    if (r.ok) { live.status = await r.json(); applyFeatureFlags(live.status); }
+  } catch (e) {}
   try { const r = await fetch('/api/uart/stats'); if (r.ok) live.stats = await r.json(); } catch (e) {}
   try { const r = await fetch('/api/wifi/status'); if (r.ok) live.wifi = await r.json(); } catch (e) {}
   try {
@@ -426,7 +429,7 @@ function connectSSE() {
   const on = (name, fn) => es.addEventListener(name, e => {
     try { fn(JSON.parse(e.data)); } catch (err) {}
   });
-  on('status', d => { live.status = d; });
+  on('status', d => { live.status = d; applyFeatureFlags(d); });
   on('stats', d => { live.stats = d; });
   on('wifi', d => { live.wifi = d; });
   on('saved', d => { live.saved = d.list || []; });
@@ -588,6 +591,17 @@ const ICONS = {
 function findMenu(id) {
   for (const g of MENU) for (const it of g.items) if (it.id === id) return it;
   return null;
+}
+
+/* 编译期功能开关：由 /api/status 的 compiled 字段驱动菜单显隐。
+   ENABLE_MQTT=0 时后端返回 mqtt.compiled=false，MQTT 菜单与配置页入口不再出现；
+   字段缺省（旧固件）按已编译处理，避免误隐藏。用 style.display 而非 hidden 属性，
+   防止 .menu-item 的 display 规则盖掉浏览器默认 [hidden] 样式。 */
+function applyFeatureFlags(s) {
+  const mqttCompiled = !s || !s.mqtt || s.mqtt.compiled !== false;
+  const btn = document.querySelector('.menu-item[data-id="mqtt"]');
+  if (btn) btn.style.display = mqttCompiled ? '' : 'none';
+  if (!mqttCompiled && location.hash === '#/mqtt') location.hash = '#/dashboard';
 }
 
 /* ---------- 外壳渲染 ---------- */
@@ -2469,7 +2483,7 @@ function pagePush() {
     loaded: false,
     loading: false,           // 首屏加载中
     err: '',                 // 校验错误（表单级提示）
-    cfg: { enabled: false, strategy: 0 },
+    cfg: { enabled: false, strategy: 0, remark: '' },
     channels: [],
     types: [],
     saving: false,
@@ -2481,6 +2495,7 @@ function pagePush() {
       // 任何编辑后清掉上一次的校验提示，避免过期错误误导
       this.$watch('channels', () => { this.err = ''; });
       this.$watch('cfg.strategy', () => { this.err = ''; });
+      this.$watch('cfg.remark', () => { this.err = ''; });
     },
 
     async load() {
@@ -2495,6 +2510,7 @@ function pagePush() {
           const j = await r.json();
           this.cfg.enabled = !!j.enabled;
           this.cfg.strategy = Number(j.strategy) || 0;
+          this.cfg.remark = j.remark || '';
           this.channels = (j.channels || []).map(c => ({
             enabled: !!c.enabled, type: c.type, name: c.name || '',
             url: c.url || '', key1: '', key2: c.key2 || '', key3: c.key3 || '',
@@ -2515,9 +2531,9 @@ function pagePush() {
     },
 
     // 未保存检测：只比对「需点保存才生效」的部分（总开关为即时生效，不计入）
-    markClean() { this._snap = JSON.stringify({ s: this.cfg.strategy, c: this.channels }); },
+    markClean() { this._snap = JSON.stringify({ s: this.cfg.strategy, r: this.cfg.remark, c: this.channels }); },
     get dirty() {
-      return !!this._snap && this._snap !== JSON.stringify({ s: this.cfg.strategy, c: this.channels });
+      return !!this._snap && this._snap !== JSON.stringify({ s: this.cfg.strategy, r: this.cfg.remark, c: this.channels });
     },
 
     typeMeta(t) {
@@ -2554,7 +2570,7 @@ function pagePush() {
         // SMS 备份通道（type=12）的 url 是目标手机号，不是 URL
         return Number(ch.type) === 12 ? '目标手机号，如 13800138000' : 'https://...';
       }
-      if (f.name === 'customBody') return '使用 {from}{message}{timestamp} 等占位符';
+      if (f.name === 'customBody') return '使用 {from}{message}{carrier}{remark} 等占位符，见下方说明表';
       if (f.name === 'modemSlot') return '留空 = 自动挑就绪模组；可填 1 或 2';
       return '';
     },
@@ -2621,6 +2637,7 @@ function pagePush() {
         const payload = {
           enabled: !!this.cfg.enabled,
           strategy: Number(this.cfg.strategy) || 0,
+          remark: (this.cfg.remark || '').trim(),
           channels: this.channels.map(c => ({
             enabled: !!c.enabled, type: Number(c.type) || 1, name: (c.name || '').trim(),
             url: (c.url || '').trim(), key1: c.key1 || '', key2: c.key2 || '',
@@ -2634,6 +2651,7 @@ function pagePush() {
           const j = await r.json();
           this.cfg.enabled = !!j.enabled;
           this.cfg.strategy = Number(j.strategy) || 0;
+          if (typeof j.remark !== 'undefined') this.cfg.remark = j.remark || '';
           const chs = j.channels || [];
           for (let i = 0; i < this.channels.length; i++) {
             const src = chs[i] || {};

@@ -27,6 +27,8 @@ static String                  g_message   = "";
 static String                  g_currentVer = "";
 static String                  g_latestVer  = "";
 static volatile bool           g_inProgress = false;
+// 以下状态只被「检查 / 下载 / 烧录」链路使用，编译期关闭 OTA 时一并裁掉
+#if ENABLE_FIRMWARE_UPGRADE
 static unsigned long           g_lastCheckMs = 0;  // 版本检查防抖时间戳
 
 static esp_ota_handle_t        g_otaHandle  = 0;
@@ -37,6 +39,7 @@ static TaskHandle_t            g_taskHandle = nullptr;
 static const esp_partition_t*   g_lfsPart        = nullptr;
 static size_t                  g_lfsWriteOffset = 0;
 static size_t                  g_lfsTotalSize   = 0;
+#endif
 
 // ── TLS 通道（计数信号量）──────────────────────────────────────────
 // g_tlsSem / TlsTurn 已抽到 utils/TlsTurn.{h,cpp}，由 OTA 检查/升级、
@@ -44,6 +47,7 @@ static size_t                  g_lfsTotalSize   = 0;
 // 上下文并发（大块缓冲已重定向 PSRAM），避免多个 ~35KB 上下文并存撑爆堆（-32512）。
 // 本文件只使用 TlsTurn。
 
+#if ENABLE_FIRMWARE_UPGRADE
 // 版本检查里 TLS 相关失败的短时退避。给 mbedTLS 释放内存、堆整理留出时间窗口。
 //
 // ⚠️ 调用点必须在 TLS 轮次之外（TlsTurn 已析构）—— 占着锁睡 300ms 等于把别的
@@ -52,14 +56,20 @@ static size_t                  g_lfsTotalSize   = 0;
 static void tlsBackoff(uint8_t attemptIdx) {
     vTaskDelay(pdMS_TO_TICKS(attemptIdx == 0 ? 300 : 600));
 }
+#endif
 
 // ── otaPartitionAvailable ─────────────────────────────────────────
 // 探测当前分区表是否存在可切换的 OTA 槽位（esp_ota_get_next_update_partition
 // 在没有 ota_1 时返回 nullptr）。C3 的单 app 分区表即属此类。
 bool otaPartitionAvailable() {
+#if ENABLE_FIRMWARE_UPGRADE
     return esp_ota_get_next_update_partition(nullptr) != nullptr;
+#else
+    return false;   // 编译期关闭：即使分区表有双槽也不提供升级入口
+#endif
 }
 
+#if ENABLE_FIRMWARE_UPGRADE
 // ── 查找 LittleFS 资源（Web UI）分区 ───────────────────────────────
 // ⚠️ 必须按 label "spiffs" 精确匹配，不能传 nullptr 取「地址最小的
 // data/spiffs」分区。分区表里 userdata 与 spiffs 同为 subtype=spiffs，而
@@ -71,6 +81,7 @@ static const esp_partition_t* findFsPartition() {
     return esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, cfg::kPartLabelSpiffs);
 }
+#endif  // ENABLE_FIRMWARE_UPGRADE
 
 // ── Ota::version ────────────────────────────────────────
 // 当前跑的固件怎么称呼自己：直接就是所属 Release 的 tag，也就是完整版本标识
@@ -90,9 +101,15 @@ void Ota::init() {
     g_message    = "";
     g_latestVer  = "";
     g_inProgress = false;
+#if ENABLE_FIRMWARE_UPGRADE
     LOG("OTA", "初始化完成，版本: %s | 平台: %s | 编译: %s %s",
         g_currentVer.c_str(), OTA_PLATFORM, APP_BUILD_DATE, APP_BUILD_TIME);
     LOG("OTA", "发布源: %s（Release tag: %s）", OTA_RELEASES_BASE_URL, OTA_RELEASE_TAG);
+#else
+    g_message = "OTA 升级未编译进固件";   // /api/ota/status 与 Web 工具页据此提示
+    LOG("OTA", "OTA 升级已在编译期关闭（ENABLE_FIRMWARE_UPGRADE=0），版本: %s",
+        g_currentVer.c_str());
+#endif
 }
 
 // ── Ota::status ─────────────────────────────────────────────────
@@ -105,6 +122,11 @@ OtaStatusPayload Ota::status() {
     p.latestVersion  = g_latestVer;
     return p;
 }
+
+// 从这里到文件末尾是「版本检查 / 在线下载 / 本地分片烧录」的全部实现：
+// ENABLE_FIRMWARE_UPGRADE=0 时整段不进固件，只保留上面的 version/status/init
+// 与文件末尾的空实现入口（状态页仍要显示版本，Web 路由仍可安全 404）。
+#if ENABLE_FIRMWARE_UPGRADE
 
 // ── 远端最新版本的探测结果 ────────────────────────────────────────
 enum class ProbeResult : uint8_t {
@@ -1128,3 +1150,12 @@ bool Ota::handleLfsUploadChunk(uint8_t* data, size_t len, size_t index, size_t t
 
     return true;
 }
+
+#else  // !ENABLE_FIRMWARE_UPGRADE —— 编译期关闭 OTA，只留空实现入口
+
+void Ota::startVersionCheck() {}
+bool Ota::startOnlineUpgrade(const String &) { return false; }
+bool Ota::handleUploadChunk(uint8_t *, size_t, size_t, bool) { return false; }
+bool Ota::handleLfsUploadChunk(uint8_t *, size_t, size_t, size_t, bool) { return false; }
+
+#endif  // ENABLE_FIRMWARE_UPGRADE

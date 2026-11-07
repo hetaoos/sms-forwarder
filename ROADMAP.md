@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）。①~③ **完整编译通过**（RAM 36.6% / Flash 47.9%）；④ 代码完成但**编译验证待补跑**（本次会话的编译命令未执行，接手后先 `pio run -e esp32s3`）。全部改动**尚未刷机实测**、**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -47,6 +47,8 @@
 - Web 控制台（端口 80、LittleFS、gzip、hash 路由）、Cookie 会话 + Bearer + 持久化 API 令牌、SSE 实时推送、屏幕远程按键注入、JPEG 屏幕预览。
 - WiFi 多组配置（NVS 5 组）、AP 配网、扫描/排序/试连；NTP + SIM NITZ 时间同步；定时重启；OTA 在线/本地双槽升级；coredump 查询/导出/擦除；配置导入导出；PSRAM 日志环与 AT 历史环；CPU/温度遥测。
 - 任务看门狗（§2.7）：4 个常驻任务订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、复位原因与疑似卡死任务持久化并可在 Web / `/api/status` 查询、`/api/wdt/selftest` 故障注入自检。
+- 推送模板占位符全部可用（§2.8）：`{carrier}` / `{to}` / `{iccid}` / `{signal}` 取模组快照（新增就绪后一次性 `AT+CCID`），`{remark}` 取 NVS `appcfg/remark`（推送通道页配置）；Web 占位符表与 README 已同步。
+- 两个编译期开关均生效（§2.8）：`ENABLE_MQTT=0` / `ENABLE_FIRMWARE_UPGRADE=0` 都能编译并真正裁掉实现，前端按 `mqtt.compiled` / `otaAvailable` 隐藏入口。
 
 ### 1.3 构建与验证命令
 
@@ -60,7 +62,8 @@ pio device monitor -e esp32s3        # 串口监视 115200
 - `extra_scripts`：`script/uploadfs_gz.py`（打包时自动 gzip，字库 `ui_cn.ttf` 除外）、`script/inject_app_version.py`（注入 OTA tag，本地按 `<VERSION>-<提交时间>-<sha7>` 自拼）。
 - 编译验证时注意：PlatformIO/SCons 用**内容签名**判断增量，`touch` 源文件不会触发重编；要确认新代码进固件，可在 `.pio/build/esp32s3/firmware.elf` 里搜新增字符串（macOS `grep -a` 对中文不可靠，用 `python3` 读 bytes 比较稳妥）。
 - 若构建日志出现 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]` 后卡住（环境的批量删除保护拦住 PlatformIO 清理 `.o`），用全新构建目录绕开：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`（约 1 分钟全量编译，结果等价）。
-- 根目录 `compile_commands.json` 是**陈旧快照**（缺 `-D ENABLE_MQTT=1`、OTA 宏与 LVGL 路径），不要用它做 `-fsyntax-only` 检查，会误报 `MqttService` incomplete / `lvgl.h` 找不到；新增的 `.cpp` 也不在其中，IDE 的 clang 诊断会报 `../hal.h` 找不到、`JsonDocument` 一堆假错误。一律以 `pio run` 完整编译为准。
+- 根目录 `compile_commands.json` 是**陈旧快照**（缺 LVGL 路径、OTA 宏与新增的 `.cpp`），不要用它做 `-fsyntax-only` 检查，会误报 `lvgl.h` 找不到、`../hal.h` 找不到、`JsonDocument` 一堆假错误。`ENABLE_MQTT` / `ENABLE_FIRMWARE_UPGRADE` 现已在 `src/app/Config.h` 归一化（未定义时默认 1），`MqttService incomplete` 那类假错误不再出现。一律以 `pio run` 完整编译为准。
+- 验证编译开关时用独立构建目录 + 追加宏（叠加在 `platformio.ini` 之后，会有 redefined 警告，最终值以追加的为准）：`PLATFORMIO_BUILD_DIR=.pio/verify_off PLATFORMIO_BUILD_FLAGS="-D ENABLE_MQTT=0 -D ENABLE_FIRMWARE_UPGRADE=0" pio run -e esp32s3`。正式发布应直接改 `platformio.ini` 的 `build_flags`，避免宏重定义。
 - 设备取证入口（不接 USB 也能用）：`/api/logs`、`/api/at/hist`、`/api/sms/query`、`/api/status`，Web 页「运行日志 / 模组调试 / 通信模组」。
 
 ---
@@ -211,8 +214,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ### 2.7 已完成：显式任务 / 硬件看门狗（§3 P0 最后一项）
 
-**状态**：代码完成，**编译验证待补跑、未刷机实测**（本次会话的编译命令未执行，
-验收前必须先 `pio run -e esp32s3` SUCCESS 并 `uploadfs`，见下方「验收」）。
+**状态**：代码完成，**编译验证已补跑通过**（§2.8：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`
+→ SUCCESS，RAM 36.7% / Flash 48.1%）、**未刷机实测**；因改过 `data/`，刷机时仍需执行 `uploadfs`。
 
 **问题**：原先全项目没有任何 `esp_task_wdt_*` 调用，仅靠「约定不写死循环」
 规避卡死。框架开机其实已初始化 TWDT（5 秒 / panic / 订阅两个 Idle），
@@ -280,6 +283,65 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.8 已完成：P1 半成品批次三项（2026-11-07）
+
+**状态**：代码完成，**两种编译配置均 SUCCESS**、**未刷机实测**、**未提交 git**。
+
+| 配置 | 命令 | 结果 |
+|---|---|---|
+| 默认（两个开关都开） | `PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` | SUCCESS，RAM 36.7% / Flash 48.1%（顺带把 §2.7 欠的编译验证补跑了） |
+| 两个开关都关 | `PLATFORMIO_BUILD_DIR=.pio/verify_off PLATFORMIO_BUILD_FLAGS="-D ENABLE_MQTT=0 -D ENABLE_FIRMWARE_UPGRADE=0" pio run -e esp32s3` | SUCCESS，RAM 36.5% / Flash 45.8%（Flash 少 ~95KB，确认实现被裁掉） |
+
+另：`node --check data/assets/app.js` 通过；`read_lints` 0 错误；在 `firmware.elf` 里确认
+`AT+CCID` 进入两种固件，而「MQTT 未编译进固件」「OTA 升级未编译进固件」只出现在关闭配置。
+
+**① 补齐 5 个模板占位符**
+- `MsgContext.cpp::fieldValue()` 原本就认识这 5 个名字，缺的只是取值。`PushService::buildMsgContext()`
+  现在从 `_sms->modemSnapshot(job.modem + 1, ...)` 取 `{carrier}`（`oper`，中文短名优先）、
+  `{to}`（`num`）、`{iccid}`；`{signal}` 由 `csq` 换算为 `-73 dBm (CSQ 20)`（与 Web 页 `csqDbm()` 同口径）。
+  注意 `PushJob.modem` 是 0 基而 `modemSnapshot()` 要 1 基；测试推送 `modem=-1` 时四项为空。
+  快照里的 `-` / 未知 CSQ 统一归一化为空串，不会把减号塞进模板。
+- 新增 ICCID 采集：`ModemState.iccid` + `ModemSnapshot.iccid[24]` + 就绪后一次性 `AT+CCID`
+  （静态采集 `idStep` 6→7 步，重初始化时清空），解析函数兼容 `+CCID: "…"` / `+ICCID: …` /
+  裸数字行三种回显；`modemsJson()` 与 Web「通信模组」页均已展示。
+- `{remark}` 用独立 NVS 键 `appcfg/remark`（`cfg::kNvsKeyRemark`，最长 64 字节），由 `PushService`
+  自管：随 `/api/push` GET/POST、配置导入导出走，放在「推送通道」页「设备备注」卡片。
+  独立键的好处是只改推送通道配置或空配置时备注不丢。
+- `MsgContext.h` 注释、Web 占位符表（补齐 `{deviceId}` / `{message_type}` 并修正示例值）、
+  README 占位符表格全部同步。
+
+**② 修编译开关**
+- `src/app/Config.h` 归一化两个宏：未定义时默认 `1`（IDE 用陈旧 `compile_commands.json`
+  也不会静默裁功能），全项目统一 `#if ENABLE_XXX`。
+- `ENABLE_MQTT=0`：`MqttService.h` 的 `#else` 分支提供一个纯 inline 的空实现替身，
+  覆盖 `App` / `WebPanel` / `Outbox` 所有未被守卫的调用点；`MqttService.cpp` 整个实现
+  （esp-mqtt 客户端、TLS、命令队列）不再编译。配置类 API 返回 404「MQTT 未编译进固件」，
+  发件箱不再生成 `mqtt` 通道（旧记录残留时判 `skipped`），配置导入遇到 `mqtt` 节直接忽略。
+  `/api/status` 新增 `mqtt.compiled`，前端 `applyFeatureFlags()` 据此隐藏 MQTT 菜单并把
+  `#/mqtt` 哈希跳回仪表盘 —— README 原先声称的「前端自动隐藏」现在是真的。
+- `ENABLE_FIRMWARE_UPGRADE=0`：`Ota.cpp` 从「远端版本探测」到文件末尾整段包进 `#if`，
+  只保留 `version()` / `status()` / `init()` 与四个空实现入口；`otaPartitionAvailable()` 恒 false，
+  LCD 升级动作不注册，Web 只保留 `/api/ota/status`（`available=false`，`message` 明确提示）。
+  `/api/status` 新增 `otaCompiled`。
+- 顺带修正 `WebPanel.cpp` / `WebPanel.h` 两处屏幕预览注释：实际返回 **JPEG**（`image/jpeg`），原文写的是 BMP。
+
+**③ 文档补齐**
+- README「短信」API 表补 `GET|POST /api/sms/poll` 与 `GET|POST /api/sms/store` 四行
+  （含 `mode` / `safetySec` / `CNMI` 语义与错误码）；`/api/sms/ports` 补 `iccid`。
+- README 补齐推送模板占位符表格（含数据来源）、`/api/push` 的 `remark` 字段、NVS 键 `remark`、
+  `/api/status` 的 `otaCompiled` / `mqtt.compiled`、功能开关表的真实行为与 OTA 关闭时的 API 表现。
+
+**验收（待设备验证）**：
+1. 刷默认固件 → 「通信模组」页出现 ICCID（模组支持 `AT+CCID` 时），AT 历史里有就绪后一条 `AT+CCID`。
+2. 在「推送通道」页填设备备注并保存 → 自定义模板用 `{remark}` 发一条测试推送，值正确；重启后备注仍在。
+3. 收一条短信并让自定义模板引用 `{carrier}` / `{to}` / `{iccid}` / `{signal}` → 值来自对应模组，
+   单模组可用、测试推送（无来源模组）时这四项为空串而不是字面量占位符。
+4. 配置导出/导入后备注不丢；`/api/sms/poll` 与 `/api/sms/store` 按 README 契约读写成功。
+5. 若烧关闭配置的固件：MQTT 菜单消失、`/api/status` 的 `mqtt.compiled=false` / `otaCompiled=false`、
+   「系统工具」页 OTA 按钮禁用且提示「OTA 升级未编译进固件」，短信 / 邮件 / 推送主链路不受影响。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -298,15 +360,15 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 | 项 | 说明 | 涉及文件 | 难度 |
 |---|---|---|---|
-| 补齐 5 个模板占位符 | `{carrier}` `{to}` `{iccid}` `{signal}` `{remark}` 目前留空；运营商/本机号/信号 `ModemSnapshot` 已有，`iccid` 加一条 `AT+CCID`，备注加 NVS 字段 | `src/push/MsgContext.h:14-20`、`PushService.cpp:419` | 小 |
-| 联系人簿 / 号码备注 | 顺带让 `{remark}` 有意义，推送显示姓名而非裸号码 | `src/sms/`、`src/push/`、`data/pages/` | 中 |
+| ~~补齐 5 个模板占位符~~ ✅ 已实现，见 §2.8 | `{carrier}` / `{to}` / `{iccid}` / `{signal}` 取模组快照（新增 `AT+CCID`），`{remark}` 取 NVS 备注 | `src/push/*`、`src/sms/SmsService.*`、`data/pages/push.html` | 小 |
+| 联系人簿 / 号码备注 | 让推送显示姓名而非裸号码（现在 `{remark}` 是**设备**备注，不是号码备注，此项仍未做） | `src/sms/`、`src/push/`、`data/pages/` | 中 |
 | SSE 补全 | 全量快照缺 `sms`/`smsports`；`Last-Event-ID` 续传只做了 AT 历史；Bearer 客户端无法用 SSE（可加 query token） | `src/net/StatusBus.cpp:139-185` | 小 |
 | SMTP 587 / STARTTLS | README 明确的已知限制 | `src/net/EmailService.cpp` | 中 |
-| 修编译开关 | `ENABLE_MQTT=0` 会因 `App` 无条件实例化 `MqttService` 而编译失败；`ENABLE_FIRMWARE_UPGRADE` 定义了却无任何 `#if` | `src/net/MqttService.h:32`、`src/app/App.h:63`、`src/ota/Ota.h:137` | 小 |
+| ~~修编译开关~~ ✅ 已实现，见 §2.8 | 两个宏归一化并真正裁掉实现，两种配置均编译通过，前端按 `compiled` 隐藏入口 | `src/app/Config.h`、`src/net/MqttService.h`、`src/ota/Ota.cpp`、`src/net/WebPanel.cpp` | 小 |
 | 前端「规划中」菜单 | `data/assets/app.js:599-601` 已支持 `todo`/`hidden` 徽标但 MENU 无数据，正好标注本清单待办 | `data/assets/app.js:539-565` | 小 |
 | 时区可配 + 时间失真 | UTC+8 硬编码；未同步时时间戳退化为开机秒数，日志/短信/AT 历史共用该口径 | `src/time/TimeSync.cpp`、`src/app/App.cpp:131` | 中 |
 | Back 长按行为 | `src/app/UIMenu.cpp:245-247` 注明「暂未定义」 | `src/app/UIMenu.cpp` | 小 |
-| 文档补齐 | `/api/sms/poll`、`/api/sms/store` 未进 API 表；`WebPanel.cpp:529` 注释仍写 BMP（实为 JPEG） | `README.md`、`src/net/WebPanel.cpp` | 小 |
+| ~~文档补齐~~ ✅ 已实现，见 §2.8 | 四个 `poll`/`store` 接口进 API 表；BMP 注释改 JPEG；顺带补齐占位符 / `remark` / 编译开关文档 | `README.md`、`src/net/WebPanel.cpp/.h` | 小 |
 
 ### P2 新功能
 
@@ -344,9 +406,9 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
-3. **半成品批次**：5 个占位符 + 联系人簿 + SSE 快照补全（改动小、体验提升明显）。
+3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）→ 余下联系人簿（号码备注）与 SSE 快照补全。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
-5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证待补跑）→ 余下 `pdulib` 单元测试 + CI。
+5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
 > 每个阶段结束都应：编译通过 → 更新本文档 §2/§7 → 在 `README.md` 同步 API/配置变更 → 需要设备验证的写清楚验收步骤。
 
@@ -377,7 +439,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 - OTA tag 格式 `<VERSION>-<提交时间>-<sha7>`，由 `script/inject_app_version.py` 编译期注入；产物名 `ota-<tag>-<platform>.bin`，`APP_PLATFORM` 必须与 CI 一致。
 
 **配置与认证**
-- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / blacklist / disp / sched / lastts`；`coredump`（崩溃时间 / 版本）与 `wdt`（复位原因 / 卡死任务 / 累计次数）是独立命名空间（不随出厂复位清除）。
+- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / remark / blacklist / disp / sched / lastts`（`remark` 为设备备注纯字符串，`{remark}` 占位符取值，§2.8）；`coredump`（崩溃时间 / 版本）与 `wdt`（复位原因 / 卡死任务 / 累计次数）是独立命名空间（不随出厂复位清除）。
 - 出厂管理账号 `admin/admin123`（编译期 `-DWEB_AUTH_*_DEFAULT` 可覆盖）；配置导出**含明文密码**。
 - 所有 `/api/`（除 login/logout/session）需 Cookie `sid` 或 Bearer 或持久化 API 令牌。
 
@@ -385,7 +447,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 - 所有出网 TLS 目前 `setInsecure()`，OTA 无签名 → P0 待修。
 - 队列普遍偏浅且满则丢弃：邮件 6、推送 6（丢最旧）、短信发送 8、管理员命令单槽、SSE 8 客户端（顶掉最旧）。**短信事件已改走持久化发件箱**（§2.5），不再受这些队列限制；其余事件仍在原队列里。
 - 时间未同步时时间戳为开机秒数，前端以 `>= 1.6e9` 区分。
-- `ENABLE_MQTT=0` 当前**编译会失败**；`ENABLE_FIRMWARE_UPGRADE` 是名义开关（无 `#if`）。
+- 两个编译期开关已修复（§2.8）：宏在 `src/app/Config.h` 归一化（未定义默认 1），`ENABLE_MQTT=0` 用空实现替身顶住装配代码、`ENABLE_FIRMWARE_UPGRADE=0` 裁掉 `Ota.cpp` 升级主体；改开关必须两种组合都编译验证。
+- 推送模板的模组专属字段（`carrier/to/iccid/signal`）取的是**推送时刻的模组快照**，不会为了渲染模板临时发 AT；`AT+CCID` 只在模组就绪后的一次性静态采集里发一次。
 - `managed_components/` 有约 40 个 ESP-IDF 组件但源码无任何引用；`include/`、`test/` 基本是模板空目录。
 - 代码注释与日志均为中文；配置常量集中在 `src/app/Config.h`，不要散落硬编码。
 
@@ -399,6 +462,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 4. 不接 USB 时用 Web 取证：`/api/logs`（按 `q=关键词` 过滤）、`/api/at/hist?after=<id>`、`/api/sms/query`、`/api/status`。
 5. 正常收信日志序列（存储模式）：「主动查询任务已启动」→「就绪（PDU 模式…）」→「收到 +CMTI 索引通知」→「待读取短信索引」→「收到短信 #N」→「收到短信：…」→「查询完成…」。缺哪一步即定位到哪一段。
 6. 改看门狗 / 长阻塞路径后，按 §2.7「验收」做空载 30 分钟 + 四个任务的故障注入自检，确认无意外重启且原因记录正确。
+7. 改编译开关相关代码后，除默认配置外还要按 §1.3 的命令验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0`，并在两个 `firmware.elf` 里确认应裁掉的字符串确实消失。改过 `data/` 别忘了 `uploadfs`。
+8. 改推送模板 / 模组快照后，按 §2.8「验收」核对占位符取值、ICCID 采集与备注持久化；改过 `AT+CCID` 静态采集步骤（`idStep`）时重点看初始化仍能正常到 `kReady`。
 
 ---
 
@@ -412,5 +477,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 网页发送短信接入发件箱（§2.5 发出类记录）；发件箱页新增「发送短信」按钮与弹窗 | 代码完成，编译通过，**待设备验证** |
 | 2026-11-07 | 「短信」页发送弹窗统一为「发件箱」页同款（模组/号码/内容、「加入发件箱」按钮、结果未知提示）；提交即返回，去掉 `pollSend()` 轮询 | 代码完成，`node --check` 通过，**待设备验证** |
 | 2026-11-07 | 修复存储模式长短信分批 `+CMTI` 导致的重复接收（§2.6：分段索引登记 + 拼接成功后补删全部分段） | 代码完成，编译通过（RAM 36.6% / Flash 47.9%），**待设备验证** |
-| 2026-11-07 | 实现显式任务 / 硬件看门狗（§2.7）：TWDT 60s 重配置、4 个常驻任务订阅与喂狗、卡死原因 RTC+NVS 留痕、`/api/wdt/selftest` 与 Web 卡片 | 代码完成，**编译验证待补跑**，**待设备验证** |
+| 2026-11-07 | 实现显式任务 / 硬件看门狗（§2.7）：TWDT 60s 重配置、4 个常驻任务订阅与喂狗、卡死原因 RTC+NVS 留痕、`/api/wdt/selftest` 与 Web 卡片 | 代码完成，编译验证已补跑通过（§2.8），**待设备验证** |
+| 2026-11-07 | 补齐 5 个推送模板占位符（§2.8）：新增 `AT+CCID` / `ModemSnapshot.iccid`，`{carrier}/{to}/{iccid}/{signal}` 取模组快照，`{remark}` 取 NVS `appcfg/remark`；推送页新增设备备注配置与占位符表 | 代码完成，两种配置编译通过，`node --check` 通过，**待设备验证** |
+| 2026-11-07 | 修编译开关（§2.8）：`Config.h` 归一化宏、`ENABLE_MQTT=0` 空实现替身 + 前端菜单隐藏、`ENABLE_FIRMWARE_UPGRADE=0` 裁掉 OTA 升级主体；`/api/status` 增 `mqtt.compiled` / `otaCompiled` | 代码完成，默认 SUCCESS（RAM 36.7% / Flash 48.1%）、双开关关闭 SUCCESS（RAM 36.5% / Flash 45.8%），**待设备验证** |
+| 2026-11-07 | 文档补齐（§2.8）：README 补 `/api/sms/poll` `/api/sms/store` 四行、占位符表格、`remark` / NVS 键 / 编译开关说明；`WebPanel.cpp` 屏幕预览注释 BMP→JPEG；本文 §0/§1.2/§1.3/§2.8/§3/§4/§5/§6/§7 同步 | 已记录，**待设备验证** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

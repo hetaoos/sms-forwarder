@@ -6,6 +6,7 @@
 
 #include <WiFi.h>
 
+#include "app/Config.h"  // ENABLE_MQTT / ENABLE_FIRMWARE_UPGRADE（编译期开关）
 #include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
 #include "app/TaskWatchdog.h"  // 任务看门狗状态与上次卡死原因
 #include "hal/CpuMonitor.h"
@@ -20,7 +21,7 @@
 #include "utils/DeviceId.h"   // Device::id()：与 MQTT / 推送 / 邮件一致的设备唯一 ID
 
 // MQTT 推送连接状态（仅编译期开启 MQTT 时引用其类定义）
-#if defined(ENABLE_MQTT) && ENABLE_MQTT
+#if ENABLE_MQTT
 #include "net/MqttService.h"
 #endif
 
@@ -60,18 +61,22 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["time"] = time.dateStr();
   doc["timeSynced"] = time.isSynced();
   doc["timeSrc"] = time.srcName();
-  // OTA 是否可用（设备分区表是否具备双槽）。前端据此决定是否展示升级入口
+  // OTA 是否可用（编译期开关 + 设备分区表是否具备双槽）。前端据此决定是否展示升级入口
+  doc["otaCompiled"] = (ENABLE_FIRMWARE_UPGRADE != 0);
   doc["otaAvailable"] = otaPartitionAvailable();
 
   // ---- MQTT 推送连接状态（仪表盘 / 配置页共用，SSE status 事件实时推送）----
-#if defined(ENABLE_MQTT) && ENABLE_MQTT
+  // compiled 供前端决定 MQTT 菜单是否出现：ENABLE_MQTT=0 时不能再让配置页露出来。
+#if ENABLE_MQTT
   JsonObject mq = doc["mqtt"].to<JsonObject>();
+  mq["compiled"]   = true;
   mq["enabled"]    = MqttService::isEnabled();    // 总开关是否开启
   mq["configured"] = MqttService::isConfigured(); // 服务器是否已配置
   mq["connected"]  = MqttService::connected();    // 当前是否真正连上 Broker
   mq["error"]      = MqttService::lastError();    // 最近一次连接错误（空串=无错误）
 #else
   JsonObject mq = doc["mqtt"].to<JsonObject>();
+  mq["compiled"]   = false;
   mq["enabled"]    = false;
   mq["configured"] = false;
   mq["connected"]  = false;

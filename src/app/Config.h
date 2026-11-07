@@ -2,6 +2,17 @@
 
 #include <stdint.h>
 
+// ---------------- 编译期功能开关（唯一归一化入口）----------------
+// 由 platformio.ini 的 -D 注入（默认 1）。命令行未定义时按默认开启，
+// 避免 IDE 拿着陈旧的 compile_commands.json 时功能被静默裁掉、报一堆
+// incomplete type 假错误。全项目统一用 #if ENABLE_XXX 判定。
+#ifndef ENABLE_MQTT
+#define ENABLE_MQTT 1
+#endif
+#ifndef ENABLE_FIRMWARE_UPGRADE
+#define ENABLE_FIRMWARE_UPGRADE 1
+#endif
+
 // 全局配置：所有引脚 / 网络参数集中在这里，通信模组不写死常量
 namespace cfg {
 
@@ -70,10 +81,12 @@ constexpr const char *kNvsKeyToken = "apitoken"; // API 访问令牌键（持久
 constexpr const char *kNvsKeyEmail = "email";    // 邮件配置键（{"ver":1,"server":"..","port":465,"user":"..","pass":"..","sendTo":"..","notifyTypes":n,"onlineH":n}）
 constexpr const char *kNvsKeyMqtt = "mqtt";      // MQTT 配置键（{"ver":1,"scheme":"mqtt|mqtts|ws|wss","server":"host[:port]","user":"..","pass":"..","clientId":"..","topicPrefix":"..","keepAlive":n,"subscribeEnabled":bool,"notifyTypes":n,"enabled":bool}）
 constexpr const char *kNvsKeyPush = "push";      // 推送通道配置键（{"ver":1,"enabled":bool,"strategy":n,"channels":[...]}）
+constexpr const char *kNvsKeyRemark = "remark";  // 设备备注（纯字符串，推送模板 {remark} 取值；独立键，改通道配置不会覆盖）
 constexpr const char *kNvsKeyBlacklist = "blacklist";  // 黑名单配置键（{"ver":1,"enabled":bool,"action":n,"list":[...]}）
 constexpr const char *kNvsKeyDisp = "disp";        // 屏幕设置键（{"ver":1,"bright":n,"autoOffSec":n,"idleSec":n}）
 constexpr uint8_t kBlacklistMax = 100;           // 黑名单规则条数上限
 constexpr uint8_t kAdminPhoneMax = 5;            // 管理员号码个数上限（短信远程控制）
+constexpr size_t  kPushRemarkMaxLen = 64;        // 设备备注最长字节数（推送模板 {remark}）
 
 // ---------------- 崩溃转储（coredump）信息 ----------------
 // 崩溃元信息独立命名空间，不随出厂复位清除（appcfg 会被 handleSystemReset

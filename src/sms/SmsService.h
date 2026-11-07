@@ -364,14 +364,15 @@ class SmsService {
     String  reg;               // 网络注册状态文本（已注册/搜索中/未注册...）
     bool    simReady = false;  // SIM 卡是否就绪（AT+CPIN? READY）
     String  imei;              // 通信模组 IMEI（就绪后查一次）
+    String  iccid;             // SIM 卡 ICCID（AT+CCID；部分模组不支持则为空）
     String  num;               // 本机号码（SIM 号码，AT+CNUM；部分 SIM 不含则为空）
     String  vendor;            // 通信模组厂商（AT+CGMI，如 MLINK）
     String  model;             // 通信模组型号（AT+CGMM，如 ML307A-DSLN）
     String  revision;          // 通信模组版本/完整料号（AT+CGMR，常含后缀如 -MTSH1S00 或固件版本）
     String  operCode;          // 运营商短代码（CMCC/CUCC/CTCC/CBN，由 AT+COPS 解析）
-    // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商）：就绪(reinit)后仅执行一次并永久缓存
+    // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商/ICCID）：就绪(reinit)后仅执行一次并永久缓存
     bool     identityQueried = false;  // 静态信息是否已采集并缓存
-    uint8_t  idStep = 0;               // 静态采集步骤（0 IMEI / 1 CNUM / 2 CGMI / 3 CGMM / 4 CGMR / 5 COPS）
+    uint8_t  idStep = 0;               // 静态采集步骤（0 IMEI / 1 CNUM / 2 CGMI / 3 CGMM / 4 CGMR / 5 COPS / 6 CCID）
     uint32_t nextIdMs = 0;             // 下条静态采集命令时间（节流）
     // 动态遥测：仅轮询真正变化的数据，各查询独立计时（每 tick 至多一条，避免持锁过久）
     uint32_t nextCsqMs = 0;            // AT+CSQ 下次查询时间

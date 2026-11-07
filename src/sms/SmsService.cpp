@@ -27,6 +27,38 @@ void copyTo(char *dst, size_t n, const String &s) {
   snprintf(dst, n, "%s", s.c_str());
 }
 
+// 解析 AT+CCID 响应里的 ICCID。不同模组回法不一致：
+//   SIMCOM:  +CCID: "89860..."      ML307A/UNISOC: +ICCID: 89860...
+//   部分模组只回一行裸数字（无 +CCID: 前缀），后面跟 OK。
+// 逐行取冒号后的首串 18~22 位数字（允许末尾补位的 F），取不到返回空串。
+String parseIccidResp(const String &resp) {
+  String lines = resp;
+  lines.replace("\r", "\n");
+  int start = 0;
+  while (start < (int)lines.length()) {
+    int end = lines.indexOf('\n', start);
+    if (end < 0) end = lines.length();
+    String line = lines.substring(start, end);
+    start = end + 1;
+    line.trim();
+    if (!line.length()) continue;
+    int colon = line.indexOf(':');
+    String body = colon >= 0 ? line.substring(colon + 1) : line;
+    body.replace("\"", "");
+    body.trim();
+    String digits;
+    for (unsigned int i = 0; i < body.length(); i++) {
+      char c = body.charAt(i);
+      if (c >= '0' && c <= '9') digits += c;
+      else if ((c == 'F' || c == 'f') && digits.length() >= 18) digits += 'F';
+      else if (digits.length()) break;   // 数字串已结束（如 ",0" 之类的尾字段）
+      else if (c != ' ' && c != '\t') break;  // 该行不是 ICCID
+    }
+    if (digits.length() >= 18 && digits.length() <= 22) return digits;
+  }
+  return "";
+}
+
 // 32 位 FNV-1a 哈希：短信正文指纹（去重键的一部分）
 uint32_t textHash(const String &s) {
   uint32_t h = 2166136261u;
@@ -549,6 +581,7 @@ String SmsService::modemsJson() const {
     o["sim"] = m.simReady;
     o["act"] = m.act;
     o["imei"] = m.imei;
+    o["iccid"] = m.iccid;
     o["num"] = m.num;
     o["vendor"] = m.vendor;
     o["model"] = m.model;
@@ -628,6 +661,7 @@ bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
   copyTo(out.num, sizeof(out.num), m.num);
   copyTo(out.reg, sizeof(out.reg), m.reg);
   copyTo(out.imei, sizeof(out.imei), m.imei);
+  copyTo(out.iccid, sizeof(out.iccid), m.iccid);
   // 运营商优先用中文短名，其次短代码，最后才是 AT+COPS? 的长格式名
   String cn = operCn(m.operCode);
   if (cn.length()) copyTo(out.oper, sizeof(out.oper), cn);
@@ -1497,7 +1531,7 @@ void SmsService::startInit(uint8_t port) {
   m.regAttempts = 0;
   m.failCount = 0;
   // 重置遥测（重新初始化后从空开始采集；静态信息将在 kReady 时一次性重查并缓存）
-  m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.act = 0; m.num = "";
+  m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.iccid = ""; m.act = 0; m.num = "";
   m.vendor = ""; m.model = ""; m.revision = ""; m.operCode = "";
   m.simReady = false;
   m.identityQueried = false; m.idStep = 0; m.nextIdMs = 0;
@@ -1822,7 +1856,7 @@ void SmsService::pollInit(uint8_t port) {
         m.nextPollMs = m.lastActivityMs + cfg::kModemLivenessMs;
       }
 
-      // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商）：就绪(reinit)后仅执行一次，
+      // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商/ICCID）：就绪(reinit)后仅执行一次，
       // 写入 ModemState 永久缓存，不再进入周期轮询。分 tick 逐条下发（kModemIdStepMs 节流）。
       if (!m.identityQueried) {
         if (now >= m.nextIdMs) {
@@ -1896,9 +1930,16 @@ void SmsService::pollInit(uint8_t port) {
               }
               break;
             }
+            case 6: {  // SIM 卡 ICCID AT+CCID（推送模板 {iccid} 的数据源）
+              if (at("AT+CCID", cfg::kSmsCmdTimeoutMs)) {
+                String ic = parseIccidResp(resp);
+                if (ic.length()) m.iccid = ic;
+              }
+              break;
+            }
           }
           m.idStep++;
-          if (m.idStep >= 6) m.identityQueried = true;
+          if (m.idStep >= 7) m.identityQueried = true;
         }
         return;  // 静态采集完成前不跑动态轮询，避免重复/竞争
       }

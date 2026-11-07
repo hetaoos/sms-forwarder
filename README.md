@@ -64,7 +64,9 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
     故障模组绝不阻塞另一个模组与 Web
   - 就绪后心跳探活（30s，连续 3 次失败转重初始化）+ 动态遥测
     （`AT+CSQ` 15s / `AT+COPS?` 5 分钟兜底）
-  - 快照含型号 / 固件版本 / 本机号码 / 运营商（中文化）/ 注册状态 / IMEI / 信号强度
+  - 快照含型号 / 固件版本 / 本机号码 / 运营商（中文化）/ 注册状态 / IMEI / ICCID / 信号强度；
+    ICCID 由就绪后一次性 `AT+CCID` 采集（兼容 `+CCID:` / `+ICCID:` / 裸数字回显），
+    随 `/api/sms/ports` 输出并用于推送模板 `{iccid}`
 - **推送通道**（`push/PushService`）：13 种方式（Bark / 钉钉 / 飞书 /
   Telegram / 企业微信 / Gotify / PushPlus / Server酱 / Mailgun /
   通用 POST-JSON / GET / 自定义模板 / **SMS 短信备份**），最多 10 条通道，
@@ -288,7 +290,8 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 
 其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
 管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
-`disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）。
+`disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）、
+`remark`（设备备注，纯字符串，供推送模板 `{remark}` 使用，最长 64 字节）。
 崩溃信息另存于独立命名空间 `coredump`；看门狗诊断另存于 `wdt`
 （`reset` / `reason` / `count` / `wdtTask` / `wdtUptime` / `wdtVer`）。
 两者都不随出厂复位清除。
@@ -339,9 +342,13 @@ build_flags =
 
 | 宏 | 默认 | 说明 |
 |----|------|------|
-| `ENABLE_FIRMWARE_UPGRADE` | `1` | OTA 在线升级 / 本地上传（分区表需具备 ota 双槽） |
-| `ENABLE_MQTT` | `1` | MQTT 服务（esp-mqtt 为 esp-idf 内置组件，无需额外 lib_deps）；置 0 时前端 MQTT 配置区自动隐藏 |
+| `ENABLE_FIRMWARE_UPGRADE` | `1` | OTA 在线升级 / 本地上传（分区表需具备 ota 双槽）。置 `0` 时整个检查/下载/烧录实现不编译，仅保留版本标识与 `/api/ota/status`（`available=false`），Web 升级入口与 LCD 升级动作隐藏 |
+| `ENABLE_MQTT` | `1` | MQTT 服务（esp-mqtt 为 esp-idf 内置组件，无需额外 lib_deps）。置 `0` 时 `MqttService.cpp` 全实现不编译，改由头文件里的空实现替身顶住装配代码；`/api/status` 返回 `mqtt.compiled=false`，前端 MQTT 菜单自动隐藏，配置类 API 返回 404「MQTT 未编译进固件」 |
 | `APP_PLATFORM` | `esp32s3` | 平台标识，决定 OTA 产物文件名后缀，须与 CI Release 文件名一致 |
+
+两个宏在 `src/app/Config.h` 里归一化：命令行未定义时按默认 `1` 处理，避免 IDE
+用陈旧的 `compile_commands.json` 时功能被静默裁掉或误报 `MqttService incomplete`。
+改开关后建议用全新构建目录验证：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`。
 
 ## 屏幕 UI 与按键
 
@@ -399,14 +406,27 @@ Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理�
 
 ## 推送模板占位符
 
-自定义通道（`PUSH_TYPE_CUSTOM`）的请求体模板中用 `{字段名}` 引用，
-未识别的占位符按原样保留以便排查：
+自定义通道（`PUSH_TYPE_CUSTOM`）的请求体模板、以及各通道的 URL / 标题等可配置字段
+中用 `{字段名}` 引用，**未识别的占位符按原样保留**以便排查；已识别但当前取不到值的
+字段渲染为**空串**（模组未就绪、SIM 不含本机号、模组不支持 `AT+CCID`、未配置备注等）。
+Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HTML 转义，其余字段原样替换。
 
-`{from}` `{message}` `{timestamp}` `{date}` `{deviceId}` `{deviceName}` `{uptime}`
-`{simSlot}` `{modemIndex}` `{message_type}`（兼容旧别名 `{trigger_type}`）
-`{channelName}` `{channelType}`
+| 占位符 | 含义 | 数据来源 |
+|---|---|---|
+| `{from}` `{message}` | 发件人号码 / 消息正文 | 事件本身 |
+| `{timestamp}` `{date}` | 事件时间戳（已同步为纪元秒，未同步为开机秒数）/ 本地时间字符串 `YYYY-MM-DD HH:mm:ss`（未同步时空串） | `PushJob.timestamp` / `localDateStr()` |
+| `{deviceId}` `{deviceName}` `{uptime}` | 设备 ID / 设备名 / 运行时长 | 芯片 eFuse MAC、`millis()` |
+| `{simSlot}` `{modemIndex}` | `SIM1` / `SIM2`、模组序号 `1` / `2` | 事件来源模组（测试推送为空） |
+| `{message_type}`（旧别名 `{trigger_type}`） | 消息类型 | `MsgTypeInfo` |
+| `{channelName}` `{channelType}` | 当前通道名称 / 类型中文名 | 通道配置 |
+| `{carrier}` | 运营商（优先中文短名，如「中国移动」） | `AT+COPS?` → `ModemSnapshot.oper` |
+| `{to}` | 本机号码（SIM 号） | `AT+CNUM` → `ModemSnapshot.num` |
+| `{iccid}` | SIM 卡 ICCID | 就绪后一次性 `AT+CCID` → `ModemSnapshot.iccid` |
+| `{signal}` | 信号强度，如 `-73 dBm (CSQ 20)` | `AT+CSQ`（15s 轮询），未知时空串 |
+| `{remark}` | 设备备注 | NVS `appcfg/remark`，在「推送通道」页「设备备注」卡片配置（最长 64 字节） |
 
-（`{carrier}` `{to}` `{iccid}` `{signal}` `{remark}` 本框架暂不填充，保留字面量。）
+模组专属字段按事件的来源模组取值：测试推送无来源模组，这四项与 `simSlot` /
+`modemIndex` 均为空串；所有取值都是推送时刻的快照，不会为了模板额外发 AT 命令。
 
 ## Web API 参考
 
@@ -454,7 +474,7 @@ Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理�
 |-----------|--------|------|
 | `GET /` | - | 控制台页面（公开） |
 | `GET /login` | - | 独立登录页（公开，已登录自动跳回） |
-| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaAvailable/mqtt{enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}/wdt{enabled,timeoutMs,tasks,reset,resetText,bootWasWdt,wdtCount,lastWdtTask,lastWdtUptimeSec,lastWdtVersion}` |
+| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaCompiled/otaAvailable/mqtt{compiled,enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}/wdt{enabled,timeoutMs,tasks,reset,resetText,bootWasWdt,wdtCount,lastWdtTask,lastWdtUptimeSec,lastWdtVersion}` |
 | `POST /api/system/restart` | 无 | `{"ok":true,"msg":"设备即将重启"}`，2 秒后重启 |
 | `POST /api/system/reset` | 无 | 清空 NVS `appcfg` 全表 + 格式化 `userdata`，2 秒后重启（崩溃记录保留） |
 | `POST /api/sched` | `{enabled,mode,dailyMin,intervalH,weekdays}` 或 `{"sched":{...}}` | 定时重启配置，即时生效不重启。`mode`：`0` 每日定点（`dailyMin` 为当日分钟数）/ `1` 固定间隔（`intervalH` 小时，1-720）；`weekdays` 位掩码（bit0=周日）；无效 400 |
@@ -526,7 +546,11 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `GET /api/sms/latest` | - | 最新一条摘要（仪表盘用，与 SSE `sms` 事件同格式）；无记录返回 `{}` |
 | `POST /api/sms/query` | `{"port":1}`（不传或 0 = 全部） | 立即触发一次主动查询，异步执行 |
 | `GET /api/sms/query` | - | 主动查询状态：`storeMode/deleteAfterRead/lastMs/safetySec` 与 `ports[]`（含 `pending/running/lastFound/lastHandled/lastDeleted` 及清空状态）。存储模式链路诊断字段：`indexes`（保留待重试的 +CMTI 索引数）、`cmgfChecked`/`cmgfOk`（PDU 模式确认结果）、`failStreak`、`lastCmgr`（最近一次 `AT+CMGR` 原始响应片段）、`lastError`——排查「+CMTI 可见但短信没入库」时先查这里 |
-| `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..",...}]}` |
+| `GET /api/sms/poll` | - | 定时主动查询配置：`{"ok":true,"enabled":bool,"mode":n,"intervalH":n,"hour":n,"minute":n,"safetySec":n}`。`mode`=`1` 固定间隔（`intervalH` 小时）/ `0` 每日定点（`hour`:`minute`）；`safetySec` 是 +CMTI 丢失时的兜底轮询周期（30-3600 秒） |
+| `POST /api/sms/poll` | `{"enabled":bool,"mode":n,"intervalH":n,"hour":n,"minute":n,"safetySec":n}` | 保存定时主动查询配置并落盘，返回同 GET 的最新配置；保存失败 500。到点由 `tick()` 置待查标记，查询任务异步执行，不在主循环做阻塞 AT |
+| `GET /api/sms/store` | - | 短信接收模式：`{"ok":true,"store":bool}`。`true`=存储模式（`CNMI=2,1`，`+CMTI` + 主动 `AT+CMGR`），`false`=直投模式（`CNMI=2,2`，`+CMT`） |
+| `POST /api/sms/store` | `{"store":bool}` | 切换短信接收模式并落盘，查询任务会给已就绪模组热下发新的 `CNMI`；字段非 bool 返回 400，保存失败 500，成功回显 `{"ok":true,"store":bool}` |
+| `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..","csq":n,"oper":"..","num":"..","imei":"..","iccid":"..",...}]}`；ICCID 需模组就绪且完成 `AT+CCID` 采集 |
 | `POST /api/sms/ports` | `{"port":1,"enabled":bool?,"alias":".."?}` | 启用/禁用与设别名（可只传其一），返回最新列表 |
 | `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
 | `POST /api/sms/clear` | `{"port":1}` | 清空该通信模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
@@ -624,8 +648,8 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 | 方法与路径 | 请求体（JSON） | 说明 |
 |-----------|---------------|------|
 | `GET /api/push/types` | - | 13 种通道类型的字段 schema（前端动态渲染表单用）：`{"ok":true,"types":[...]}` |
-| `GET /api/push` | - | `{"ok":true,"enabled":bool,"strategy":n,"configured":bool,"channels":[{"type":n,"name":"..","url":"..","hasKey1":bool,"key2":"..",...,"customBody":"..","retryOnFail":bool,"enabled":bool,"valid":bool}]}`；密钥字段只回显 `hasKey1` |
-| `POST /api/push` | `{"enabled":bool,"strategy":n,"channels":[{...}]}` | 整体保存（最多 10 条），`key1` 空串表示保持已保存值；保存后立即生效 |
+| `GET /api/push` | - | `{"ok":true,"enabled":bool,"strategy":n,"remark":"..","configured":bool,"channels":[{"type":n,"name":"..","url":"..","hasKey1":bool,"key2":"..",...,"customBody":"..","retryOnFail":bool,"enabled":bool,"valid":bool}]}`；密钥字段只回显 `hasKey1` |
+| `POST /api/push` | `{"enabled":bool,"strategy":n,"remark":"..","channels":[{...}]}` | 整体保存（最多 10 条），`key1` 空串表示保持已保存值；`remark` 为设备备注（可选，最长 64 字节，缺省时保持原值），供模板 `{remark}` 使用；保存后立即生效 |
 | `POST /api/push/enabled` | `{"enabled":bool}` | 只翻转总开关，返回完整配置 |
 | `POST /api/push/test` | 无 | 入队一条测试推送并立即返回 `{"ok":true,"queued":true}`；未启用 / 无 WiFi / 无有效通道返回 400 |
 
@@ -644,6 +668,9 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 | `POST /api/ota/start` | `{"tag":"<完整版本标识>"}` | 启动在线升级（后台任务下载写入），返回 `{"ok":true,"started":true}`，进度经 status 轮询 |
 | `POST /api/ota/upload` | multipart `file` | 本地固件上传，分片写入 OTA 分区，成功后自动重启 |
 | `POST /api/ota/upload-fs` | multipart `file` | 本地 LittleFS（Web UI）镜像上传 |
+
+`ENABLE_FIRMWARE_UPGRADE=0` 时只有 `/api/ota/status` 存在，返回
+`available=false` 与 `message="OTA 升级未编译进固件"`，其余四个接口不注册。
 
 产物文件名：`ota-<tag>-<platform>.bin` / `littlefs-<tag>-<platform>.bin`，
 下载地址由编译期注入的 `OTA_RELEASES_BASE_URL` 拼接。**Release tag 即完整版本标识**

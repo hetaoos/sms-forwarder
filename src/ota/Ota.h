@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "app/Config.h"  // ENABLE_FIRMWARE_UPGRADE（编译期 OTA 开关）
+
 // OTA 状态机
 enum class OtaState : uint8_t {
   IDLE        = 0,    // 空闲
@@ -133,8 +135,9 @@ static constexpr uint8_t     OTA_PROBE_RETRY_PER_CHANNEL = 2;
 static constexpr size_t      OTA_LIST_BODY_MAX = 64 * 1024;
 
 // 运行期探测本机是否有可用的 OTA 分区（app0/app1 双槽）。
-// C3 的分区表是单 app 布局，没有 ota_1，此处返回 false —— 即使误开了
-// ENABLE_FIRMWARE_UPGRADE 也能在开始前就给出明确提示，而不是写崩分区。
+// 单 app 分区表（无 ota_1）返回 false —— 误开升级也能在开始前给出明确提示，
+// 而不是写崩分区。ENABLE_FIRMWARE_UPGRADE=0 时恒为 false：编译期已关闭升级，
+// 前端据此隐藏 OTA 入口（版本标识 Ota::version() 仍可读，状态页照常显示）。
 bool otaPartitionAvailable();
 
 // Ota：固件 OTA + LittleFS 烧录入口。所有耗时操作都在独立 FreeRTOS 任务执行，

@@ -29,6 +29,14 @@ namespace {
 void sendJsonDoc(AsyncWebServerRequest *req, const JsonDocument &doc);
 void sendErr(AsyncWebServerRequest *req, int code, const char *msg);
 
+#if !ENABLE_MQTT
+// MQTT 编译期关闭时，配置类接口统一给出明确错误，避免第三方脚本把
+// 「配置保存失败」误判成 NVS 故障。菜单已由 /api/status 的 mqtt.compiled 隐藏。
+void mqttCompiledOff(AsyncWebServerRequest *req) {
+  sendErr(req, 404, "MQTT 未编译进固件（ENABLE_MQTT=0）");
+}
+#endif
+
 // 取字符串参数；req：请求对象；name：参数名；def：缺省值
 // 参数存在时返回其值（指针生命周期跟随请求），否则返回 def
 const char *param(AsyncWebServerRequest *req, const char *name,
@@ -528,7 +536,7 @@ void WebPanel::setupRoutes() {
   // 查询当前状态：{"ok":true,"on":bool,"bright":0-100}
   _server.on("/api/disp", HTTP_GET, [this](AsyncWebServerRequest *req) { handleDispGet(req); });
 
-  // 屏幕实时预览：抓取帧缓冲编码 BMP 返回（方案 B）；前端 <img> 轮询实现 ~1-2fps
+  // 屏幕实时预览：抓取帧缓冲编码 JPEG 返回（image/jpeg，方案 B）；前端 <img> 轮询实现 ~1-2fps
   _server.on("/api/screen", HTTP_GET, [this](AsyncWebServerRequest *req) { handleScreenGet(req); });
 
   // 设置屏幕：JSON {"on":bool?,"bright":0-100?}，两个字段都可选
@@ -794,6 +802,9 @@ void WebPanel::setupRoutes() {
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handlePushPost(req, json); });
 
   // ================= OTA 升级 =================
+  // 编译期关闭时只保留状态查询（available=false，前端据此隐藏升级入口），
+  // 其余升级接口不注册，避免留着能调用的空壳。
+#if ENABLE_FIRMWARE_UPGRADE
   // 顺序：子路径（/api/ota/status 等）在父路径（/api/ota/upload 等）前注册无冲突，
   // 这里均为不同路径，按功能分组排列即可。
 
@@ -832,6 +843,10 @@ void WebPanel::setupRoutes() {
                     uint8_t *data, size_t len, bool final) {
                handleOtaUploadFsChunk(req, filename, index, data, len, final);
              });
+#else
+  _server.on("/api/ota/status", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleOtaStatus(req); });
+#endif  // ENABLE_FIRMWARE_UPGRADE
 
   // ================= 配置导入导出 =================
   // 导出：GET 触发浏览器下载完整配置 JSON（含密码等敏感信息）
@@ -2049,10 +2064,19 @@ void WebPanel::handleEmailPost(AsyncWebServerRequest *req, JsonVariant &json) {
 
 // ---- MQTT ----
 void WebPanel::handleMqttGet(AsyncWebServerRequest *req) {
+#if !ENABLE_MQTT
+  mqttCompiledOff(req);
+  return;
+#endif
   sendJson(req, _mqtt.configJson());
 }
 
 void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) {
+#if !ENABLE_MQTT
+  (void)json;
+  mqttCompiledOff(req);
+  return;
+#endif
   bool on = false;
   if (!json.is<JsonObject>() || !jsonBool(json["enabled"], on)) {
     sendErr(req, 400, "请求格式错误");
@@ -2066,6 +2090,10 @@ void WebPanel::handleMqttEnabled(AsyncWebServerRequest *req, JsonVariant &json) 
 }
 
 void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
+#if !ENABLE_MQTT
+  mqttCompiledOff(req);
+  return;
+#endif
   if (!_mqtt.enabled()) {
     sendErr(req, 400, "MQTT 未启用，请先打开总开关");
     return;
@@ -2089,6 +2117,11 @@ void WebPanel::handleMqttTest(AsyncWebServerRequest *req) {
 }
 
 void WebPanel::handleMqttPost(AsyncWebServerRequest *req, JsonVariant &json) {
+#if !ENABLE_MQTT
+  (void)json;
+  mqttCompiledOff(req);
+  return;
+#endif
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "请求格式错误");
     return;
