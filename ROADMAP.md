@@ -607,7 +607,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 |---|---|---|---|
 | ~~补齐 5 个模板占位符~~ ✅ 已实现，见 §2.8 | `{carrier}` / `{to}` / `{iccid}` / `{signal}` 取模组快照（新增 `AT+CCID`），`{remark}` 取 NVS 备注 | `src/push/*`、`src/sms/SmsService.*`、`data/pages/push.html` | 小 |
 | 联系人簿 / 号码备注 | 让推送显示姓名而非裸号码（现在 `{remark}` 是**设备**备注，不是号码备注，此项仍未做） | `src/sms/`、`src/push/`、`data/pages/` | 中 |
-| SSE 补全 | 全量快照缺 `sms`/`smsports`；`Last-Event-ID` 续传只做了 AT 历史；Bearer 客户端无法用 SSE（可加 query token） | `src/net/StatusBus.cpp:139-185` | 小 |
+| ~~SSE 补全~~ ✅ 已实现，见 §2.13 | 日志 `log` 增量 / 发件箱 `outbox` 脏信号接入、两页去轮询；`sms`/`smsports` 快照与事件已补齐（原缺口 1 已解决）。**剩余**（原缺口 2/3）：`Last-Event-ID` 续传仍只覆盖 AT 历史（log/outbox/status 重连后全量重推）；Bearer 客户端仍无法用 SSE（可加 `?token=` query 鉴权） | `src/net/StatusBus.*`、`src/app/Outbox.*`、`data/assets/app.js` | 小 |
 | SMTP 587 / STARTTLS | README 明确的已知限制 | `src/net/EmailService.cpp` | 中 |
 | ~~修编译开关~~ ✅ 已实现，见 §2.8 | 两个宏归一化并真正裁掉实现，两种配置均编译通过，前端按 `compiled` 隐藏入口 | `src/app/Config.h`、`src/net/MqttService.h`、`src/ota/Ota.cpp`、`src/net/WebPanel.cpp` | 小 |
 | ~~前端「规划中」菜单~~ ❌ 按需求不做，见 §2.9 | Web 不展示路线图 / 待办；改为侧栏底部显示源码仓库入口（不含简介），路线图只在本文维护 | `data/assets/app.js`、`app.css` | 小 |
