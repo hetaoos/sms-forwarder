@@ -19,9 +19,29 @@
 
 namespace {
 
-// 短信正文落盘前截断，避免超长短信把单条记录撑到几十 KB
+// 短信正文落盘前截断，避免超长短信把单条记录撑到几十 KB。
+// 注意：ESP32 的 String::length()/substring() 都是「字节」索引，而中文等
+// 多以 UTF-8 多字节存储。若按字节截断，常会从某个字符中间切断，序列化到
+// JSON / 网页展示时变成乱码。这里改为按「完整 UTF-8 字符」截断，只在字符
+// 边界处下刀，max 表示允许保留的最大 Unicode 字符数。
 String clip(const String &s, size_t max) {
-  return s.length() <= max ? s : s.substring(0, max);
+  if (s.length() == 0) return s;
+  const char *p = s.c_str();
+  size_t len = s.length();
+  size_t i = 0, chars = 0;
+  while (i < len && chars < max) {
+    uint8_t c = (uint8_t)p[i];
+    size_t adv;
+    if (c < 0x80)        adv = 1;          // ASCII
+    else if ((c & 0xE0) == 0xC0) adv = 2;  // 110xxxxx
+    else if ((c & 0xF0) == 0xE0) adv = 3;  // 1110xxxx
+    else if ((c & 0xF8) == 0xF0) adv = 4;  // 11110xxx
+    else adv = 1;                          // 续字节（异常数据），跳过
+    if (i + adv > len) break;              // 末尾不完整序列，截断在边界
+    i += adv;
+    chars++;
+  }
+  return s.substring(0, i);
 }
 
 // 把换行压成空格，便于日志与列表展示
