@@ -4,6 +4,8 @@
 ST7789 屏幕与物理按键提供本地交互，并内置 Web 控制台做远程管理。短信、来电、
 SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 种 webhook 推送通道**。
 
+> 开发路线图、待办清单与后续工作交接见 [ROADMAP.md](ROADMAP.md)（内部开发文档）。
+
 ## 目录
 
 - [功能特性](#功能特性)
@@ -509,6 +511,8 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `DELETE /api/sms?id=n` / `?all=1` | - | 删除单条（不存在 404）或清空 |
 | `GET /api/sms/stats` | - | `{"ok":true,"total":n,"max":n,"used":bytes,"fsTotal":bytes}` |
 | `GET /api/sms/latest` | - | 最新一条摘要（仪表盘用，与 SSE `sms` 事件同格式）；无记录返回 `{}` |
+| `POST /api/sms/query` | `{"port":1}`（不传或 0 = 全部） | 立即触发一次主动查询，异步执行 |
+| `GET /api/sms/query` | - | 主动查询状态：`storeMode/deleteAfterRead/lastMs/safetySec` 与 `ports[]`（含 `pending/running/lastFound/lastHandled/lastDeleted` 及清空状态）。存储模式链路诊断字段：`indexes`（保留待重试的 +CMTI 索引数）、`cmgfChecked`/`cmgfOk`（PDU 模式确认结果）、`failStreak`、`lastCmgr`（最近一次 `AT+CMGR` 原始响应片段）、`lastError`——排查「+CMTI 可见但短信没入库」时先查这里 |
 | `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..",...}]}` |
 | `POST /api/sms/ports` | `{"port":1,"enabled":bool?,"alias":".."?}` | 启用/禁用与设别名（可只传其一），返回最新列表 |
 | `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
