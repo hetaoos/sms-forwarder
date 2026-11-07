@@ -125,7 +125,7 @@
 
   <!-- 详情对话框 -->
   <div class="modal-mask" x-show="detail" @click.self="detail = null" style="display:none">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detailModalTitle">
+    <div class="modal detail-modal" role="dialog" aria-modal="true" aria-labelledby="detailModalTitle">
       <h3 id="detailModalTitle">短信详情</h3>
       <template x-if="detail">
         <div class="form">
@@ -133,7 +133,7 @@
           <div class="row"><span class="k">通信模组</span><span class="v" x-text="modemLabelOf(detail.modem)"></span></div>
           <div class="row"><span class="k">方向</span><span class="v" x-text="detail.dir === 'in' ? '收到' : '发送'"></span></div>
           <div class="row"><span class="k">号码</span><span class="v" x-text="detail.phone"></span></div>
-          <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap;text-align:left" x-text="detail.content"></span></div>
+          <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap;text-align:left" x-html="linkify(detail.content)"></span></div>
         </div>
       </template>
       <div class="bar" style="margin-top:8px">

@@ -329,6 +329,10 @@ input.mono{font-family:var(--mono)}
 .modal-close{border:none;background:none;font-size:22px;line-height:1;color:var(--muted);
   cursor:pointer;padding:0 6px;border-radius:6px;transition:.15s}
 .modal-close:hover{color:var(--danger);background:rgba(230,69,69,.08)}
+/* 短信详情对话框：比默认 380px 更大，方便查看较长正文 */
+.detail-modal{max-width:560px}
+/* 详情正文里的网址：可点击、新窗口打开 */
+.detail-modal .v a{color:var(--primary);text-decoration:underline;word-break:break-all}
 .send-modal{max-width:430px}
 .send-modal .field{margin-bottom:14px}
 .send-modal .field label{display:flex;align-items:center}

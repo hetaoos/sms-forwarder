@@ -1870,6 +1870,21 @@ function pageSms() {
     },
     showDetail(m) { this.detail = m; },
 
+    // 把正文里的网址识别成可点击链接（新窗口打开）；先转义防 XSS。
+    // 匹配范围：http(s):// 完整网址、www. 开头、以及裸域名（example.com / sub.example.co.uk 等，
+    // 末段为字母 TLD，故不误伤纯数字 1.2.3、IP 192.168.0.1；结尾标点自动留在链接外）。
+    linkify(text) {
+      if (!text) return '';
+      const esc = s => s.replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const safe = esc(text);
+      const re = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}(?:\/[^\s<>"'()]*)?)/gi;
+      return safe.replace(re, (m) => {
+        const href = /^https?:\/\//i.test(m) ? m : 'http://' + m;
+        return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + m + '</a>';
+      });
+    },
+
     fmtTs(ts) { return fmtDateTime(ts); },
     // 列表用短时间：MM-DD HH:mm（跨年也看不出，详情里有完整时间）
     fmtShort(ts) { return fmtDateShort(ts); },
