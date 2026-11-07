@@ -488,10 +488,12 @@ Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HT
    `HttpOnly` 使 JS 读不到、`SameSite=Strict` 使 Cookie 不随跨站请求发送，
    第三方网页无法借登录态发起 CSRF 调用。服务端会话同样按 7 天惰性过期，
    表满时淘汰最旧（不再出现「第 9 次登录返回 500」）。
-2. **Bearer 访问令牌（脚本/第三方客户端）**：登录响应体返回 `token`，
-   之后请求带 `Authorization: Bearer <token>` 头即可，无需 Cookie。
-   另有**持久化 API 令牌**（默认关闭，在系统设置页启用）：存于 NVS（`apitoken`），
-   **重启不失效**，可在 `/api/token` 查询与重置。
+2. **Bearer 访问令牌（脚本/第三方客户端）**：登录响应体返回 `token`（随机串，内存态、7 天 TTL），
+   之后请求带 `Authorization: Bearer <token>` 头即可，无需 Cookie。另有
+   **持久化 API 令牌**（默认关闭，在系统设置页启用）：NVS `apitoken` 只存
+   `verifier = SHA256(raw)`，**不存明文**；推荐用 `GET /api/token/challenge` +
+   `POST /api/token/exchange` 换得**短时效票据**后再调业务接口（纯 HTTP 下不暴露 raw 令牌）；
+   raw Bearer 作为兼容分支默认保留，可编译期 `-DAPI_TOKEN_REQUIRE_EXCHANGE=1` 关闭。
 
 会话与临时令牌均为服务端随机生成，仅存内存（上限 8 个），**重启后全部失效**。
 `POST /api/logout` 作废当前会话与令牌。未认证访问返回 401
@@ -543,9 +545,11 @@ Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HT
 | `GET /api/session` | 无 | 已登录 `{"ok":true,"user":"admin"}`，否则 401 |
 | `GET /api/auth` | 无 | 当前用户名 `{"ok":true,"user":"admin"}`（密码不回传） |
 | `POST /api/auth` | `{"user":"新用户","pass":"新密码","passOld":"当前密码"}` | `{"ok":true}`；当前密码不符 403、长度超限 400、NVS 写入失败 500；成功后全部会话/令牌作废。新密码 / 旧密码字段仍是**明文 HTTP**（与 v1 兼容同属已知残留） |
-| `GET /api/token` | 无 | `{"ok":true,"enabled":bool,"token":".."}` |
-| `POST /api/token` | `{"enabled":bool}` | 开关持久化 API 令牌（启用且无令牌时自动生成），返回 `{"ok":true,"enabled":bool}` |
-| `POST /api/token/reset` | 无（普通 POST） | 重新生成令牌并写 NVS，旧令牌立即失效；未启用 403 |
+| `GET /api/token/challenge` | 无（公开） | `{"ok":true,"v":2,"alg":"sha256-verifier","nonce":"..","ts":<millis>,"ttlMs":30000}`；未启用 403、限流 429 |
+| `POST /api/token/exchange` | `{"v":2,"nonce":"..","ts":<ts>,"proof":"<64hex>"}` | `{"ok":true,"ticket":".."}`；proof 错 / nonce 失效 401、限流 429、未启用 403。ticket 为短时效票据（1 小时），后续 `Bearer <ticket>` 调业务接口 |
+| `GET /api/token` | 无 | `{"ok":true,"enabled":bool,"token":"••••"}`（**不再回 raw**，真实值仅 `reset` 响应一次性给） |
+| `POST /api/token` | `{"enabled":bool}` | 开关持久化 API 令牌（启用且无 verifier 时自动生成），返回 `{"ok":true,"enabled":bool}` |
+| `POST /api/token/reset` | 无（普通 POST） | 重新生成令牌并写 NVS（只存 verifier），旧令牌立即失效；未启用 403；响应一次性回 raw |
 
 ### 系统状态与维护
 
@@ -838,13 +842,22 @@ SSE 不可用时自动降级为 2 秒轮询。
 
 ## 脚本示例
 
-下面示例用 Bearer 令牌调用各接口（先用 **v1 兼容登录**换取 `token`；浏览器默认走
-v2 挑战应答，脚本也可在「系统设置 - API 访问令牌」启用持久化令牌后直接带 Bearer 头）：
+下面示例用 Bearer 令牌调用各接口。脚本/第三方客户端推荐先换短期票据（纯 HTTP 下不暴露 raw 令牌）：
 
 ```bash
-TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login \
-  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+RAW=<你的持久化 API 令牌>          # 在「系统设置 - API 访问令牌」启用后获得
+CH=$(curl -s http://设备IP/api/token/challenge)
+NONCE=$(echo "$CH" | jq -r .nonce); TS=$(echo "$CH" | jq -r .ts)
+V=$(printf %s "$RAW" | sha256sum | cut -d' ' -f1)
+PROOF=$(printf "%s:%s:%s" "$V" "$TS" "$NONCE" | sha256sum | cut -d' ' -f1)
+TOKEN=$(curl -s -X POST http://设备IP/api/token/exchange -H 'Content-Type: application/json' \
+  -d "{\"v\":2,\"nonce\":\"$NONCE\",\"ts\":$TS,\"proof\":\"$PROOF\"}" | jq -r .ticket)
+# 兼容（默认开启）：直接带 raw 持久化令牌：TOKEN=$RAW
+# 临时登录令牌（v1 兼容，浏览器走 v2 挑战应答）：TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+#   -d '{"user":"admin","pass":"admin123"}' http://设备IP/api/login | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+```
+
+> 浏览器默认走 v2 登录挑战应答，无需关心上述流程；`TOKEN` 拿到后即可像下面一样调用各接口：
 
 # 查询状态（GET）
 curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/status

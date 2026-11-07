@@ -38,9 +38,10 @@
 //      供脚本 / 第三方客户端使用。
 // 身份支持两种方式（任一通过即可）：
 //   1. 会话 Cookie（sid）：登录后下发，存内存，重启失效；
-//   2. 访问令牌（Bearer）：长期有效的 API 令牌，持久化于 NVS，重启不失效，
-//      供脚本 / 第三方客户端使用；需在系统设置「API 访问令牌」中启用，
-//      启用时自动生成，可在该页重置；关闭时 Bearer 调用一律拒绝。
+//   2. 访问令牌（Bearer）：持久化于 NVS（仅存 verifier，不存 raw），重启不失效，
+//      供脚本 / 第三方客户端使用；需在系统设置「API 访问令牌」中启用，启用时自动生成。
+//      推荐用 GET /api/token/challenge + POST /api/token/exchange 换短期票据后再调业务接口
+//      （纯 HTTP 下不暴露 raw 令牌）；raw Bearer 作为兼容分支默认保留，可编译期关闭。
 // 账号存于 NVS（AdminStore）：只存「salt + verifier = SHA256(salt:pass)」，不存明文密码；
 // Web 登录默认走 /api/login/challenge 下发的 nonce + ts 挑战，前端提交 proof，
 // v1 明文登录为兼容分支（编译期 LOGIN_REQUIRE_PROOF=1 可禁用）。
@@ -96,10 +97,12 @@ class WebPanel {
   // 生成 32 位十六进制随机凭证（esp_random 硬件熵源，用于 sid / Bearer 令牌）
   static String genSecret();
 
-  // 内存凭证表操作：stamps 与 store 平行记录签发时刻（millis）。
-  // 新增时先惰性清掉过期项，表满则淘汰最旧；查找时同样按 kSessionTtlMs 判过期。
+  // 内存凭证表操作：stamps 与 store 平行记录**过期时刻**（nowMs + ttlMs）。
+  // 新增时先惰性清掉过期项，表满时淘汰最旧；查找按过期时刻判失效。
+  // ttlMs 默认 kSessionTtlMs（会话/登录临时令牌 7 天）；交换票据传 kApiTicketTtlMs（1 小时）。
   static bool storeAdd(String *store, uint32_t *stamps, uint8_t &count,
-                       const String &v, uint32_t nowMs);
+                       const String &v, uint32_t nowMs,
+                       uint32_t ttlMs = cfg::kSessionTtlMs);
   static void storeRemove(String *store, uint32_t *stamps, uint8_t &count,
                           const String &v);
   static bool storeHas(String *store, uint32_t *stamps, uint8_t &count,
@@ -116,13 +119,13 @@ class WebPanel {
   uint8_t _sessionCount = 0;               // 会话表当前数量
   uint8_t _tokenCount = 0;                 // 令牌表当前数量
   bool _apiTokenEnabled = false;           // API 访问令牌功能开关（NVS，默认关闭）
-  String _apiToken;                        // 持久化 API 访问令牌（NVS，重启不失效）
+  String _apiTokenVerifier;                // 持久化 API 令牌的 verifier = SHA256(raw)，NVS 只存它、不存 raw（§3.2）
   LoginLimiter _loginLimiter;              // 登录限流 + 一次性挑战 nonce（纯内存，重启清零）
 
-  // 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于
-  // kNvsKeyToken（沿用 apitoken 键）；缺失/解析失败视为关闭，启用但令牌缺失则生成并写回
+  // 载入 API 令牌配置：NVS 以 JSON v2 {"ver":2,"enabled":bool,"verifier":"<64hex>"} 存储于
+  // kNvsKeyToken（apitoken 键），只存 verifier 不存 raw；旧 v1 明文记录开机自动迁移。
   void loadApiToken();
-  // 将当前 _apiTokenEnabled / _apiToken 以 JSON 写回 NVS
+  // 将当前 _apiTokenEnabled / _apiTokenVerifier 以 JSON v2 写回 NVS
   void saveApiTokenCfg();
   // 重新生成 API 令牌（写 NVS），返回新令牌
   String resetApiToken();
@@ -145,7 +148,9 @@ class WebPanel {
   void handleLogout(AsyncWebServerRequest *req);
   void handleSession(AsyncWebServerRequest *req);
 
-  // API 令牌与账号：查询、开关、重置、查询/修改账号
+  // API 令牌与账号：挑战、交换、查询、开关、重置、查询/修改账号
+  void handleTokenChallenge(AsyncWebServerRequest *req);
+  void handleTokenExchange(AsyncWebServerRequest *req, JsonVariant &json);
   void handleTokenGet(AsyncWebServerRequest *req);
   void handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleTokenReset(AsyncWebServerRequest *req);

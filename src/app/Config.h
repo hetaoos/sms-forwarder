@@ -89,6 +89,15 @@ constexpr uint8_t kLoginFailMax = 5;                // 窗口内失败次数阈�
 constexpr uint32_t kLoginLockBaseMs = 60000;        // 首次锁定时长 60s
 constexpr uint32_t kLoginLockMaxMs = 900000;        // 阶梯锁定上限 15 分钟
 
+// ---------------- API 访问令牌传输保护（§3.2）----------------
+// 编译期开关：1 = 禁用 raw Bearer（强制脚本走 challenge→exchange→ticket）。
+// 默认 0 保留兼容；正式发布可加 -D API_TOKEN_REQUIRE_EXCHANGE=1。
+#ifndef API_TOKEN_REQUIRE_EXCHANGE
+#define API_TOKEN_REQUIRE_EXCHANGE 0
+#endif
+constexpr bool kApiTokenRawCompat = API_TOKEN_REQUIRE_EXCHANGE == 0;
+constexpr uint32_t kApiTicketTtlMs = 3600000;       // 交换所得的短期票据有效期 1 小时
+
 // ---------------- NVS 配置存储 ----------------
 // 按功能分区存放 JSON：WiFi 配置整体是一个 JSON 对象
 // {"ver":1,"list":[{"ssid":"...","pass":"..."}, ...]}

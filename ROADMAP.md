@@ -518,6 +518,40 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.12 已完成：API 访问令牌传输保护（2026-11-07）
+
+**状态**：代码完成，默认 + `API_TOKEN_REQUIRE_EXCHANGE=1` 两种编译均 SUCCESS、`buildfs` SUCCESS、`node --check` 通过，**未刷机实测**、**未提交 git**；改过 `data/`，刷机时需 `uploadfs`。按 §3.2「待确认」5 项**全部采纳**落地。
+
+**① NVS 只存 verifier（不存 raw）**（`WebPanel`）
+- `apitoken` 升 v2 `{"ver":2,"enabled","verifier"}`，`verifier = SHA256(raw)`；`loadApiToken()` 读到旧 v1 `{"ver":1,"enabled","token"}` 时派生 verifier 并写回 v2（明文令牌不变；仅开机一次，落盘失败下次重试）；`resetApiToken()` 生成 raw、只存 verifier、返回 raw（一次性披露）；`saveApiTokenCfg()` 只写 verifier。
+
+**② 挑战交换替代每请求明文**（`WebPanel`，复用 `LoginLimiter` nonce 表 + 限流桶）
+- `GET /api/token/challenge`（公开，需已启用）：返回 `v=2 / alg=sha256-verifier / nonce / ts / ttlMs`，`Cache-Control: no-store`，受每 IP 挑战限流。
+- `POST /api/token/exchange`：`{"v":2,"nonce","ts","proof"}`，`proof = SHA256(verifier + ":" + ts + ":" + nonce)`；服务端用 `_apiTokenVerifier` 重算 + 恒定时间比较，nonce 一次性消费，命中限流返回 429 + `retryAfter`；成功签发**短时效票据**（1 小时，`storeAdd(_tokens,...,ttl)`），返回 `{"ok":true,"ticket":".."}`。脚本后续 `Bearer <ticket>`。
+- `authorized()` 改为**只认 `_tokens` 表（ticket + 登录临时 token）**，不再直接比 raw；`kApiTokenRawCompat`（默认 true）保留 raw Bearer 兼容分支：用 `SHA256(raw)` 与 verifier 比对（不持有 raw），每次打节流告警；`-DAPI_TOKEN_REQUIRE_EXCHANGE=1` 可彻底关掉（编译期消除该分支）。
+
+**③ 端点脱敏**：`GET /api/token` 不再回 raw（返回掩码占位），真实值仅 `POST /api/token/reset` 响应一次性给；`handleTokenPost` 改用 verifier。
+
+**④ 前端**（`data/assets/app.js` + `data/pages/settings.html`）
+- `pageApiToken()` 的 `tokenMasked` 在持有 raw（reset 后瞬时）时掩码、否则提示「已隐藏」；`curlCmd` 示例改为 challenge→exchange 换票据（含兼容 raw 行）；提示文案说明 raw 仅重置后可见一次。
+
+**关键文件**：`src/net/WebPanel.h/.cpp`（挑战/交换/脱敏/`authorized` 改 ticket-only）、`src/app/Config.h`（`kApiTicketTtlMs`、`API_TOKEN_REQUIRE_EXCHANGE`/`kApiTokenRawCompat`）、`data/assets/app.js`、`data/pages/settings.html`、README、本文。复用 `src/utils/CryptoUtil.*`、`src/net/LoginLimiter.*`。
+
+**验证结果（已做）**
+- 默认：`PLATFORMIO_BUILD_DIR=.pio/verify_apitoken pio run -e esp32s3` → SUCCESS；`API_TOKEN_REQUIRE_EXCHANGE=1` 变体 → SUCCESS。
+- `PLATFORMIO_BUILD_DIR=.pio/verify_apitoken pio run -e esp32s3 -t buildfs` → SUCCESS，`littlefs.bin` 含 `settings.html.gz`/`app.js.gz`；`firmware.elf` 含 `/api/token/challenge`、`/api/token/exchange`、`API 令牌已从明文迁移为 verifier`、`收到 raw Bearer 令牌`、`令牌或签名无效` 等字符串。
+- `node --check data/assets/app.js` 通过；令牌 proof 公式（`SHA256(SHA256(raw):ts:nonce)`）与 curl `sha256sum` 示例拼接一致（Node 仿真通过）。
+
+**验收（待设备验证，按 §3.2 验收 5 项）**
+1. 启用持久化令牌后，脚本走 challenge→exchange 拿 ticket 能调 API；ticket 过期（1h）后 401；重放 ticket → 401；challenge 后等 35s 再 exchange → 401。
+2. raw `Bearer <token>` 默认仍可用（有「raw Bearer」warn 日志）；刷 `API_TOKEN_REQUIRE_EXCHANGE=1` 固件后 raw → 401；浏览器 SPA 用 Cookie 正常。
+3. `GET /api/token` 不再回 raw（掩码）；NVS `apitoken` 只含 verifier、无 raw；`reset` 仍一次性回 raw；旧 v1 备份（token 明文）开机自动升级。
+4. 回归：登录 / 会话 / SSE / 收发音信不受影响；限流命中返回 429。
+
+**已知取舍**（详见 §3.2）：纯 HTTP 下 exchange 的 proof / ticket 仍可嗅探；兼容模式 raw-Bearer 存在时仍暴露（同 v1 登录）；**不支持跨该版本回滚**（NVS 升 v2 后旧固件读不到 token 字段会按未启用处理，旧脚本 raw 调用失效；建议回滚前先重置/导出）；浏览器 SPA 不受影响（Cookie 已受登录 v2 保护）。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -697,8 +731,75 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 #### 下一步讨论（不纳入本批实施）
 
-- **API 访问令牌的传输保护（本次提出，待讨论）**：现状 `/api/token` GET 明文返回持久化令牌（UI 掩码只是前端展示）、NVS `apitoken` 明文存 `token`、登录响应 `token` 明文、Bearer 头在纯 HTTP 上明文传输；令牌无过期（临时 token 重启失效、持久化 token 直到手动重置）。**本批的挑战应答只覆盖登录密码，令牌链路完全不动**。待讨论方向（先不选定）：① 令牌也改成 verifier + 每请求签名 / 证明；② 用令牌换取短期票据；③ 直接上 HTTPS 一并根治；④ 只收敛暴露面（默认关闭、掩码、缩短有效期、限流）。讨论时一并明确 `authorized()` 要求 `_apiTokenEnabled`（默认关闭，登录返回的临时 token 默认不可用）这一现状是否要改。
+- **API 访问令牌的传输保护**：本批（登录）的挑战应答只覆盖登录密码，令牌链路完全不动；现已展开为 **§3.2 方案（已实施存档）**——复用登录范式的 challenge→exchange→ticket，NVS 只存 verifier，raw-Bearer 作为兼容分支默认保留（同 v1 登录）。原待讨论方向：① 令牌也改成 verifier + 每请求签名 / 证明；② 用令牌换取短期票据（已采纳为方案主体）；③ 直接上 HTTPS 一并根治；④ 只收敛暴露面（默认关闭、掩码、缩短有效期、限流）。讨论时一并明确 `authorized()` 要求 `_apiTokenEnabled`（默认关闭，登录返回的临时 token 默认不可用）这一现状是否要改。
 - 相关残留（同属后续讨论）：慢 KDF（PBKDF2-HMAC-SHA256）与前端同款实现；`POST /api/auth` 新密码 / `passOld` 的非明文改造；配置导出 `wifi`/`email`/`mqtt` 的 `pass` 脱敏；AP 开放热点、MQTT 命令鉴权、§3 P2 本地 HTTPS。
+
+---
+
+### 3.2 方案存档（已实施，待设备验证）：API 访问令牌传输保护（2026-11-07）
+
+**状态**：**已按 5 项决策（全部采纳）实施**，代码实现、编译与前端验证结果见 §2.12；本章保留为设计依据与协议契约，**设备验收仍待执行**。对应 §3 P0「安全三件套」之「API 访问令牌传输保护」。注意下文「现状与硬约束」记录的是**改造前**的旧实现，勿据此判断当前代码。
+
+#### 现状与硬约束
+
+- 设备是 `http://<局域网IP>:80`，纯 HTTP；`Bearer <token>` 头、管理端点响应、NVS 均为明文（与登录改造前同源问题）。
+- `GET /api/token`（需登录）直接回完整 raw token（`WebPanel.cpp:1136-1141`）；`POST /api/token/reset` 回 raw 新令牌（`resetApiToken()` 返回 `_apiToken`）。
+- NVS `apitoken` 为 `{"ver":1,"enabled":bool,"token":"<32hex>"}`，**明文存 token**（`WebPanel.cpp:342-389`）。
+- `authorized()` 直接 `t == _apiToken` 比对 Bearer，**raw token 每次请求明文进线**（`WebPanel.cpp:303-311`）；登录响应里的临时 `token` 也明文。
+- **浏览器 SPA 走会话 Cookie（HttpOnly）调 API**，`app.js` 的 `apiFetch` 不带 `Authorization`，故明文令牌暴露面主要在「管理页读取 + 脚本/第三方客户端每请求 Bearer」，而非浏览器自身。
+- 已具备可复用设施：`CryptoUtil`（SHA-256 / hex / 恒定时间比较）、`LoginLimiter`（nonce 表 + 限流桶）、`AdminStore` 的 verifier 模式、挑战端点注册范式（`/api/login/challenge`）；本方案直接复用。
+
+#### 目标与非目标
+
+- **目标**：① 脚本/第三方客户端认证时**不再每请求发 raw token**，改为一次挑战交换换得短时效 ticket，后续 `Bearer <ticket>`；② NVS 只存 `token verifier`，不存 raw（与密码同口径）；③ 管理端点 `GET /api/token` 默认只回掩码，raw 仅一次性披露（reset/reveal）；④ 不破坏浏览器 SPA（仍走 Cookie）。
+- **非目标**：**不宣称等同 HTTPS**，纯 HTTP 下 proof / ticket 仍可嗅探；根治靠 §3 P2 本地 HTTPS。`wifi`/`email`/`mqtt` 明文导出、MQTT 命令鉴权、慢 KDF 不在本批。
+
+#### 主体方案（复用登录链路范式）
+
+1. **NVS 升级**：`apitoken` 升 `{"ver":2,"enabled":bool,"verifier":"<64hex>"}`；`loadApiToken()` 见到旧 `token` 时派生 `verifier = SHA256(token)` 并丢弃 raw（一次性迁移，落盘失败仅告警、下次重试）；`resetApiToken()` 生成 raw、`storeVerifier = SHA256(raw)`、`saveApiTokenCfg()` 只写 verifier、返回 raw（一次性披露）；服务端内存只留 `_apiTokenVerifier`。
+2. **挑战交换（仿登录 v2）**：
+   - `GET /api/token/challenge`（需已登录）：返回 `{"ok":true,"v":2,"alg":"sha256-verifier","nonce":"<32hex>","ts":<millis>,"ttlMs":30000}`，复用 `LoginLimiter` 的 nonce 表，`ts` 用 `millis()`。
+   - `POST /api/token/exchange`：`{"v":2,"nonce","ts","proof"}`，`proof = SHA256(verifier + ":" + ts + ":" + nonce)`（`verifier = SHA256(rawToken)`）；服务端用 `_apiTokenVerifier` 校验、nonce 一次性消费、命中限流返回 429 + `retryAfter`；成功签发**短时效 ticket**（不透明随机串，`storeAdd(_tokens, ttl)`），返回 `{"ok":true,"ticket":".."}`。
+   - 前端管理页「复制 curl 示例」与脚本：先 `challenge` → `exchange` 取 ticket，再带 `Bearer <ticket>` 调业务接口。
+3. **`authorized()` 改为只认 ticket**：只比 `_tokens` 表（TTL 惰性过期），**不再直接比 `_apiToken`**。为兼容旧脚本，保留 `RAW_TOKEN_COMPAT`（默认 1）：`Bearer <rawToken>` 仍接受但打 `auth` warn 日志；编译期 `API_TOKEN_REQUIRE_EXCHANGE=1` 可彻底关掉（同 `LOGIN_REQUIRE_PROOF` 范式）。`_tokens` 表现在统一承载「登录临时 token + exchange ticket」两类短期凭证。
+4. **端点脱敏**：`GET /api/token` 返回 `{"ok":true,"enabled":bool,"token":""}`（默认不再回 raw，前端用既有掩码 UI）；raw 仅在 `POST /api/token/reset` 响应一次性给（同初始设置的一次性披露）。
+5. **前端**：`app.js` 的 `apiFetch` 仍走 Cookie，无需改；仅「API 访问令牌」页的 curl 示例更新为 exchange 流程（或保留 v1 明文示例并注明兼容）。浏览器自身认证链路不受影响。
+
+#### 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `src/net/WebPanel.cpp/.h` | `handleTokenChallenge` / `handleTokenExchange`；`authorized()` 改 ticket-only；`loadApiToken`/`resetApiToken` 改 verifier；`GET /api/token` 脱敏；认证白名单加挑战端点 |
+| `src/app/Config.h` | `kApiTicketTtlMs`（建议 3600000，即 1 小时）、`RAW_TOKEN_COMPAT` / `API_TOKEN_REQUIRE_EXCHANGE` 开关 |
+| `data/pages/settings.html` 或 `data/assets/app.js` | curl 示例改 exchange 流程 |
+| `README.md` | 新端点、v2 协议、429 契约、NVS 迁移与回滚警告、脱敏口径 |
+| `ROADMAP.md` | 实施后按 §2/§3/§4/§7 同步 |
+
+#### 验收（编译 + 设备）
+
+1. 编译（默认 + 双开关关闭 + `API_TOKEN_REQUIRE_EXCHANGE=1`）SUCCESS；改过 `data/` 必须 `uploadfs`。
+2. 脚本走 exchange 拿 ticket 后能调 API；ticket TTL 过期后 401；重放 ticket → 401；challenge 后等 35s 再 exchange → 401。
+3. raw `Bearer <token>` 默认仍可用（有 warn 日志）；开 `REQUIRE_EXCHANGE` 后 raw → 401；浏览器 SPA 用 Cookie 正常。
+4. `GET /api/token` 不再回 raw（掩码）；NVS `apitoken` 只含 verifier、无 raw；`reset` 仍一次性回 raw；导入旧 v1 备份（`token` 明文）自动升级。
+5. 回归：登录 / 会话 / SSE / 收发音信不受影响；限流命中返回 429。
+
+#### 已知取舍与风险
+
+- 纯 HTTP 下 exchange 的 `proof` 同登录可被嗅探离线爆破（单次 SHA-256 加盐非慢 KDF）；收益是 raw token 不每请求进线 / 不落 NVS。
+- **兼容模式 raw-Bearer 存在时仍暴露**（同 v1 登录），只有 `REQUIRE_EXCHANGE` 能彻底关。
+- ticket TTL 内若被嗅探可复用（同会话 Cookie 风险，已有 HttpOnly+SameSite 兜底）。
+- **不支持跨该版本回滚**：NVS 升 v2 后刷回旧固件读不到 `verifier`，API 令牌功能异常；OTA 只升不降，回滚前先导出/重置。
+- 浏览器 SPA 不受影响（Cookie 已受登录 v2 保护）。
+
+#### 已确认决策（2026-11-07，全部采纳）
+
+| # | 决策 | 建议 |
+|---|---|---|
+| 1 | NVS 只存 verifier（不存 raw） | 是 |
+| 2 | 引入 challenge→exchange→ticket，raw-Bearer 默认保留兼容 | 是（同 v1 登录） |
+| 3 | `GET /api/token` 默认只回掩码 | 是 |
+| 4 | ticket TTL | 1 小时 |
+| 5 | 浏览器 SPA 维持 Cookie、仅脚本/第三方走 exchange | 是 |
 
 ---
 
@@ -707,7 +808,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
 3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）、BACK 长按 + 侧栏仓库入口（§2.9；规划中菜单按需求不做）、时区可配 + 时间失真（§2.10）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS。
-4. **安全三件套**：✅ 登录限流 + 口令哈希 + 前端挑战应答已完成（§2.11，方案 §3.1，**待设备验证**）→ 余下 TLS 证书校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）与 MQTT 命令鉴权；API 访问令牌传输保护另行讨论（§3.1「下一步讨论」）。
+4. **安全三件套**：✅ 登录限流 + 口令哈希 + 前端挑战应答已完成（§2.11，方案 §3.1，**待设备验证**）；✅ API 访问令牌传输保护已完成（§2.12，方案 §3.2，**待设备验证**）→ 余下 TLS 证书校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、MQTT 命令鉴权。
 5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
 > 每个阶段结束都应：编译通过 → 更新本文档 §2/§7 → 在 `README.md` 同步 API/配置变更 → 需要设备验证的写清楚验收步骤。
@@ -795,4 +896,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 新增「登录限流 + 前端 SHA-256 挑战应答」方案（§3.1）：服务端下发 nonce/ts 一次性挑战、浏览器原生或内置纯 JS SHA-256 双实现、全局/IP/账号三层限流；明确纯 HTTP 下 `crypto.subtle` 不可用、计时用 `millis()`、不阻塞 `async_tcp`；同步 §3 / §4 / §5 | **仅方案，待确认**，代码未动 |
 | 2026-11-07 | §3.1 方案定稿：5 项决策确认（A+B 同批 / v1 默认保留 / 记住密码改存 verifier / 阈值不改 / 会话修复同批）；协议改为直接 verifier 版 v2，含 NVS `auth` v1→v2 迁移与回滚警告；新增「API 访问令牌传输保护」为下一步讨论项；同步 §3 / §4 / §6 | **方案已确认，待实施**，代码未动 |
 | 2026-11-07 | 实现登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（§2.11，按 §3.1 A+B 同批）：新增 `CryptoUtil` / `LoginLimiter` / `sha256.js`，`AdminStore` v1→v2 迁移与导出脱敏，v2 挑战应答 + 三层限流 + 429，v1 兼容开关 `LOGIN_REQUIRE_PROOF`，会话过期 / LRU 与遗留 sid 修复；README 与本文 §0 / §1.2 / §2.11 / §3 / §4 / §5 / §7 同步 | 代码完成，三种编译配置 + `buildfs` 均 SUCCESS，`node --check` / SHA-256 对照 / 语法检查通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
+| 2026-11-07 | 实现 API 访问令牌传输保护（§2.12，按 §3.2 全部采纳）：NVS 只存 verifier（v1 明文自动迁移）、新增 `/api/token/challenge`+`/api/token/exchange` 换短时效票据、`authorized()` 改 ticket-only（raw Bearer 兼容默认保留）、`GET /api/token` 脱敏；README 与本文 §3.2 / §2.12 / §4 同步 | 代码完成，两种编译 + `buildfs` SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

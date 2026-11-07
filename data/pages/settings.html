@@ -64,7 +64,7 @@
   <div class="bar" style="margin-top:8px">
     <button class="btn ghost sm" @click="copyCmd()">复制命令</button>
   </div>
-  <div class="hint" x-show="!tokenShown" x-cloak>上方令牌为占位符，点击「显示完整」后将自动替换为真实令牌。</div>
+  <div class="hint" x-show="!tokenShown" x-cloak>令牌仅「重置令牌」后可见一次（明文展示）；日常调用请用上方 challenge→exchange 示例，避免 raw 令牌明文传输。</div>
   <div class="hint">点击「重置令牌」可使旧令牌立即作废并生成新令牌。</div>
 </div>
 

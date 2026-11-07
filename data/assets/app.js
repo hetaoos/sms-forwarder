@@ -1581,18 +1581,30 @@ function pageApiToken() {
     // 未保存检测：仅开关状态需要保存
     markClean() { this._snap = String(this.enabled); },
     get dirty() { return !!this._snap && this._snap !== String(this.enabled); },
-    // 令牌默认掩码：前 6 + 中间 10 个点 + 后 4；点按后才显示完整
+    // 令牌掩码：仅 reset 后瞬时持有 raw 时可显示掩码；平时只提示已隐藏
     get tokenMasked() {
       const t = this.token || '';
-      if (!t.length) return '';
-      if (this.tokenShown) return t;
-      return t.slice(0, 6) + '••••••••••' + t.slice(-4);
+      if (t.length) return this.tokenShown ? t : (t.slice(0, 6) + '••••••••••' + t.slice(-4));
+      return this.enabled ? '已隐藏（点「重置令牌」可见一次）' : '';
     },
-    // 示例命令：设备地址自动取当前页面访问地址；令牌仅在「显示完整」时为真实值
+    // 示例命令：默认演示 challenge→exchange 换票据（纯 HTTP 下不暴露 raw 令牌）；
+    // 若刚点过「显示完整」（持有 raw），则一并填入真实值，下方兼容行才可用。
     get curlCmd() {
-      const tok = (this.tokenShown && this.token) ? this.token : '<令牌>';
-      return 'curl -H "Authorization: Bearer ' + tok + '" ' +
-        (location.origin || 'http://设备IP') + '/api/status';
+      const origin = location.origin || 'http://设备IP';
+      const raw = (this.tokenShown && this.token) ? this.token : '<RAW_TOKEN>';
+      return [
+        '# 推荐：challenge → exchange 换短时效票据（不暴露 raw 令牌）',
+        'CH=$(curl -s ' + origin + '/api/token/challenge)',
+        'NONCE=$(echo "$CH" | jq -r .nonce); TS=$(echo "$CH" | jq -r .ts)',
+        'V=$(printf %s "' + raw + '" | sha256sum | cut -d" " -f1)',
+        'PROOF=$(printf "%s:%s:%s" "$V" "$TS" "$NONCE" | sha256sum | cut -d" " -f1)',
+        'TICKET=$(curl -s -X POST ' + origin + '/api/token/exchange -H "Content-Type: application/json" \\',
+        '  -d "{\\"v\\":2,\\"nonce\\":\\"$NONCE\\",\\"ts\\":$TS,\\"proof\\":\\"$PROOF\\"}" | jq -r .ticket)',
+        'curl -H "Authorization: Bearer $TICKET" ' + origin + '/api/status',
+        '',
+        '# 兼容（默认开启）：直接带 raw 令牌（明文传输，建议迁移到上方）',
+        'curl -H "Authorization: Bearer ' + raw + '" ' + origin + '/api/status'
+      ].join('\n');
     },
     async copyCmd() {
       const txt = this.curlCmd;

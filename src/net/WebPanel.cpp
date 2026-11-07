@@ -305,8 +305,22 @@ bool WebPanel::authorized(AsyncWebServerRequest *req) {
     if (a.startsWith("Bearer ")) {
       String t = a.substring(7);
       if (t.length() && _apiTokenEnabled &&
-          (storeHas(_tokens, _tokenStamps, _tokenCount, t, now) ||
-           t == _apiToken)) return true;
+          storeHas(_tokens, _tokenStamps, _tokenCount, t, now)) return true;
+      // 兼容分支：raw Bearer 仍接受（与 v1 登录同属已知残留）；服务端只存 verifier，
+      // 故用 SHA256(raw) 与存储的 verifier 比对，不暴露/不要求持有 raw。每次打节流告警。
+      // kApiTokenRawCompat 为 constexpr，关闭（API_TOKEN_REQUIRE_EXCHANGE=1）时整支被消除。
+      if (cfg::kApiTokenRawCompat && t.length() && _apiTokenEnabled &&
+          _apiTokenVerifier.length() == 64 &&
+          crypto::constantTimeEqual(crypto::sha256Hex(t), _apiTokenVerifier)) {
+        static uint32_t s_lastRawWarn = 0;
+        uint32_t ms = millis();
+        if (ms - s_lastRawWarn > 60000) {
+          s_lastRawWarn = ms;
+          _log.addf(LogLevel::kWarn, "auth",
+                    "收到 raw Bearer 令牌（明文传输），建议改用 /api/token/exchange 换票据");
+        }
+        return true;
+      }
     }
   }
   return false;
@@ -339,12 +353,13 @@ String WebPanel::resetWebPassword() {
   return np;
 }
 
-// 载入 API 令牌配置：NVS 以 JSON {"ver":1,"enabled":bool,"token":""} 存储于
-// kNvsKeyToken（沿用 apitoken 键）；缺失/解析失败视为关闭，启用但令牌缺失则生成并写回。
-// 旧版明文令牌（非 JSON）不兼容，按未启用处理（默认关闭，符合需求）。
+// 载入 API 令牌配置：NVS 以 JSON v2 {"ver":2,"enabled":bool,"verifier":"<64hex>"} 存储于
+// kNvsKeyToken（apitoken 键）；只存 verifier = SHA256(raw)，不存 raw。
+// 旧版 v1 {"ver":1,"enabled","token":"<32hex>"} 开机自动迁移为 verifier（密钥不变）。
 void WebPanel::loadApiToken() {
-  _apiTokenEnabled = false;
-  _apiToken = "";
+  bool enabled = false;
+  String verifier;
+  bool dirty = false;            // 仅在迁移 / 新生成时回写，避免每次开机写 NVS
   String raw;
   Preferences prefs;
   if (prefs.begin(cfg::kNvsNamespace, true)) {
@@ -352,25 +367,35 @@ void WebPanel::loadApiToken() {
     prefs.end();
   }
   JsonDocument doc;
-  if (!deserializeJson(doc, raw) && doc.is<JsonObject>()) {
-    _apiTokenEnabled = doc["enabled"] | false;
-    _apiToken = doc["token"] | "";
+  if (deserializeJson(doc, raw) && doc.is<JsonObject>()) {
+    enabled = doc["enabled"] | false;
+    int ver = doc["ver"] | 1;
+    if (ver == 2) {
+      verifier = doc["verifier"] | "";
+    } else if (doc["token"].is<const char *>()) {
+      verifier = crypto::sha256Hex(String(doc["token"].as<const char *>()));
+      dirty = true;
+      _log.addf(LogLevel::kInfo, "http", "API 令牌已从明文迁移为 verifier（v1 → v2）");
+    }
   }
-  if (_apiTokenEnabled && _apiToken.length() != 32) {
-    _apiToken = genSecret();
-    saveApiTokenCfg();
+  if (enabled && verifier.length() != 64) {
+    verifier = crypto::sha256Hex(genSecret());
+    dirty = true;
     _log.addf(LogLevel::kInfo, "http", "API 令牌启用且缺失，已生成并写入 NVS");
   }
+  _apiTokenEnabled = enabled;
+  _apiTokenVerifier = verifier;
+  if (dirty) saveApiTokenCfg();
   _log.addf(LogLevel::kInfo, "http", "API 令牌功能%s",
             _apiTokenEnabled ? "已启用" : "未启用（默认）");
 }
 
-// 将当前 _apiTokenEnabled / _apiToken 以 JSON 写回 NVS（apitoken 键）
+// 将当前 _apiTokenEnabled / _apiTokenVerifier 以 JSON v2 写回 NVS（只存 verifier，不存 raw）
 void WebPanel::saveApiTokenCfg() {
   JsonDocument doc;
-  doc["ver"] = 1;
+  doc["ver"] = 2;
   doc["enabled"] = _apiTokenEnabled;
-  doc["token"] = _apiToken;
+  doc["verifier"] = _apiTokenVerifier;
   String s;
   serializeJson(doc, s);
   Preferences prefs;
@@ -380,22 +405,24 @@ void WebPanel::saveApiTokenCfg() {
   }
 }
 
-// 重新生成 API 令牌（写 NVS），返回新令牌
+// 重新生成 API 令牌（NVS 只存 verifier），返回新 raw 令牌（一次性披露，仅 reset 响应可见）
 String WebPanel::resetApiToken() {
-  _apiToken = genSecret();
+  String raw = genSecret();
+  _apiTokenVerifier = crypto::sha256Hex(raw);
   saveApiTokenCfg();
   _log.addf(LogLevel::kInfo, "http", "API 令牌已重置");
-  return _apiToken;
+  return raw;
 }
 
-// 凭证表新增：stamps 与 store 平行记录签发时刻（millis）。
+// 凭证表新增：stamps 与 store 平行记录**过期时刻**（nowMs + ttlMs）。
 // 先惰性清掉过期项；表满时淘汰最旧而不是拒绝登录（旧实现 8 次登录即 500，
 // 是现成的 DoS）。nowMs 用单调的 millis()，不依赖已同步时钟。
 bool WebPanel::storeAdd(String *store, uint32_t *stamps, uint8_t &count,
-                        const String &v, uint32_t nowMs) {
+                        const String &v, uint32_t nowMs, uint32_t ttlMs) {
   if (!v.length()) return false;
+  uint32_t expire = nowMs + ttlMs;
   for (uint8_t i = 0; i < count;) {
-    if ((nowMs - stamps[i]) >= cfg::kSessionTtlMs) {
+    if (nowMs >= stamps[i]) {        // 已过期
       store[i] = store[--count];
       stamps[i] = stamps[count];
     } else {
@@ -404,7 +431,7 @@ bool WebPanel::storeAdd(String *store, uint32_t *stamps, uint8_t &count,
   }
   uint8_t idx = count;
   if (count >= cfg::kMaxSessions) {
-    uint32_t oldest = 0xFFFFFFFFu;
+    uint32_t oldest = 0xFFFFFFFFu;   // 过期时刻最小者最先淘汰
     idx = 0;
     for (uint8_t i = 0; i < count; i++) {
       if (stamps[i] <= oldest) {
@@ -416,11 +443,11 @@ bool WebPanel::storeAdd(String *store, uint32_t *stamps, uint8_t &count,
     count++;
   }
   store[idx] = v;
-  stamps[idx] = nowMs;
+  stamps[idx] = expire;
   return true;
 }
 
-// 凭证表移除：找到后与末位交换删除（数组无序），时间戳同步搬移
+// 凭证表移除：找到后与末位交换删除（数组无序），过期时刻同步搬移
 void WebPanel::storeRemove(String *store, uint32_t *stamps, uint8_t &count,
                            const String &v) {
   for (uint8_t i = 0; i < count; i++) {
@@ -438,7 +465,7 @@ bool WebPanel::storeHas(String *store, uint32_t *stamps, uint8_t &count,
   if (!v.length()) return false;
   for (uint8_t i = 0; i < count; i++) {
     if (store[i] != v) continue;
-    if ((nowMs - stamps[i]) >= cfg::kSessionTtlMs) {
+    if (nowMs >= stamps[i]) {        // 已过期
       store[i] = store[--count];
       stamps[i] = stamps[count];
       return false;
@@ -521,6 +548,13 @@ void WebPanel::setupRoutes() {
 
   // 会话探测：前端据此判断是否已登录（未认证返回 401）
   _server.on("/api/session", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSession(req); });
+
+  // ---- API 访问令牌：挑战 / 交换（公开，仿登录 v2；脚本免明文传输）----
+  // 子路径先注册：challenge / exchange 先于 /api/token 父路径（见注册顺序规则）。
+  _server.on("/api/token/challenge", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleTokenChallenge(req); });
+  _server.on("/api/token/exchange", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleTokenExchange(req, json); });
 
   // ---- API 访问令牌（持久化，重启不失效；默认关闭，需在系统设置启用）----
   // 重置令牌（子路径，先注册）：生成新令牌并写 NVS，旧令牌立即失效（需启用）。
@@ -979,8 +1013,9 @@ void WebPanel::setupRoutes() {
 void WebPanel::handleAuthMiddleware(AsyncWebServerRequest *req, ArMiddlewareNext next) {
   String url = req->url();
   if (url == "/api/login/challenge" || url == "/api/login" ||
-      url == "/api/logout" || url == "/api/session") {
-    next();  // 登录 / 挑战 / 登出 / 会话探测无需已认证
+      url == "/api/logout" || url == "/api/session" ||
+      url == "/api/token/challenge" || url == "/api/token/exchange") {
+    next();  // 登录 / 令牌挑战交换 / 登出 / 会话探测无需已认证
     return;
   }
   if (url.startsWith("/api/") && !authorized(req)) {
@@ -1130,13 +1165,91 @@ void WebPanel::handleSession(AsyncWebServerRequest *req) {
   sendJsonDoc(req, doc);
 }
 
+// ---- API 令牌：挑战 / 交换（公开，仿登录 v2；脚本免明文传输）----
+// 挑战下发 nonce/ts；交换用 raw 令牌派生 verifier 算 proof，换得短时效票据。
+// 服务端只存 verifier，raw 令牌仅在 exchange 时由客户端提供、不落盘、不进 NVS。
+void WebPanel::handleTokenChallenge(AsyncWebServerRequest *req) {
+  if (!_apiTokenEnabled) { sendErr(req, 403, "API 访问令牌未启用"); return; }
+  uint32_t now = millis();
+  uint32_t retrySec = 0;
+  if (_loginLimiter.challengeGate(clientIpKey(req), now, retrySec)) {
+    sendRateLimited(req, retrySec);
+    return;
+  }
+  uint32_t ts = 0;
+  String nonce = _loginLimiter.issueNonce(now, ts);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["v"] = 2;
+  doc["alg"] = "sha256-verifier";
+  doc["nonce"] = nonce;
+  doc["ts"] = ts;
+  doc["ttlMs"] = cfg::kLoginNonceTtlMs;
+  String out;
+  serializeJson(doc, out);
+  AsyncWebServerResponse *resp = req->beginResponse(200, "application/json", out);
+  resp->addHeader("Cache-Control", "no-store");
+  req->send(resp);
+}
+
+void WebPanel::handleTokenExchange(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!_apiTokenEnabled) { sendErr(req, 403, "API 访问令牌未启用"); return; }
+  if (!json.is<JsonObject>() || !json["nonce"].is<const char *>() ||
+      !json["proof"].is<const char *>()) {
+    sendErr(req, 400, "请求格式错误");
+    return;
+  }
+  const uint32_t now = millis();
+  const uint32_t ip = clientIpKey(req);
+  const uint32_t userHash = crypto::fnv1a("api-token");   // 单一令牌，固定桶
+  uint32_t retrySec = 0;
+  if (_loginLimiter.blocked(ip, userHash, now, retrySec)) {
+    sendRateLimited(req, retrySec);
+    return;
+  }
+  String nonce = json["nonce"].as<String>();
+  String proof = json["proof"].as<String>();
+  uint32_t tsEcho = json["ts"].as<uint32_t>();
+  if (nonce.length() != 32 || proof.length() != 64) {
+    sendErr(req, 400, "请求格式错误");
+    return;
+  }
+  uint32_t ts = 0;
+  bool nonceOk = _loginLimiter.consumeNonce(nonce, ts, now);
+  bool ok = nonceOk && tsEcho == ts && _apiTokenVerifier.length() == 64 &&
+            crypto::constantTimeEqual(
+                proof,
+                crypto::sha256Hex(_apiTokenVerifier + ":" + String(ts) + ":" + nonce));
+  if (!ok) {
+    uint32_t lockMs = _loginLimiter.noteFailure(ip, userHash, now);
+    if (lockMs) {
+      _log.addf(LogLevel::kWarn, "auth",
+                "令牌交换失败达阈值，来源 ...%u 已锁定 %u 秒",
+                (unsigned)(ip & 0xFF), (unsigned)(lockMs / 1000));
+    }
+    sendErr(req, 401, "令牌或签名无效");
+    return;
+  }
+  _loginLimiter.noteSuccess(ip, userHash);
+  String ticket = genSecret();
+  if (!storeAdd(_tokens, _tokenStamps, _tokenCount, ticket, now, cfg::kApiTicketTtlMs)) {
+    sendErr(req, 500, "令牌过多，请稍后再试");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["ticket"] = ticket;
+  sendJsonDoc(req, doc);
+}
+
 // ---- API 令牌 / 账号 ----
 void WebPanel::handleTokenGet(AsyncWebServerRequest *req) {
   if (!authorized(req)) { sendErr(req, 401, "未授权"); return; }
   JsonDocument doc;
   doc["ok"] = true;
   doc["enabled"] = _apiTokenEnabled;
-  doc["token"] = _apiTokenEnabled ? _apiToken : String();
+  // 不再回 raw 令牌；前端用掩码占位，真实值仅在 reset 响应一次性给
+  doc["token"] = _apiTokenEnabled ? String("••••••••••••••••") : String();
   sendJsonDoc(req, doc);
 }
 
@@ -1146,7 +1259,9 @@ void WebPanel::handleTokenPost(AsyncWebServerRequest *req, JsonVariant &json) {
     sendErr(req, 400, "请求格式错误"); return;
   }
   _apiTokenEnabled = json["enabled"].as<bool>();
-  if (_apiTokenEnabled && _apiToken.length() != 32) _apiToken = genSecret();
+  if (_apiTokenEnabled && _apiTokenVerifier.length() != 64) {
+    _apiTokenVerifier = crypto::sha256Hex(genSecret());
+  }
   saveApiTokenCfg();
   sendOkFlag(req, "enabled", _apiTokenEnabled);
 }
