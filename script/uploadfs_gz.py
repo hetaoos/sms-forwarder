@@ -31,6 +31,7 @@ Import("env")  # noqa: F821 — SCons 注入
 import atexit
 import gzip
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -150,7 +151,37 @@ def _resolve_data_source(project_dir, data_dir):
     return data_dir, None
 
 
-def _build_gz_tree(src_dir, out_dir):
+def _enable_lcd(env):
+    """读取 ENABLE_LCD 当前值（默认 1）。
+
+    优先用 SCons 已解析的 CPPDEFINES（PlatformIO 把 -D 编进这里）；
+    兜底再从 build_flags 文本 / CLI 的 PLATFORMIO_BUILD_FLAGS 解析，
+    保证 CLI 覆盖 ini 的写法也能命中。
+    """
+    defs = env.get("CPPDEFINES", [])
+    for d in defs:
+        if isinstance(d, (list, tuple)):
+            key, val = d[0], (d[1] if len(d) > 1 else "1")
+        else:
+            key, val = d, "1"
+        if key == "ENABLE_LCD":
+            try:
+                return 0 if int(str(val).strip()) == 0 else 1
+            except (ValueError, TypeError):
+                return 1
+    try:
+        texts = [" ".join(str(x) for x in env.GetProjectOption("build_flags", ""))]
+    except Exception:
+        texts = []
+    texts.append(os.environ.get("PLATFORMIO_BUILD_FLAGS", ""))
+    m = re.findall(r'-D\s*ENABLE_LCD(?:\s*=\s*(\d+))?', " ".join(texts))
+    if not m:
+        return 1
+    last = m[-1]
+    return 1 if last == "" or int(last) != 0 else 0
+
+
+def _build_gz_tree(src_dir, out_dir, skip_ui_font=False):
     """把 src_dir 的内容写入 out_dir：文本资源 gzip 为 <名>.gz，.ttf/.bin 原样。
 
     不移动/改写源目录（src_dir 可只读），而是把结果输出到独立的可写 out_dir。
@@ -165,6 +196,12 @@ def _build_gz_tree(src_dir, out_dir):
         for fname in sorted(files):
             src_path = os.path.join(root, fname)
             rel = os.path.relpath(src_path, src_dir)
+            # 精简版（ENABLE_LCD=0）不打包 LCD 专用字库 ui_cn.ttf：
+            # 该字库仅 LVGL TinyTTF 运行时渲染使用（src/app/Config.h 的 kUiFontPath），
+            # 关屏后固件不再读取，跳过可省约 1.2MB 的 FS 空间。
+            if skip_ui_font and fname == "ui_cn.ttf":
+                print("[gzip-data] ENABLE_LCD=0 -> 跳过 %s（LCD 字库）" % rel)
+                continue
             with open(src_path, "rb") as f:
                 content = f.read()
             # 字体等二进制资源（.ttf）保持原样，不 gzip：运行时需直接按名读取。
@@ -205,10 +242,13 @@ def _prepare_gzip_data(env):
 
     # 始终复制到可写临时目录再压缩，再让 buildfs 从该目录读取。
     # 这样 CI/本地行为完全一致，且彻底绕开对 data/ 是否可写的依赖。
+    skip_font = (_enable_lcd(env) == 0)
     tmp_root = tempfile.mkdtemp(prefix="sms_data_gz_")
     gz_dir = os.path.join(tmp_root, "data")
     os.makedirs(gz_dir)
-    total_raw, total_gz = _build_gz_tree(src, gz_dir)
+    total_raw, total_gz = _build_gz_tree(src, gz_dir, skip_ui_font=skip_font)
+    if skip_font:
+        print("[gzip-data] ENABLE_LCD=0：FS 镜像将不含 ui_cn.ttf 字库（省约 1.2MB）")
     print("[gzip-data] 已复制 data/ 到可写临时目录并 gzip 压缩: "
           "%d -> %d bytes" % (total_raw, total_gz))
     # esp32 的 buildfs 源目录由 $PROJECT_DATA_DIR（兼容旧版 $DATA_DIR）决定

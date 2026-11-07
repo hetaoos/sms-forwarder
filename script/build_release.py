@@ -59,6 +59,15 @@ PLATFORMS = {
         "ota": True,
         "desc": "ESP32-S3（16MB flash，双 OTA 槽位）",
     },
+    "esp32s3-slim": {
+        "pio_env": "esp32s3-slim",
+        "chip": "esp32s3",
+        "app_offset": 0x20000,
+        "fs_offset": 0xD20000,
+        "flash_size": "16MB",
+        "ota": True,
+        "desc": "ESP32-S3 精简版（无 LCD/LED，16MB flash，双 OTA 槽位）",
+    },
 }
 
 

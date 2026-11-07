@@ -371,6 +371,20 @@ build_flags =
 用陈旧的 `compile_commands.json` 时功能被静默裁掉或误报 `incomplete`。
 改开关后建议用全新构建目录验证：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`。
 
+### 编译目标（多环境）
+
+`platformio.ini` 在公共 `[env]` 段下放公共配置，再用两个具体环境覆盖差异：
+
+| 环境 | `ENABLE_LCD` | `ENABLE_LED` | `APP_PLATFORM` | 说明 |
+|------|--------------|--------------|----------------|------|
+| `esp32s3` | `1` | `1` | `esp32s3` | 标准版：带屏幕 + LED，字库 `ui_cn.ttf` 随 Web UI 资源打进 FS |
+| `esp32s3-slim` | `0` | `0` | `esp32s3-slim` | 精简版：无屏无灯。`lib_deps` 仅含公共库，**不声明也不下载** LVGL/LovyanGFX（标准版才叠加 `[common].lcd_lib_deps`）；字体位图与 `ui_cn.ttf` 均不打进 FS（省约 1.2MB） |
+
+`slim` 版的 `APP_PLATFORM` 后缀 `esp32s3-slim` 会进入 OTA 产物名（`ota-<tag>-esp32s3-slim.bin`），
+设备端据此下载对应固件。CI（`.cnb.yml`）对每个环境各起一个并行 job 编译并发布到同一 Release。
+本地验证：`pio run -e esp32s3-slim -t buildfs`（确认 FS 镜像不含 `ui_cn.ttf`）。
+
+
 ## 屏幕 UI 与按键
 
 （仅当 `ENABLE_LCD=1` 时生效；置 `0` 时屏幕、菜单与 4 键整体不编译，物理按键不再响应——
