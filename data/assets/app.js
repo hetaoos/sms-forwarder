@@ -1999,6 +1999,7 @@ function pageModem() {
     // ---- 硬件引脚配置 ----
     hw: [],                   // 当前引脚配置（来自 /api/modemhw）
     hwPins: [],               // 后端返回的可选 GPIO 列表
+    hwDefaults: [],           // 编译期出厂默认引脚（来自 /api/modemhw）
     hwDraft: {},              // 引脚草稿（按 port 暂存输入），先行预填避免模板绑定空引用
     hwSaving: false,
     hwErr: '',
@@ -2057,12 +2058,18 @@ function pageModem() {
           const j = await r.json();
           this.hw = j.ports || [];
           this.hwPins = j.pins || [];
+          this.hwDefaults = j.defaults || [];
           this.hwDraft = {};
           this.hw.forEach(p => {
             this.hwDraft[p.port] = { rx: p.rx, tx: p.tx, en: p.en, enMode: p.enMode };
           });
         }
       } catch (e) {}
+    },
+    // 返回某端口的出厂默认引脚（兜底用 0/0/-1/0），供页面展示「默认引脚号」
+    hwDef(port) {
+      const d = (this.hwDefaults || []).find(x => x.port === port);
+      return d || { port, rx: 0, tx: 0, en: -1, enMode: 0 };
     },
     async saveHw() {
       this.hwErr = '';

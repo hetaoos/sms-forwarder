@@ -74,6 +74,16 @@
             <span class="badge" x-text="modemLabel(m)"></span>
             <span class="v" style="font-size:12px;color:var(--muted)" x-text="'端口 ' + m.port"></span>
           </div>
+          <div class="hint" style="margin:0 0 8px;font-size:12px">
+            默认引脚：RX <b x-text="hwDef(m.port).rx"></b> / TX <b x-text="hwDef(m.port).tx"></b>
+            <template x-if="hwDef(m.port).en >= 0">
+              ，EN <b x-text="hwDef(m.port).en"></b>
+              （<span x-text="hwDef(m.port).enMode == 1 ? '高电平启用' : (hwDef(m.port).enMode == 2 ? '低电平启用' : '无效')"></span>）
+            </template>
+            <template x-if="hwDef(m.port).en < 0">
+              ，EN <b>未接</b>
+            </template>
+          </div>
           <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
             <div class="field" style="min-width:110px;flex:1"><label>RX ← 模组 TX</label>
               <select class="inp" x-model.number="hwDraft[m.port].rx">

@@ -2343,6 +2343,21 @@ void WebPanel::handleModemHwGet(AsyncWebServerRequest *req) {
                                                             : "off";
     o["enModeText"] = m;
   }
+  // 编译期出厂默认引脚（随 platformio.ini 可能变化，前端据此展示「默认引脚号」）
+  JsonArray def = doc["defaults"].to<JsonArray>();
+  struct { uint8_t port; int8_t rx, tx, en; } dft[] = {
+    {1, cfg::kUart1Rx, cfg::kUart1Tx, cfg::kModemEnPin1},
+    {2, cfg::kUart2Rx, cfg::kUart2Tx, cfg::kModemEnPin2},
+  };
+  for (auto &d : dft) {
+    JsonObject o = def.add<JsonObject>();
+    o["port"] = d.port;
+    o["rx"] = d.rx;
+    o["tx"] = d.tx;
+    o["en"] = d.en;
+    o["enMode"] = (d.en < 0) ? 0 : (cfg::kModemEnActiveLow ? modemhw::kEnLowEnable
+                                                           : modemhw::kEnHighEnable);
+  }
   sendJsonDoc(req, doc);
 }
 
