@@ -3,7 +3,8 @@
 生成 Release 描述（release_notes.md）。
 
 从 dist/ 目录扫描各平台产物计算 SHA256，并按平台分组，生成带烧录说明的
-Markdown。本仓库目前只有一个硬件平台（esp32s3），产物靠文件名里的平台后缀区分。
+Markdown。本仓库有两个编译目标（esp32s3 标准版、esp32s3-slim 精简版），
+产物靠文件名里的平台后缀区分。
 
 入参 tag 就是 Release 的 tag，产物文件名里的 tag 用同一个值 —— 设备端 OTA 会
 照这个规律拼下载地址：

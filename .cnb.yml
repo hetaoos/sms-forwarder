@@ -1,8 +1,9 @@
 # CNB 云原生构建流水线 —— ESP32-S3 固件编译与发布
 #
-# 参考 esp32-sms-forwarding 的 .cnb.yml，按本仓库（单平台 esp32s3）情况裁剪：
-#   - 本仓库只有一个硬件平台（ESP32-S3，16MB flash，双 OTA 槽位），编译一次即可
-#   - 产物文件名带平台后缀（-esp32s3），挂在同一个 Release 下
+# 参考 esp32-sms-forwarding 的 .cnb.yml，按本仓库情况裁剪：
+#   - 硬件平台为 ESP32-S3（16MB flash，双 OTA 槽位）；编译目标有两个：
+#     标准版 esp32s3 与精简版 esp32s3-slim（无 LCD/LED），顺序编译于同一构建环境
+#   - 产物文件名带平台后缀（-esp32s3 / -esp32s3-slim），都挂在同一个 Release 下
 #
 # 版本标识只有一套 —— RELEASE_TAG = <VERSION>-<提交时间>-<短 SHA>
 # （如 1.0.0-20261020T224521-e6d1ec7，时间取自 HEAD 的提交时间）。它同时是：
@@ -19,8 +20,8 @@
 #   会被静默忽略——任务照样「成功」，实际啥也没跑。所以下面每个平台 job 都是
 #   一个直接的 script，不再嵌套 stages。
 #
-# ⚠️ 跨 job / 跨 stage 传文件：并行 job 各在自己的容器里，工作区不互通，
-#   dist/ 必须声明成 data 数据卷才能被后面的 gen-release-notes / 上传阶段读到。
+# ⚠️ 跨 stage 传文件：build 阶段与后面的 gen-release-notes / 上传阶段是不同 stage，
+#   工作区不互通，dist/ 必须声明成 data 数据卷才能被后续阶段读到。
 #   （数据卷类型见 docs.cnb.cool/zh/build/grammar.md#docker-volumes）
 
 # 构建阶段列表：先定版本，再编译。
@@ -72,12 +73,18 @@
     full_sha: FULL_SHA
     timestamp: TIMESTAMP
 
-# 编译 Stage（单平台 esp32s3）
-.build-firmware: &build-firmware
-  name: build-firmware
+# 编译 Stage：同一环境内按序编译全部目标（esp32s3 标准版 + esp32s3-slim 精简版），
+# 不再用并行 job（并行 job 各占独立容器；且切换 lib_deps 时缓存里的 lvgl 会触发
+# safe-delete 批量卸载确认而中断构建）。顺序编译让两目标共享同一容器，产物文件名
+# 带各自平台后缀（-esp32s3 / -esp32s3-slim），都写入共享的 dist/ 卷。
+.build-all: &build-all
+  name: build
   script: |
     set -euo pipefail
-    python3 script/build_release.py --platform "$PLATFORM" --tag "$RELEASE_TAG"
+    for PLATFORM in esp32s3 esp32s3-slim; do
+      echo "===== build $PLATFORM ====="
+      python3 script/build_release.py --platform "$PLATFORM" --tag "$RELEASE_TAG"
+    done
 
 # 完整「编译 + 发布」stages：被 main push 与 手动构建并发布(web_trigger_release)
 # 两处复用，确保发布流程（Release 描述/清理旧版/创建/上传）始终保持一致。
@@ -85,16 +92,7 @@
 # 不要写成 `- *build-release-stages`（会把列表嵌进列表，CNB 解析会乱）。
 .build-release-stages: &build-release-stages
   - *resolve-version
-  - name: build
-    jobs:
-      esp32s3:
-        <<: *build-firmware
-        env:
-          PLATFORM: esp32s3
-      esp32s3-slim:
-        <<: *build-firmware
-        env:
-          PLATFORM: esp32s3-slim
+  - *build-all
   # 生成 Release 描述（含各平台产物 SHA256）
   # 同样不覆盖 image：脚本缺 FULL_SHA 时会退回 `git rev-parse HEAD`，
   # 没有 git 的镜像会让描述里的 Commit 变成 unknown。
@@ -165,16 +163,7 @@ main:
       docker: *docker
       stages:
         - *resolve-version
-        - name: build
-          jobs:
-            esp32s3:
-              <<: *build-firmware
-              env:
-                PLATFORM: esp32s3
-            esp32s3-slim:
-              <<: *build-firmware
-              env:
-                PLATFORM: esp32s3-slim
+        - *build-all
 
 # ---------- 兜底分支：手动触发编译 ----------
 $:
@@ -183,16 +172,7 @@ $:
       docker: *docker
       stages:
         - *resolve-version
-        - name: build
-          jobs:
-            esp32s3:
-              <<: *build-firmware
-              env:
-                PLATFORM: esp32s3
-            esp32s3-slim:
-              <<: *build-firmware
-              env:
-                PLATFORM: esp32s3-slim
+        - *build-all
   # 手动构建并发布：直接复用 main push 的 *build-release-stages（编译+发布全流程），
   # 仅由网页按钮触发；发布行为与 push 到 main 逐字一致，改一处两处同步。
   web_trigger_release:
