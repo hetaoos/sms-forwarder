@@ -135,7 +135,8 @@ pio device monitor -e esp32s3        # 串口监视 115200
 **关键文件**：`src/app/Outbox.h/.cpp`（新增）、`src/app/Config.h`（`kOutbox*` 常量）、
 `src/app/App.h/.cpp`（装配 + 回调）、`src/net/WebPanel.h/.cpp`（4 个 handler）、
 `src/push/PushService.*`、`src/net/EmailService.*`、`src/net/MqttService.*`（单次投递接口）、
-`data/assets/app.js`、`data/pages/outbox.html`。
+`data/assets/app.js`、`data/pages/outbox.html`、`data/pages/sms.html`（后者发送弹窗与
+发件箱页同款：提交即登记、不轮询 `GET /api/sms/send`，结果去发件箱页看）。
 
 **发出类记录（网页发送短信，同日追加）**：
 - `POST /api/sms/send` 改为先调 `Outbox::enqueueOutgoingSms()` 登记；Web「短信」页与
@@ -165,7 +166,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 4. `POST /api/outbox/retry {"id":n}` 能让 `dead` 通道重新投递。
 5. 回归：启动邮件 / SIM / 来电 / 在线 / 测试邮件等**非短信**事件仍走原队列，行为不变。
 6. 在「发件箱」页点「发送短信」→ 出现 `kind=1` / `sms:<port>` 单通道记录，成功标
-   `ok`；Web「短信」页原有发送与轮询也正常，且**不会额外产生转发记录**（无回环）。
+   `ok`；Web「短信」页发送弹窗为同款界面、同样提交即返回（不轮询
+   `GET /api/sms/send`），两页都**不会额外产生转发记录**（无回环）。
 7. 发送中途断电重启 → 该记录标 `submitted`（结果未知），**不自动重发**；
    手动点「重试」才补发（重试前需确认对方未收到）。
 
@@ -298,4 +300,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 修复存储模式 `CNMI=2,1` 收短信不入库缺陷（§2），编译通过 | 代码完成，**待设备验证** |
 | 2026-11-07 | 实现持久化不丢消息转发队列 / 发件箱（§2.5），含 4 个 Web API 与「发件箱」页 | 代码完成，编译通过，**待设备验证** |
 | 2026-11-07 | 网页发送短信接入发件箱（§2.5 发出类记录）；发件箱页新增「发送短信」按钮与弹窗 | 代码完成，编译通过，**待设备验证** |
+| 2026-11-07 | 「短信」页发送弹窗统一为「发件箱」页同款（模组/号码/内容、「加入发件箱」按钮、结果未知提示）；提交即返回，去掉 `pollSend()` 轮询 | 代码完成，`node --check` 通过，**待设备验证** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

@@ -523,7 +523,7 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `POST /api/sms/clear` | `{"port":1}` | 清空该通信模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
 | `GET /api/sms/clear` | - | 清空状态：与 `GET /api/sms/query` 同结构，各端口含 `clearBusy` / `clearLastOk` / `clearLastDeleted` / `clearLastMs` / `clearLastErr` |
 | `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | **先登记持久化发件箱**（`kind=1`，单通道 `sms:<port>`）再启动发送，立即返回 `{"ok":true,"started":true}`；发件箱不可用时回退原有直投队列。`port` 越界返回 400，在途返回 409，队列满返回 503 |
-| `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}`（契约不变；结果由发件箱的发送回调回写，`busy` 只表示本次 CMGS 在途，不绑定发件箱退避重试） |
+| `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}`（契约不变；结果由发件箱的发送回调回写，`busy` 只表示本次 CMGS 在途，不绑定发件箱退避重试）。Web 两个发送弹窗均为「提交即返回、不轮询」，此接口保留兼容 |
 | `GET /api/sms/admin` | - | 管理员远程控制：`{"ok":true,"enabled":bool,"phones":[".."]}` |
 | `POST /api/sms/admin` | `{"enabled":bool?,"phones":[".."]}` | 保存管理员配置（上限 5 个号码；空 `phones` 视为关闭），校验失败 400 |
 | `POST /api/sms/ping` | `{"port":1,"host":"8.8.8.8"?}` | 经通信模组做连通性测试（启动） |
@@ -548,6 +548,8 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 非短信事件（启动 / SIM / 来电 / 在线 / 测试邮件）以及 MQTT `send_sms`、管理员
 `SMS:` 命令、SMS 备份推送仍走各自原有队列，不进入发件箱。
 Web「发件箱」页可查看每条记录在各通道的投递回执、重试失败或结果未知的通道。
+「短信」页与「发件箱」页的发送弹窗为同款界面（通信模组/号码/内容、「加入发件箱」按钮、
+结果未知提示）：提交后即关闭并提示，实际投递结果统一到发件箱页查看。
 
 | 方法与路径 | 请求体 / 参数 | 说明 |
 |-----------|---------------|------|

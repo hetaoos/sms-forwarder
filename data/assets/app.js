@@ -1544,10 +1544,9 @@ function pageApiToken() {
  * 收发 / 列表 / 删除 + 通信模组启用管理；新短信经 SSE sms 事件实时刷新列表 */
 function pageSms() {
   return {
-    modems: [],               // [{port,enabled}]
-    sendPort: 1, phone: '', content: '', sending: false,
+    modems: [],               // [{port,enabled,alias,ready}]
+    sendPort: 0, phone: '', content: '', sending: false,
     sendHint: '', sendErr: false, sendOpen: false,
-    _sendTimer: null,
     q: '', portFilter: -1, page: 1, pageSize: 10,
     total: 0, messages: [], stats: {}, loading: false,
     storeErr: '',
@@ -1596,8 +1595,10 @@ function pageSms() {
     },
     enabledPorts() { return this.modems.filter(m => m.enabled); },
 
-    /* ---- 发送（对话框） ---- */
-    openSend() {
+    /* ---- 发送（对话框）：与发件箱页同款 ---- */
+    async openSend() {
+      // 打开时刷新一次通信模组状态，保证 alias / ready 与页面中显示的一致
+      await this.loadPorts();
       // 默认选中：上次使用的通信模组（仍可用）或第一个启用的通信模组
       this.sendPort = this.defaultSendPort();
       // 恢复上次保存的对方号码，避免重复输入
@@ -1618,74 +1619,36 @@ function pageSms() {
       this.phone = '';
       try { localStorage.removeItem(SEND_PHONE_KEY); } catch (e) {}
     },
+    // POST /api/sms/send 只负责把短信登记到持久化发件箱并立即返回 started，
+    // 实际 CMGS 由 sms_send worker 执行，投递结果去「发件箱」页看，故不再轮询
+    // GET /api/sms/send（该接口保留兼容）。与 pageOutbox().send() 行为一致。
     async send() {
       const phone = this.phone.trim();
       if (!phone) { this.sendFail('请输入对方号码'); return; }
       if (!this.content.length) { this.sendFail('请输入短信内容'); return; }
       if (!this.sendPort) { this.sendFail('没有可用的通信模组，请先在「通信模组」中启用'); return; }
-      this.sending = true;
-      this.sendHint = '正在发送…';
-      this.sendErr = false;
-      // 启动异步发送：后端立即返回 started，实际阻塞式 CMGS 握手在独立任务执行，
-      // 不阻塞 Web 任务（否则会饿死任务看门狗触发整机复位）。随后轮询结果。
+      this.sending = true; this.sendErr = false; this.sendHint = '正在登记…';
       let r;
       try {
-        r = await apiFetch('/api/sms/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ port: this.sendPort, phone: phone, content: this.content }),
+        r = await postJson('/api/sms/send', {
+          port: this.sendPort, phone: phone, content: this.content
         });
       } catch (e) {
-        this.sending = false;
         this.sendFail('请求失败：' + (e && e.message ? e.message : e));
         return;
       }
       if (!r.ok) {
-        // 校验类错误（invalid json / 号码格式等）即时返回，随请求回显
-        const msg = await errText(r);
-        this.sending = false;
-        this.sendFail('发送失败（HTTP ' + r.status + '）：' + msg);
+        this.sendFail('提交失败：' + await errText(r));
         return;
       }
-      this.pollSend();
-    },
-    // 轮询 GET /api/sms/send 直到 busy=false（安全上限 ~120s，长短信多段最坏数十秒）
-    pollSend() {
-      clearTimeout(this._sendTimer);
-      let count = 0;
-      const tick = async () => {
-        try {
-          const r = await apiFetch('/api/sms/send', { cache: 'no-store' });
-          if (r.ok) {
-            const j = await r.json();
-            if (!j.busy) {
-              this.sending = false;
-              if (j.ok) {
-                // 记住本次使用的通信模组，下次打开对话框默认选中
-                try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
-                this.phone = '';
-                this.content = '';
-                this.sendOpen = false;
-                this.reload();
-                this.loadStats();
-                // 通信模组已发出但记录未入库：后端返回 warn，提示但不判失败
-                if (j.warn) toast('发送成功，但' + j.warn, 'warn');
-              } else {
-                // 精确回显后端失败原因（如「通信模组尚未就绪」「发送超时」）
-                this.sendFail('发送失败：' + (j.err || '未知错误'));
-              }
-              return;
-            }
-          }
-        } catch (e) {}
-        if (++count > 120) {   // 安全上限：约 120s
-          this.sending = false;
-          this.sendFail('发送超时（后端未返回结果）');
-          return;
-        }
-        this._sendTimer = setTimeout(tick, 1000);
-      };
-      tick();
+      this.sending = false;
+      this.sendOpen = false;
+      this.content = '';
+      this.savePhone();
+      try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
+      toast('已加入发件箱，等待通信模组发送', 'ok');
+      this.reload();
+      this.loadStats();
     },
     sendFail(msg) { this.sendHint = msg; this.sendErr = true; this.sending = false; },
 

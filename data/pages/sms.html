@@ -78,7 +78,7 @@
     </div>
   </div>
 
-  <!-- 发送短信对话框 -->
+  <!-- 发送短信对话框：与发件箱页同款，提交后登记到发件箱，不等待 CMGS 结果 -->
   <div class="modal-mask" x-show="sendOpen" @click.self="closeSend()" style="display:none">
     <div class="modal send-modal" role="dialog" aria-modal="true" aria-labelledby="sendModalTitle">
       <div class="modal-head">
@@ -91,7 +91,7 @@
         <select class="inp" x-model.number="sendPort">
           <option value="0" x-show="!enabledPorts().length">无可用通信模组</option>
           <template x-for="m in enabledPorts()" :key="m.port">
-            <option :value="m.port" x-text="modemLabel(m) + (m.ready ? '' : ' · 未就绪')"></option>
+            <option :value="m.port" x-text="'通信模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
           </template>
         </select>
       </div>
@@ -113,8 +113,12 @@
 
       <div class="modal-btns">
         <button class="btn" :disabled="sending || !sendPort"
-                @click="send()" x-text="sending ? '发送中…' : '发送'"></button>
+                @click="send()" x-text="sending ? '提交中…' : '加入发件箱'"></button>
         <button class="btn ghost" @click="closeSend()">取消</button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        提交后即登记到发件箱，实际发送由通信模组队列执行；投递结果可在「发件箱」页查看。
+        「结果未知」的记录手动重试前请确认对方是否已收到，避免重复发送。
       </div>
     </div>
   </div>
