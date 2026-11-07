@@ -585,6 +585,28 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 转发/重试/删除/清空时页面即时刷新、无 5s 延迟；③ SSE 断开降级轮询后两页回退 5s 轮询且数据仍更新；
 ④ 回归：状态/AT/短信等原有 SSE 事件、并发上限 8、`Last-Event-ID` 续传不受影响。
 
+### 2.14 已完成：短信列表 SSE 增量并入（2026-11-07）
+
+**状态**：代码完成，默认 + `API_TOKEN_REQUIRE_EXCHANGE=1` 编译均 SUCCESS、`buildfs` SUCCESS、
+`node --check` 通过，**未刷机实测**、**未提交 git**；改过 `data/`，刷机时需 `uploadfs`。
+
+**① 后端补全 SSE `sms` 事件载荷**
+- `SmsService::latestJson()`（即 SSE `sms` 事件与 `/api/sms/latest` 的载荷）原仅含 `id`/`incoming`/`phone`/`ts`/`modem`，
+  **缺 `content` 且与列表项字段名不一致**（`incoming` vs `dir`）。新增 `dir`（`"in"`/`"out"`）与 `content`；
+  其余消费方（仪表盘最新短信预览）为新增字段、向后兼容。
+
+**② 前端改为增量并入（替代整页重拉）**
+- `pageSms` 新增 `lastId` 基线（每次 `reload` 设为首页最新 id）。SSE `sms` 事件监听：首页且未筛选时，
+  若恰好新增单条（`id === lastId+1`）则把该完整记录**纯前端前插**（零请求）、同步 `total`；出现多条/断档
+  （`id` 跳变）或处于筛选/翻页态时再整页 `reload()` 对账，避免漏推或分页错乱。非首页时只更新计数不重拉。
+
+**关键文件**：`src/sms/SmsService.cpp`（`latestJson` 补 `dir`/`content`）、`data/assets/app.js`（`pageSms` 增量并入）。
+
+**验证结果（已做）**：两种编译 SUCCESS；`buildfs` SUCCESS（`app.js.gz`）；`node --check` 通过；`read_lints` 0 错误。
+
+**验收（待设备验证）**：① 收到新短信时短信页首页即时出现、无整页闪烁/滚动跳动；② 连续多条（断档）仍完整正确；
+③ 筛选/翻页态下新短信不破坏当前视图；④ 回归：仪表盘最新短信预览、发件箱页不受影响。
+
 ---
 
 ## 3. 待办清单
@@ -933,4 +955,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 实现登录限流 + 口令哈希 + 前端 SHA-256 挑战应答（§2.11，按 §3.1 A+B 同批）：新增 `CryptoUtil` / `LoginLimiter` / `sha256.js`，`AdminStore` v1→v2 迁移与导出脱敏，v2 挑战应答 + 三层限流 + 429，v1 兼容开关 `LOGIN_REQUIRE_PROOF`，会话过期 / LRU 与遗留 sid 修复；README 与本文 §0 / §1.2 / §2.11 / §3 / §4 / §5 / §7 同步 | 代码完成，三种编译配置 + `buildfs` 均 SUCCESS，`node --check` / SHA-256 对照 / 语法检查通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | 2026-11-07 | 实现 API 访问令牌传输保护（§2.12，按 §3.2 全部采纳）：NVS 只存 verifier（v1 明文自动迁移）、新增 `/api/token/challenge`+`/api/token/exchange` 换短时效票据、`authorized()` 改 ticket-only（raw Bearer 兼容默认保留）、`GET /api/token` 脱敏；README 与本文 §3.2 / §2.12 / §4 同步 | 代码完成，两种编译 + `buildfs` SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | 2026-11-07 | 完成 SSE 补全（§2.13）：日志页/发件箱页接入实时推送（日志增量 `log` 事件、发件箱变更脏信号 `outbox` 事件），移除两页 5s 轮询（SSE 离线时回退）；`Outbox` 加 `revision()`/`bumpRev()` | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
+| 2026-11-07 | 完成短信列表 SSE 增量并入（§2.14）：`latestJson` 补 `dir`/`content`，`pageSms` 首页未筛选时把新短信纯前端前插（免整页重拉），多条/筛选/翻页态回退整页对账 | 代码完成，编译 + `buildfs` + `node --check` 通过，**待设备验证**（需 `uploadfs`），**未提交 git** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

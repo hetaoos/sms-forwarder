@@ -1668,22 +1668,37 @@ function pageApiToken() {
 }
 
 /* ---------- 短信 ----------
- * 收发 / 列表 / 删除 + 通信模组启用管理；新短信经 SSE sms 事件实时刷新列表 */
+ * 收发 / 列表 / 删除 + 通信模组启用管理；新短信经 SSE sms 事件推送，首页无筛选时增量并入（免整页重拉） */
 function pageSms() {
   return {
     modems: [],               // [{port,enabled,alias,ready}]
     sendPort: 0, phone: '', content: '', sending: false,
     sendHint: '', sendErr: false, sendOpen: false,
     q: '', portFilter: -1, page: 1, pageSize: 10,
-    total: 0, messages: [], stats: {}, loading: false,
+    total: 0, messages: [], stats: {}, loading: false, lastId: 0,
     storeErr: '',
     detail: null,
 
     init() {
       // 恢复上次保存的查询条件（筛选/搜索/每页条数），避免重新打开页面丢失
       this.loadQuery();
-      // SSE 驱动：新短信 -> 刷新列表（无筛选时）；通信模组配置 -> 同步开关
-      this.$watch('$store.live.sms', () => { if (!this.q) this.reload(); });
+      // 新短信：SSE sms 事件只给最新一条（含完整正文）。首页且未筛选时优先纯前端增量并入，
+      // 免去整页重拉；多条/断档或处于筛选/翻页态时再整页对账，避免漏推或分页错乱。
+      this.$watch('$store.live.sms', (d) => {
+        const id = d && d.id;
+        if (!id) return;
+        if (this.q || this.portFilter > 0) { this.reload(); return; }   // 筛选态须整页重拉
+        if (id <= this.lastId) return;                                  // 旧事件或重复
+        if (this.page !== 1) { this.total = (this.total || 0) + 1; this.lastId = id; return; }  // 非首页只更新计数
+        if (id === this.lastId + 1) {                                   // 单条新增：增量并入
+          this.messages = [d, ...this.messages];
+          if (this.messages.length > this.pageSize) this.messages.pop();
+          this.total = (this.total || 0) + 1;
+          this.lastId = id;
+        } else {
+          this.reload();                                                // 多条/断档：整页对账
+        }
+      });
       this.$watch('$store.live.smsports', v => this.applyPorts(v));
       // 查询条件变化时落盘，重开页面可还原
       this.$watch('q', () => this.saveQuery());
@@ -1791,6 +1806,7 @@ function pageSms() {
           const j = await r.json();
           this.messages = j.messages || [];
           this.total = j.total || 0;
+          this.lastId = this.messages.length ? this.messages[0].id : 0;
           // 删除/清空后当前页越界：自动回到最后一页并重新拉取
           const pc = Math.max(1, Math.ceil(this.total / this.pageSize));
           if (this.page > pc) { this.page = pc; this.loading = false; return this.reload(); }

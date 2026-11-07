@@ -3003,7 +3003,9 @@ String SmsService::latestJson() {
   if (_store.detail(_lastSmsId, m)) {
     doc["id"] = m.id;
     doc["incoming"] = m.incoming;
+    doc["dir"] = m.incoming ? "in" : "out";   // 与列表项字段对齐，便于前端直接前插
     doc["phone"] = m.phone;
+    doc["content"] = m.content;                // 含正文，SSE 增量并入时无需再回拉
     doc["ts"] = m.ts;
     doc["modem"] = m.modem;
   }
