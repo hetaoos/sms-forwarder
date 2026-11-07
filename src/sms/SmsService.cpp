@@ -1624,6 +1624,14 @@ void SmsService::pollInit(uint8_t port) {
   // 运行时重启检测（onUnsolicited 在就绪态置位）
   if (m.needReinit) {
     m.needReinit = false;
+    // 必须清空已缓存的静态信息（IMEI/号码/ICCID/厂商/型号/运营商等）与采集标志，
+    // 否则换模组 / 换引脚后旧号残留：号码不随模组走，两个端口显示成同一（旧）号码。
+    m.csq = -1; m.oper = ""; m.reg = ""; m.imei = ""; m.iccid = "";
+    m.act = 0; m.num = ""; m.vendor = ""; m.model = ""; m.revision = "";
+    m.operCode = ""; m.simReady = false;
+    m.identityQueried = false; m.idStep = 0; m.nextIdMs = 0;
+    m.nextCsqMs = 0; m.nextOpsMs = 0; m.cmdPauseUntil = 0;
+    m.lastRegStat = -1; m.operRefreshPending = false; m.regSynced = false;
     m.initState = ModemInitState::kWaitAt;
     m.initAttempts = 0;
     m.regAttempts = 0;
