@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "app/Config.h"
 
@@ -53,5 +54,10 @@ int8_t enPin(uint8_t port);
 
 // EN 启用电平：kEnHighEnable -> HIGH，kEnLowEnable -> LOW，无效 -> -1
 int8_t enEnableLevel(uint8_t port);
+
+// 可分配给通信模组 RX/TX/EN 的 GPIO 列表（已剔除 Flash/PSRAM、串口控制台、
+// 启动 Strapping、屏幕 / 按键 / RGB 等板载占用引脚；含当前模组默认引脚 17/18/40/41）。
+// 运行期常量（首次调用后缓存），供 Web 下拉框展示可用引脚。
+const std::vector<int8_t> &availablePins();
 
 }  // namespace modemhw

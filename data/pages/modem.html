@@ -75,14 +75,27 @@
             <span class="v" style="font-size:12px;color:var(--muted)" x-text="'端口 ' + m.port"></span>
           </div>
           <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
-            <div class="field" style="min-width:90px;flex:1"><label>RX 引脚</label>
-              <input type="number" min="0" max="48" x-model.number="hwDraft[m.port].rx"></div>
-            <div class="field" style="min-width:90px;flex:1"><label>TX 引脚</label>
-              <input type="number" min="0" max="48" x-model.number="hwDraft[m.port].tx"></div>
+            <div class="field" style="min-width:110px;flex:1"><label>RX ← 模组 TX</label>
+              <select class="inp" x-model.number="hwDraft[m.port].rx">
+                <template x-for="pin in hwPins" :key="'rx'+m.port+pin">
+                  <option :value="pin" x-text="pin"></option>
+                </template>
+              </select></div>
+            <div class="field" style="min-width:110px;flex:1"><label>TX → 模组 RX</label>
+              <select class="inp" x-model.number="hwDraft[m.port].tx">
+                <template x-for="pin in hwPins" :key="'tx'+m.port+pin">
+                  <option :value="pin" x-text="pin"></option>
+                </template>
+              </select></div>
           </div>
           <div class="bar" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:8px">
-            <div class="field" style="min-width:90px;flex:1"><label>EN 引脚</label>
-              <input type="number" min="-1" max="48" x-model.number="hwDraft[m.port].en" placeholder="-1 未接"></div>
+            <div class="field" style="min-width:110px;flex:1"><label>EN 引脚</label>
+              <select class="inp" x-model.number="hwDraft[m.port].en">
+                <option value="-1">未接（-1）</option>
+                <template x-for="pin in hwPins" :key="'en'+m.port+pin">
+                  <option :value="pin" x-text="pin"></option>
+                </template>
+              </select></div>
             <div class="field" style="min-width:150px;flex:1"><label>EN 模式</label>
               <select class="inp" x-model.number="hwDraft[m.port].enMode">
                 <option value="0">无效（不控制）</option>

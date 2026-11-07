@@ -2323,10 +2323,12 @@ void WebPanel::handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json)
 }
 
 // ---- 通信模组硬件引脚 ----
-// GET /api/modemhw：回显当前运行期引脚配置（含 EN 模式语义文本）
+// GET /api/modemhw：回显当前运行期引脚配置（含 EN 模式语义文本）与可选引脚列表
 void WebPanel::handleModemHwGet(AsyncWebServerRequest *req) {
   JsonDocument doc;
   doc["ok"] = true;
+  JsonArray pins = doc["pins"].to<JsonArray>();
+  for (int8_t p : modemhw::availablePins()) pins.add(p);
   JsonArray arr = doc["ports"].to<JsonArray>();
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     const modemhw::PortPins &pins = modemhw::get(p);
@@ -2386,6 +2388,27 @@ void WebPanel::handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json) 
     if (enMode == 0) en = -1;      // 无效模式不保留引脚号
     p.en = (int8_t)en;
     p.enMode = (uint8_t)enMode;
+  }
+
+  // 引脚互斥校验：任一端口的 rx/tx/en（en=-1 除外）不得与其它端口的同类引脚重复，
+  // 避免两个通信模组或 EN 复用同一 GPIO 造成硬件冲突。
+  for (uint8_t a = 0; a < cfg::kSmsMaxModems; a++) {
+    int pa[3] = { next[a].rx, next[a].tx, next[a].en };
+    for (uint8_t b = 0; b < cfg::kSmsMaxModems; b++) {
+      if (b == a) continue;
+      int pb[3] = { next[b].rx, next[b].tx, next[b].en };
+      for (int i = 0; i < 3; i++) {
+        if (pa[i] < 0) continue;          // en=-1 不参与
+        for (int j = 0; j < 3; j++) {
+          if (pb[j] < 0) continue;
+          if (pa[i] == pb[j]) {
+            sendErr(req, 400,
+                    ("引脚 " + String(pa[i]) + " 被多个通信模组重复占用，请检查 RX/TX/EN 配置").c_str());
+            return;
+          }
+        }
+      }
+    }
   }
 
   if (!modemhw::save(next, cfg::kSmsMaxModems)) {

@@ -126,4 +126,26 @@ int8_t enEnableLevel(uint8_t port) {
   return -1;
 }
 
+const std::vector<int8_t> &availablePins() {
+  static std::vector<int8_t> pins;
+  if (!pins.empty()) return pins;
+  // 真正不可用于通信模组 RX/TX/EN 的引脚（其余如屏幕 TFT、按键、RGB 等板载外设
+  // 引脚一律释放——部分机型未焊接屏幕/按键，这些 GPIO 完全可改作模组引脚；是否占用
+  // 由用户在 Web 引脚配置里自行决定，冲突风险自负）：
+  //   0 启动 Strapping；3/43/44 控制台 UART0（RX/TX，烧录/日志用）；
+  //   45/46 启动 Strapping（46 仅输入）；48 板载 RGB 灯（多数机型必接）。
+  // Flash/PSRAM 占 GPIO 26..32（物理存在但不可作 GPIO，下方循环跳过）。
+  static const int8_t kReserved[] = {0, 3, 43, 44, 45, 46, 48};
+  for (int p = 0; p <= 48; p++) {
+    if (p >= 22 && p <= 25) continue;   // ESP32-S3 不存在该区间 GPIO
+    if (p >= 26 && p <= 32) continue;   // 内部 Flash/PSRAM，不可作 GPIO
+    bool ok = true;
+    for (int r : kReserved) {
+      if (p == r) { ok = false; break; }
+    }
+    if (ok) pins.push_back((int8_t)p);
+  }
+  return pins;
+}
+
 }  // namespace modemhw
