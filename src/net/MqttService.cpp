@@ -200,6 +200,41 @@ void MqttService::publishStatus(const String &status) {
   publish("status", payload, 1, true);  // retained：订阅者连上即拿到最近状态
 }
 
+// 持久化发件箱的单次发布入口：报文结构与 publishEvent(kSms) 一致，
+// 但不走「按位掩码静默返回」的路径，而是把结果显式交给发件箱重试/结单。
+bool MqttService::publishSmsOnce(const String &sender, const String &message,
+                                 uint32_t ts, int8_t modem, bool &skipped,
+                                 String &err) {
+  skipped = false;
+  err = "";
+  if (!_enabled || !isConfigured() || !(_notifyTypes & cfg::kMqttNotifySms)) {
+    skipped = true;
+    err = "MQTT 未启用 / 配置不全 / 短信上报已关闭";
+    return false;
+  }
+  if (!connected()) {
+    err = "MQTT 尚未连上 Broker";
+    return false;  // 可重试：断线重连期间不消耗发件箱的配置类跳过判定
+  }
+
+  JsonDocument doc(psramJsonAllocator());
+  doc["type"]      = "sms";
+  doc["device"]    = deviceName();
+  doc["deviceId"]  = deviceId();
+  doc["timestamp"] = ts;
+  doc["time"]      = mqttFormatTs(ts);
+  doc["from"]      = sender;
+  doc["message"]   = message;
+  if (modem > 0) doc["modem"] = modem;
+  String payload;
+  serializeJson(doc, payload);
+  if (!publish("sms", payload, 1, false)) {
+    err = "MQTT 发布入队失败";
+    return false;
+  }
+  return true;
+}
+
 void MqttService::publishEvent(MqttMsgType type, const String &sender,
                                const String &message, uint32_t ts,
                                const String &typeLabel, const String &modemLabel,

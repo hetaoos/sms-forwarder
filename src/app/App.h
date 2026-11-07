@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "app/Outbox.h"
 #include "app/StatusInfo.h"
 #include "app/UIMenu.h"
 #include "hal/Button.h"
@@ -63,12 +64,14 @@ class App {
   MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
   PushService _push;        // 统一 webhook 推送通道（广播 / 故障转移策略）
   BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
+  // 持久化发件箱：短信先落盘再逐通道投递，重启续投（须在 _panel 之前声明）
+  Outbox _outbox;
   // 设备日志环形存储（PSRAM，Web 分页查询 + 串口镜像）；
   // 指向全局唯一实例（devLog()），其余通信模组取的也是同一份
   LogStore &_log = devLog();
   // HTTP 控制台（依赖上述通信模组）；_ui 用于读写屏幕设置（亮度 / 自动熄屏 / 自动返回）
   WebPanel _panel{_bridge, _led, _wifi, _display, _ui, _auth, _events, _sms, _time,
-                  _email, _log, _mqtt, _push, _blacklist};
+                  _email, _log, _mqtt, _push, _blacklist, _outbox};
 
   // 邮件 / MQTT / 推送 / 短信是否已完成 begin()。
   // 开机首帧状态页会先于这些通信模组初始化采集一次，此时它们的互斥量句柄还是 NULL，

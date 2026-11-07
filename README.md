@@ -29,6 +29,10 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
   - 发送走独立任务执行 CMGS 两段式握手（不阻塞 HTTP 与抽数任务），
     POST 启动 + GET 轮询结果；长短信自动分段
   - 新短信在屏幕上弹窗提示（30 秒自动收起，任意键立即收起）
+  - 收到的短信先登记**持久化发件箱**（`/data/outbox/<id>.json`）再逐通道转发，
+    断电 / 重启后未送达通道自动续投，Web「发件箱」页可查各通道投递回执
+  - 网页上主动发出的短信同样登记到发件箱（Web「短信」页与「发件箱」页均可发送），
+    仍由专职 `sms_send` worker 执行 CMGS，不阻塞主循环
 - **来电提醒**（`sms/SmsService`）
   - `RING`/`+CRING` 起一轮来电，`+CLIP`/主动 `+CLCC` 带主叫号码，
     3 秒后主动 `AT+CLCC` 兜底查询，10 秒窗口超时以「未知号码」派发；
@@ -518,12 +522,39 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
 | `POST /api/sms/clear` | `{"port":1}` | 清空该通信模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
 | `GET /api/sms/clear` | - | 清空状态：与 `GET /api/sms/query` 同结构，各端口含 `clearBusy` / `clearLastOk` / `clearLastDeleted` / `clearLastMs` / `clearLastErr` |
-| `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | 启动发送，立即返回 `{"ok":true,"started":true}`（CMGS 握手在独立任务执行，避免阻塞 async_tcp 任务） |
-| `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}` |
+| `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | **先登记持久化发件箱**（`kind=1`，单通道 `sms:<port>`）再启动发送，立即返回 `{"ok":true,"started":true}`；发件箱不可用时回退原有直投队列。`port` 越界返回 400，在途返回 409，队列满返回 503 |
+| `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}`（契约不变；结果由发件箱的发送回调回写，`busy` 只表示本次 CMGS 在途，不绑定发件箱退避重试） |
 | `GET /api/sms/admin` | - | 管理员远程控制：`{"ok":true,"enabled":bool,"phones":[".."]}` |
 | `POST /api/sms/admin` | `{"enabled":bool?,"phones":[".."]}` | 保存管理员配置（上限 5 个号码；空 `phones` 视为关闭），校验失败 400 |
 | `POST /api/sms/ping` | `{"port":1,"host":"8.8.8.8"?}` | 经通信模组做连通性测试（启动） |
 | `GET /api/sms/ping` | - | 轮询测试结果：`{"busy":bool,"ok":bool,"report":".."}` |
+
+### 持久化发件箱（不丢消息转发队列）
+
+发件箱有两类记录（`records[].kind`）：
+
+- **`kind=0` 收到的短信**：落盘事件 + 「当时启用且有效的通道快照」（`email` / `mqtt` /
+  `push:<idx>`），主循环逐通道投递；断电 / 重启后扫描目录恢复未送达通道并退避续投，
+  转发队列不再随重启清空、也不再因队列满丢最旧。语义为**至少一次**：若在「发送
+  成功」与「状态落盘」之间断电，重启后可能重发一条。
+- **`kind=1` 主动发出的短信**（Web「短信」页与「发件箱」页的发送按钮都走这里）：
+  只生成一个 `sms:<port>` 专用通道，**不生成 email/mqtt/push 通道**——否则会经
+  「SMS 短信备份」push 通道再发一条短信形成回环。实际阻塞式 CMGS 仍由
+  `SmsService` 的常驻 `sms_send` worker 执行，发件箱只做记账与异步结果回写。
+  为避免重复扣费，**发送结果未知时不自动重发**：若发送中重启或 `done` 回调超时，
+  通道记为 `submitted`（结果未知），由用户在发件箱页手动点「重试」决定是否补发。
+  仅「入队发送队列失败」会自动退避重试（此时模组尚未发出，安全）。
+
+非短信事件（启动 / SIM / 来电 / 在线 / 测试邮件）以及 MQTT `send_sms`、管理员
+`SMS:` 命令、SMS 备份推送仍走各自原有队列，不进入发件箱。
+Web「发件箱」页可查看每条记录在各通道的投递回执、重试失败或结果未知的通道。
+
+| 方法与路径 | 请求体 / 参数 | 说明 |
+|-----------|---------------|------|
+| `GET /api/outbox` | `?page=1&pageSize=20&id=n`（均可省略） | `{"ok":true,"enabled":bool,"total":n,"pending":n,"failed":n,"done":n,"records":[...]}`；传 `id` 时只返回该条并附完整 `text`。每条记录含 `kind`(0 收到 / 1 发出) / `phone` / `port` / `sender` / `preview` / `ts` / `modem` / `state`；`channels[]` 含 `k`(键，如 `email` / `mqtt` / `push:0` / `sms:1`) / `n`(名称) / `s`(状态) / `a`(尝试次数) / `e`(最近错误) / `ms`(耗时)，状态为 `pending` / `sending` / `ok` / `submitted` / `failed` / `skipped` / `dead` |
+| `POST /api/outbox/retry` | `{"id":n}`（省略或 0 = 全部） | 把 `failed` / `dead`、以及 `sms:` 通道的 `submitted`（结果未知）重新排队并清零尝试次数。短信类重试前请确认对方未收到，避免重复发送 |
+| `POST /api/outbox/clear` | - | 清空已完成回执，未送达记录一律保留 |
+| `POST /api/outbox/delete` | `{"id":n}` | 删除单条（该记录未送达通道不再补发） |
 
 ### 黑名单
 

@@ -118,6 +118,9 @@ bool App::begin() {
   _mqtt.notifyStartup();               // 开机后首次连上 MQTT 时补发启动通知
   _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
   _sms.begin();                        // 短信：载配置 + 通信模组 PDU 模式初始化
+  // 持久化发件箱：扫描 /data/outbox 恢复未送达通道（须在转发服务与 _sms.begin 之后，
+  // 发出类记录要靠 _sms.enqueueSend 交给 sms_send worker 执行）
+  _outbox.begin(_email, _mqtt, _push, _sms, _wifi, _log);
   _sms.setBlackList(&_blacklist);     // 注入黑名单拦截器（handleCmt 内先于落盘/转发判定）
   SystemService::instance().begin();  // 定时重启：载入 NVS 配置（默认禁用）
   // 至此邮件 / MQTT / 推送 / 短信都已持有各自的互斥量，状态快照可以放心读它们了
@@ -131,13 +134,18 @@ bool App::begin() {
   // 短信时间戳供给：已同步返回纪元秒，未同步返回开机秒数
   // （前端按 >=1.6e9 区分「真实时间 / 开机时长」，无需改动）
   _sms.setTimeProvider([this] { return _time.epochOrUptime(); });
-  // 短信接收 -> 邮件通知入队（回调仅入队，SMTP 会话在 App::tick 执行，
-  // 不阻塞串口抽数任务）+ 设备日志入库
+  // 短信接收 -> 持久化发件箱登记（回调仅做浅入队，落盘与投递在 App::tick，
+  // 不阻塞串口抽数任务）。用户数据分区不可用时回退到原有即时转发队列，
+  // 保证转发功能本身不因发件箱不可用而中断。
   _sms.setOnSmsReceivedCb([this](const String &sender, const String &text,
                                  uint32_t ts, int8_t modem) {
-    _email.notifySms(sender, text, ts, modem);
-    _mqtt.notifySms(sender, text, ts, modem);
-    _push.notifySms(sender, text, ts, modem);  // webhook 推送通道（广播/故障转移）
+    if (_outbox.mounted()) {
+      _outbox.enqueueSms(sender, text, ts, modem);
+    } else {
+      _email.notifySms(sender, text, ts, modem);
+      _mqtt.notifySms(sender, text, ts, modem);
+      _push.notifySms(sender, text, ts, modem);
+    }
     _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（通信模组 %d）", sender.c_str(),
               (int)modem);
   });
@@ -484,6 +492,7 @@ void App::tick() {
   _email.tick();                       // 邮件通知发送队列（无待发时零开销）
   _mqtt.tick();                        // MQTT 连接维护 / 命令执行 / 事件发布
   _push.tick();                        // 推送通道队列与重试（loop 任务内执行）
+  _outbox.tick();                      // 持久化发件箱：落盘新事件 + 逐通道投递/续投
 
   // 轮询 4 键，事件交给菜单状态机处理（状态页下任意键切入菜单）
   KeyId key;

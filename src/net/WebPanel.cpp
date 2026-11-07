@@ -218,10 +218,11 @@ WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, UIMenu &ui, AdminStore &auth,
                    StatusBus &events, SmsService &sms, TimeSync &time,
                    EmailService &email, LogStore &log, MqttService &mqtt,
-                   PushService &push, BlackList &blacklist)
+                   PushService &push, BlackList &blacklist, Outbox &outbox)
     : _bridge(bridge), _led(led), _wifi(wifi), _display(display), _ui(ui),
       _auth(auth), _events(events), _sms(sms), _time(time), _email(email),
-      _mqtt(mqtt), _push(push), _blacklist(blacklist), _log(log) {}
+      _mqtt(mqtt), _push(push), _blacklist(blacklist), _outbox(outbox),
+      _log(log) {}
 
 // 挂载 LittleFS 专有分区，注册路由与认证中间件，启动 HTTP 服务
 void WebPanel::begin() {
@@ -637,6 +638,18 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/query", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsQueryPost(req, json); });
   _server.on("/api/sms/query", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsQueryGet(req); });
+
+  // 持久化发件箱（不丢消息转发队列）：子路径必须先于 /api/outbox 注册
+  // GET  ?page=&pageSize=&id= -> 统计 + 分页记录 + 每通道投递回执
+  // POST retry/clear/delete -> JSON {"id":n}（retry/clear 的 id 可省略）
+  _server.on("/api/outbox/retry", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleOutboxRetry(req, json); });
+  _server.on("/api/outbox/clear", HTTP_POST,
+             [this](AsyncWebServerRequest *req) { handleOutboxClear(req); });
+  _server.on("/api/outbox/delete", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) { handleOutboxDelete(req, json); });
+  _server.on("/api/outbox", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleOutboxGet(req); });
 
   // 清空指定通信模组 SIM 上的全部短信：POST {"port":n} 异步触发（查询任务执行），
   // GET 返回清空状态（复用查询状态 JSON：各端口 clearBusy / 上次结果）。
@@ -1549,6 +1562,10 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   }
   String phone = json["phone"].as<String>();
   String content = json["content"].as<String>();
+  if (port < 1 || port > cfg::kSmsMaxModems) {
+    sendErr(req, 400, "通信模组不存在");
+    return;
+  }
 
   // 单飞：UI 一次只允许一个在途发送（底层队列可缓冲多个），避免轮询状态被覆盖
   bool busy = false;
@@ -1570,34 +1587,38 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   _sendErr = "";
   portEXIT_CRITICAL(&_sendMux);
 
-  // 入队统一发送队列；完成时（tick 主循环上下文）回填轮询状态并记日志
-  bool queued = _sms.enqueueSend((uint8_t)port, phone, content,
-      [this, port, phone](uint32_t id, bool stored, const String &err) {
-        if (id != 0) {
-          _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %u，记录 #%u）",
-                    phone.c_str(), (unsigned)port, (unsigned)id);
-        } else {
-          _log.addf(LogLevel::kWarn, "sms",
-              "发送失败（通信模组 %u -> %s）：%s", (unsigned)port,
-              phone.c_str(), err.c_str());
-        }
-        portENTER_CRITICAL(&_sendMux);
-        _sendOk = (id != 0);
-        _sendId = id;
-        _sendStored = stored;
-        if (id && !stored) {
-          _sendWarn = "记录存储失败（userdata 分区异常），本条不会出现在列表中";
-        }
-        _sendErr = err;
-        _sendBusy = false;
-        portEXIT_CRITICAL(&_sendMux);
-      });
+  // 统一经持久化发件箱登记（先落盘再入队），实际阻塞式 CMGS 仍由 SmsService 的
+  // 常驻 sms_send worker 执行；done 经 worker -> _sms.tick() -> Outbox 在 loop
+  // 任务回传，再写回这里的轮询状态。发件箱不可用时回退原有直投队列，功能不中断。
+  auto done = [this, port, phone](uint32_t id, bool stored, const String &err) {
+    if (id != 0) {
+      _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %u，记录 #%u）",
+                phone.c_str(), (unsigned)port, (unsigned)id);
+    } else {
+      _log.addf(LogLevel::kWarn, "sms",
+          "发送失败（通信模组 %u -> %s）：%s", (unsigned)port,
+          phone.c_str(), err.c_str());
+    }
+    portENTER_CRITICAL(&_sendMux);
+    _sendOk = (id != 0);
+    _sendId = id;
+    _sendStored = stored;
+    if (id && !stored) {
+      _sendWarn = "记录存储失败（userdata 分区异常），本条不会出现在列表中";
+    }
+    _sendErr = err;
+    _sendBusy = false;
+    portEXIT_CRITICAL(&_sendMux);
+  };
+  bool queued = _outbox.mounted()
+      ? _outbox.enqueueOutgoingSms((uint8_t)port, phone, content, done)
+      : _sms.enqueueSend((uint8_t)port, phone, content, done);
   if (!queued) {
-    // 队列满：回退在途态，告知客户端稍后重试
+    // 入队缓冲满 / 发件箱不可用：回退在途态，告知客户端稍后重试
     portENTER_CRITICAL(&_sendMux);
     _sendBusy = false;
     portEXIT_CRITICAL(&_sendMux);
-    sendErr(req, 503, "发送队列已满，请稍后再试");
+    sendErr(req, 503, "发送队列已满或发件箱不可用，请稍后再试");
     return;
   }
 
@@ -1795,6 +1816,49 @@ void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json)
 // 主动查询状态：各端口待查/执行中标记 + 上次查询发现/处理条数 + SIM 清空状态。
 void WebPanel::handleSmsQueryGet(AsyncWebServerRequest *req) {
   sendJson(req, _sms.queryStatusJson());
+}
+
+// ---------------- 持久化发件箱（不丢消息转发队列）----------------
+
+// GET /api/outbox?page=&pageSize=&id=
+// 返回统计（total/pending/failed/done）与倒序分页记录，每条含各通道投递回执：
+// s=pending/sending/ok/submitted/failed/skipped/dead、a=尝试次数、e=最近错误、ms=耗时
+void WebPanel::handleOutboxGet(AsyncWebServerRequest *req) {
+  int page = paramInt(req, "page", 1);
+  int pageSize = paramInt(req, "pageSize", 20);
+  uint32_t id = (uint32_t)paramInt(req, "id", 0);
+  sendJson(req, _outbox.statusJson(page, pageSize, id));
+}
+
+// POST /api/outbox/retry {"id":n}；省略 id 或传 0 表示全部失败通道重新排队
+void WebPanel::handleOutboxRetry(AsyncWebServerRequest *req, JsonVariant &json) {
+  uint32_t id = 0;
+  if (json.is<JsonObject>()) id = (uint32_t)(json["id"] | 0);
+  if (!_outbox.retry(id)) {
+    sendOkMsg(req, "没有需要重试的通道");
+    return;
+  }
+  sendOkMsg(req, id ? "已重新排队该记录的失败通道" : "已重新排队全部失败通道");
+}
+
+// POST /api/outbox/clear：只清已完成回执，未送达记录一律保留
+void WebPanel::handleOutboxClear(AsyncWebServerRequest *req) {
+  _outbox.clearDone();
+  sendOkMsg(req, "已完成回执已清空，未送达记录保留");
+}
+
+// POST /api/outbox/delete {"id":n}：删除单条（该记录未送达的通道不再补发）
+void WebPanel::handleOutboxDelete(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) {
+    sendErr(req, 400, "请求格式错误");
+    return;
+  }
+  uint32_t id = (uint32_t)(json["id"] | 0);
+  if (!id || !_outbox.deleteOne(id)) {
+    sendErr(req, 404, "记录不存在");
+    return;
+  }
+  sendOkMsg(req, "已删除，该记录未送达通道不再补发");
 }
 
 // 清空通信模组 SIM 短信：POST {"port":n} 触发（异步，查询任务执行阻塞式 AT）。

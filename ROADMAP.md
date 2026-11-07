@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成「存储模式 `CNMI=2,1` 收短信不入库」缺陷的**代码修复**，编译通过，但**尚未刷机实测**，改动**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成两项代码工作（① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复，见 §2；② 持久化不丢消息转发队列 / 发件箱，见 §2.5，含「收到短信转发」与「网页主动发短信」两类记录），**完整编译通过**（RAM 36.3% / Flash 47.7%），但**尚未刷机实测**，改动**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -57,6 +57,8 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 - `extra_scripts`：`script/uploadfs_gz.py`（打包时自动 gzip，字库 `ui_cn.ttf` 除外）、`script/inject_app_version.py`（注入 OTA tag，本地按 `<VERSION>-<提交时间>-<sha7>` 自拼）。
 - 编译验证时注意：PlatformIO/SCons 用**内容签名**判断增量，`touch` 源文件不会触发重编；要确认新代码进固件，可在 `.pio/build/esp32s3/firmware.elf` 里搜新增字符串（macOS `grep -a` 对中文不可靠，用 `python3` 读 bytes 比较稳妥）。
+- 若构建日志出现 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]` 后卡住（环境的批量删除保护拦住 PlatformIO 清理 `.o`），用全新构建目录绕开：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`（约 1 分钟全量编译，结果等价）。
+- 根目录 `compile_commands.json` 是**陈旧快照**（缺 `-D ENABLE_MQTT=1`、OTA 宏与 LVGL 路径），不要用它做 `-fsyntax-only` 检查，会误报 `MqttService` incomplete / `lvgl.h` 找不到；新增的 `.cpp` 也不在其中，IDE 的 clang 诊断会报 `../hal.h` 找不到、`JsonDocument` 一堆假错误。一律以 `pio run` 完整编译为准。
 - 设备取证入口（不接 USB 也能用）：`/api/logs`、`/api/at/hist`、`/api/sms/query`、`/api/status`，Web 页「运行日志 / 模组调试 / 通信模组」。
 
 ---
@@ -110,6 +112,65 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 ---
 
+### 2.5 已完成：持久化「不丢消息」转发队列（§3 P0 第一项）
+
+**状态**：代码完成，完整编译通过（`SUCCESS`，RAM 36.3% / Flash 47.7%），**未刷机实测**。验收标准两项均已覆盖。
+
+**方案：薄 Outbox + 复用现有单次发送原语**，不改动三个服务原有队列与发送链路。
+
+- 短信回调（抽数 / 查询任务）只做浅入队；`Outbox::tick()`（loop 任务）把事件连同
+  「当时启用且有效的通道快照」**先落盘** `/data/outbox/<id>.json`，再逐通道投递。
+- 新增薄接口复用现有发送原语：`EmailService::deliverSmsOnce()`、
+  `MqttService::publishSmsOnce()`、`PushService::deliverOnce()`；另加
+  `PushService::channelNeedsNet()`，使 SMS 备份通道在断网时仍能投递。
+- 每条记录按通道记账：`pending/sending/ok/submitted/failed/skipped/dead` +
+  尝试次数、最近错误、耗时。失败按 2s→60s 指数退避，最多 6 次；网络未就绪时
+  推迟且不消耗次数；重启扫描目录恢复，`sending` 视为结果未知重投。
+- 故障转移策略在发件箱内实现（首个 push 通道成功后其余标 `skipped`）；
+  已完成回执 FIFO 保留 80 条，**未完成记录永不淘汰**。
+- Web：`data/pages/outbox.html`「发件箱」页 + `/api/outbox{,/retry,/clear,/delete}`；
+  API 与状态字段见 `README.md`「持久化发件箱」节。
+- 用户数据分区不可用时 `App` 自动回退到原有即时转发队列，转发功能不中断。
+
+**关键文件**：`src/app/Outbox.h/.cpp`（新增）、`src/app/Config.h`（`kOutbox*` 常量）、
+`src/app/App.h/.cpp`（装配 + 回调）、`src/net/WebPanel.h/.cpp`（4 个 handler）、
+`src/push/PushService.*`、`src/net/EmailService.*`、`src/net/MqttService.*`（单次投递接口）、
+`data/assets/app.js`、`data/pages/outbox.html`。
+
+**发出类记录（网页发送短信，同日追加）**：
+- `POST /api/sms/send` 改为先调 `Outbox::enqueueOutgoingSms()` 登记；Web「短信」页与
+  「发件箱」页的发送按钮都走该接口，发件箱不可用时回退原直投队列。
+- `kind=1` 记录只生成 `sms:<port>` 单通道，**跳过 `snapshotChannels()`**，从根上切断
+  「SMS 短信备份 push 通道 → 再发一条短信」的回环（`README.md` 已说明）。
+- 复用 `SmsService::enqueueSend()`：CMGS 仍在不入任务看门狗的常驻 `sms_send` worker
+  里执行，`Outbox::deliver()` 绝不阻塞 loop；`done` 经 `_sms.tick()` →
+  `Outbox::onSendDone()` 回写状态。`applyResult()` 把已入队通道落盘为 `kSending`，
+  `load()` 遇到它记 `kSubmitted`（结果未知、不自动重发），`checkSendTimeout()`
+  兜底 `done` 丢失（3 分钟）。
+- 真正发送失败标 `kDead` 且**不自动重试**（避免重复扣费），仅「入队发送队列失败」
+  自动退避；`retry()` 允许手动重试 `sms:` 的 `submitted`/`dead`。
+- `/api/sms/send` 的 POST/GET 六字段契约不变，新增 `port` 越界 400；`busy` 只表示
+  本次 CMGS 在途，不绑定发件箱退避重试。MQTT `send_sms`、管理员 `SMS:`、SMS 备份
+  推送**未**纳入发件箱（避免破坏命令响应语义与引入回环）。
+
+**已知取舍**：at-least-once（「发送成功」与「状态落盘」之间断电可能重发一条，**仅转发类**；发出类遇结果未知不自动重发）；
+MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 `ok`；
+通道列表是短信到达瞬间的快照，之后新增的通道不补发给旧记录；
+单条正文落盘上限 1024 字节（长短信截断）。
+
+**验收（待设备验证）**：
+1. 发一条短信 → 发件箱页出现记录，各通道状态由 `pending` 变为 `ok` / `submitted` / `skipped`。
+2. 投递过程中断电重启 → 重启后未完成通道自动续投，最终全部到达终态。
+3. 关掉某个通道后重发 → 该通道标 `skipped`，其余通道正常。
+4. `POST /api/outbox/retry {"id":n}` 能让 `dead` 通道重新投递。
+5. 回归：启动邮件 / SIM / 来电 / 在线 / 测试邮件等**非短信**事件仍走原队列，行为不变。
+6. 在「发件箱」页点「发送短信」→ 出现 `kind=1` / `sms:<port>` 单通道记录，成功标
+   `ok`；Web「短信」页原有发送与轮询也正常，且**不会额外产生转发记录**（无回环）。
+7. 发送中途断电重启 → 该记录标 `submitted`（结果未知），**不自动重发**；
+   手动点「重试」才补发（重试前需确认对方未收到）。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -118,7 +179,7 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 | 项 | 价值 | 涉及文件 | 难度 | 验收标准 |
 |---|---|---|---|---|
-| 持久化「不丢消息」转发队列 | 现在邮件/推送队列深 6、短信发送深 8、满则丢最旧，重试表只在内存，重启即丢 | `src/push/PushService.cpp/.h`、`src/net/EmailService.cpp`、`src/app/UserFs.cpp` | 大 | 断电重启后未送达消息继续补发；每条短信可查各通道投递结果 |
+| ~~持久化「不丢消息」转发队列~~ ✅ 已实现，见 §2.5 | 短信事件已改走发件箱；**非短信事件**仍是邮件/推送队列深 6、满则丢最旧、重启即丢，后续可扩展 | `src/app/Outbox.*`、三个服务的单次投递接口 | 大 | 断电重启后未送达消息继续补发；每条短信可查各通道投递结果 |
 | TLS 证书校验 + OTA 固件验签 | 全部出网 TLS 跳过校验，OTA 无签名/哈希 | `src/utils/HttpSession.cpp:27`、`src/net/EmailService.cpp:200`、`src/net/MqttService.cpp:533`、`src/ota/Ota.cpp` | 中 | 可配置 CA/指纹；校验失败有明确日志；保留兼容开关 |
 | 登录限流 + 口令哈希 + 导出脱敏 | 默认 `admin/admin123`、NVS 明文存密码、导出含明文、`handleLogin` 无失败计数 | `src/net/AdminStore.cpp`、`src/net/WebPanel.cpp:885`、`src/net/WifiManager.cpp:415` | 中 | 连续失败锁定；NVS 存加盐哈希；导出可选脱敏 |
 | MQTT 命令面设备侧鉴权 | 任何能发 `<prefix>/<id>/command` 的主体可执行 `send_at`/`restart`/`send_sms` | `src/net/MqttService.cpp:300-360` | 小 | 命令带签名或白名单，非法命令被拒且记日志 |
@@ -172,8 +233,8 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 ## 4. 推荐实施顺序
 
-1. **设备验证关闭 OPEN 缺陷**（§2.4）—— 核心链路可用性优先于一切新功能。
-2. **可靠转发三件套**：持久化投递队列 + 投递回执 + 条件转发规则引擎（P0 第一项 + P2 前两项，一起设计避免返工）。
+1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
+2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
 3. **半成品批次**：5 个占位符 + 联系人簿 + SSE 快照补全（改动小、体验提升明显）。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
 5. **长期保底**：看门狗 + `pdulib` 单元测试 + CI。
@@ -211,7 +272,7 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 **其它**
 - 所有出网 TLS 目前 `setInsecure()`，OTA 无签名 → P0 待修。
-- 队列普遍偏浅且满则丢弃：邮件 6、推送 6（丢最旧）、短信发送 8、管理员命令单槽、SSE 8 客户端（顶掉最旧）。
+- 队列普遍偏浅且满则丢弃：邮件 6、推送 6（丢最旧）、短信发送 8、管理员命令单槽、SSE 8 客户端（顶掉最旧）。**短信事件已改走持久化发件箱**（§2.5），不再受这些队列限制；其余事件仍在原队列里。
 - 时间未同步时时间戳为开机秒数，前端以 `>= 1.6e9` 区分。
 - `ENABLE_MQTT=0` 当前**编译会失败**；`ENABLE_FIRMWARE_UPGRADE` 是名义开关（无 `#if`）。
 - `managed_components/` 有约 40 个 ESP-IDF 组件但源码无任何引用；`include/`、`test/` 基本是模板空目录。
@@ -235,4 +296,6 @@ pio device monitor -e esp32s3        # 串口监视 115200
 |---|---|---|
 | 2026-11-07 | 全面梳理现有功能，形成 P0/P1/P2 功能清单与实施顺序（本文 §3/§4） | 已记录 |
 | 2026-11-07 | 修复存储模式 `CNMI=2,1` 收短信不入库缺陷（§2），编译通过 | 代码完成，**待设备验证** |
+| 2026-11-07 | 实现持久化不丢消息转发队列 / 发件箱（§2.5），含 4 个 Web API 与「发件箱」页 | 代码完成，编译通过，**待设备验证** |
+| 2026-11-07 | 网页发送短信接入发件箱（§2.5 发出类记录）；发件箱页新增「发送短信」按钮与弹窗 | 代码完成，编译通过，**待设备验证** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

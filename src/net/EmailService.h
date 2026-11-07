@@ -148,6 +148,15 @@ class EmailService {
   // 立即排入一封「设备在线」通知邮件
   void notifyOnline();
 
+  // ---------------- 单次同步投递（持久化发件箱专用）----------------
+  // 构建并发送一封短信邮件后立即返回结果，绕过内部队列与 3 次退避重试表；
+  // 模板构建与 SMTP 会话完全复用现有 sendOnce 链路。
+  // skipped=true 表示当前配置不该发（总开关关闭 / 配置不全 / 该类通知关闭），
+  // 发件箱据此直接结单；其余失败由发件箱按退避重试。
+  // 只能在 loop 任务上下文调用（SMTP 会话最长 15s，async_tcp 任务栈不够）。
+  bool deliverSmsOnce(const String &sender, const String &message, uint32_t ts,
+                      int8_t modem, bool &skipped, String &err);
+
   // 请求发送一封测试邮件：只入队并立即返回，真正的构建与发送由 tick() 在
   // loop 任务上下文完成（与短信/SIM/在线通知同一条链路）。
   // 不可在 HTTP 任务里同步发送：本方法运行于 async_tcp 任务，其栈远小于

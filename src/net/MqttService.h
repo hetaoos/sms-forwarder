@@ -108,6 +108,14 @@ class MqttService {
   // 收到短信（sender：发件人；message：正文；ts：纪元秒或开机秒数；modem：接收通信模组串口号）
   void notifySms(const String &sender, const String &message, uint32_t ts,
                  int8_t modem);
+
+  // ---------------- 单次同步投递（持久化发件箱专用）----------------
+  // 与 publishEvent(kSms) 同款报文，但同步返回「是否成功入队」，供发件箱记账。
+  // skipped=true 表示总开关关闭 / 配置不全 / 短信上报位关闭，应直接结单；
+  // 未连上 Broker 返回可重试失败。QoS1 只代表已交给 esp-mqtt 队列，
+  // 无 Broker 端到端确认，故发件箱记为 submitted 而非 ok。
+  bool publishSmsOnce(const String &sender, const String &message, uint32_t ts,
+                      int8_t modem, bool &skipped, String &err);
   // SIM 状态变更（port：串口号；ready：true=已插入 false=已拔出）
   void notifySim(uint8_t port, bool ready);
   // 来电提醒（number：主叫号码，可能为「未知号码」/「号码保密」；modem：串口号）

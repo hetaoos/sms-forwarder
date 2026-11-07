@@ -356,4 +356,21 @@ constexpr uint16_t kSchedIntervalHMax = 720;         // 上限（30 天）
 constexpr uint16_t kSchedIntervalHDefault = 24;      // 默认 24h
 constexpr uint16_t kSchedDailyWindowSec = 600;       // 每日模式触发窗口（秒，容忍迟到 tick）
 
+// ---------------- 持久化发件箱（不丢消息转发队列）----------------
+// 短信到达后先落盘再逐通道投递；重启后未送达的通道自动续投（at-least-once）。
+// 目录相对 /data 挂载点（写成 "/data/outbox" 会变成 /data/data/outbox，见 SmsStore.h 注释）。
+constexpr const char *kOutboxDir = "/outbox";
+constexpr uint16_t kOutboxMaxRecords = 200;   // 记录总数上限（保护 FS；未完成记录优先保留）
+constexpr uint16_t kOutboxKeepDone = 80;      // 已完成回执保留条数（FIFO 淘汰）
+constexpr uint8_t  kOutboxMaxAttempts = 6;    // 单通道最大尝试次数，超过标 dead
+constexpr uint32_t kOutboxBackoffBaseMs = 2000;   // 退避基值：2s,4s,8s...
+constexpr uint32_t kOutboxBackoffMaxMs = 60000;   // 退避封顶
+constexpr uint32_t kOutboxNoNetRetryMs = 5000;    // 网络未就绪时的推迟（不消耗尝试次数）
+constexpr size_t   kOutboxTextLimit = 1024;       // 单条正文落盘上限（长短信截断）
+constexpr size_t   kOutboxErrLimit = 80;          // 单通道错误信息长度上限
+constexpr uint32_t kOutboxTickGapMs = 200;        // 两轮投递之间的最小间隔
+// 短信发送交给 sms_send worker 后等待 done 回传的上限：超时按「结果未知」结单，
+// 不自动重发（避免重复扣费），同时释放 Web 轮询的 busy 状态
+constexpr uint32_t kOutboxSendWaitMs = 180000;
+
 }  // namespace cfg

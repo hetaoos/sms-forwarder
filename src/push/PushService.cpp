@@ -345,6 +345,45 @@ void PushService::executeChain(const PushJob& job, uint8_t attempts) {
   _log.addf(LogLevel::kInfo, "push", "=== 多通道推送完成 ===");
 }
 
+// 持久化发件箱的单通道投递入口：与内部队列链路共用 executeChannel，
+// 只是把「结果」同步返回给发件箱记账，不再入内部队列 / 重试表。
+bool PushService::deliverOnce(int channelIdx, const String &sender,
+                              const String &message, uint32_t ts, int8_t modem,
+                              MsgType type, bool &skipped, String &err) {
+  skipped = false;
+  err = "";
+  {
+    Guard g(_mutex);
+    if (!_enabled || channelIdx < 0 || channelIdx >= _count) {
+      skipped = true;
+      err = "推送总开关已关或通道已不存在";
+      return false;
+    }
+    if (!pushChannelValid(_channels[channelIdx])) {
+      skipped = true;
+      err = "通道已停用或配置不全";
+      return false;
+    }
+  }
+  PushJob job;
+  job.sender = sender;
+  job.message = message;
+  job.timestamp = String(ts);
+  job.modem = modem;
+  job.type = type;
+  if (!executeChannel(channelIdx, job)) {
+    err = "通道发送失败（网络不可达 / 服务端拒绝 / 短信备份入队失败）";
+    return false;
+  }
+  return true;
+}
+
+bool PushService::channelNeedsNet(int channelIdx) const {
+  Guard g(_mutex);
+  if (channelIdx < 0 || channelIdx >= _count) return true;
+  return _channels[channelIdx].type != PUSH_TYPE_SMS;
+}
+
 bool PushService::executeChannel(int channelIdx, const PushJob& job) {
   // 先持锁快照该通道，释放后再发送
   PushChannel ch;

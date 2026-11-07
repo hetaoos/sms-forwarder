@@ -770,6 +770,50 @@ bool EmailService::buildMail(const MailJob &job, String &subject,
 // 仅入队后立即返回：构建（含 PSRAM 正文缓冲）与 SMTP 发送都在 tick() 的
 // loop 任务里完成。运行于 HTTP（async_tcp）任务时绝不能同步发送——该任务栈
 // 不足以支撑 TLS 握手，会栈溢出重启，且长时间阻塞会拖住整个 Web 服务。
+// 持久化发件箱的单封投递入口：先精确判断「当前是否该发」，避免把配置类
+// 关闭误记成可重试失败；随后复用 buildMail + sendOnce 原链路。
+bool EmailService::deliverSmsOnce(const String &sender, const String &message,
+                                  uint32_t ts, int8_t modem, bool &skipped,
+                                  String &err) {
+  skipped = false;
+  err = "";
+  {
+    Guard g(_mutex);
+    if (!activeLocked() || !configuredLocked() ||
+        !(_notifyTypes & cfg::kEmailNotifySms)) {
+      skipped = true;
+      err = "邮件未启用 / 配置不全 / 短信通知已关闭";
+      return false;
+    }
+  }
+
+  MailJob job;
+  job.kind = kSms;
+  job.sender = sender;
+  job.message = message;
+  job.ts = ts;
+  job.modem = modem;
+  job.attempts = 0;
+
+  String subject, text;
+  PsBuffer html;
+  if (!buildMail(job, subject, html, text)) {
+    err = "邮件正文构建失败（PSRAM 分配不足）";
+    return false;  // 可重试：分配失败不是配置问题
+  }
+  bool configErr = false;
+  if (!sendOnce(subject, html, text, configErr)) {
+    if (configErr) {
+      skipped = true;
+      err = "SMTP 配置在投递前被改动，已停用";
+    } else {
+      err = "SMTP 连接 / 认证 / 发送失败";
+    }
+    return false;
+  }
+  return true;
+}
+
 bool EmailService::requestTest() {
   Guard g(_mutex);
   if (!activeLocked()) return false;

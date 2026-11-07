@@ -68,6 +68,17 @@ class PushService {
   // 当前推送策略（广播 / 故障转移）；加锁读取
   PushStrategy strategy() const;
 
+  // ---------------- 单次同步投递（持久化发件箱专用）----------------
+  // 绕过内部队列与重试表，只投一个通道一次并返回结果；内部复用 executeChannel
+  // （模板渲染、跳过判断、HTTP/TLS 会话全部与原有链路一致）。
+  // skipped=true 表示通道已停用/配置不全，调用方应直接结单而不是重试。
+  // 只能在 loop 任务上下文调用（内部含最长 8s 的 HTTP 会话）。
+  bool deliverOnce(int channelIdx, const String &sender, const String &message,
+                   uint32_t ts, int8_t modem, MsgType type, bool &skipped,
+                   String &err);
+  // 该通道是否依赖 WiFi：SMS 备份通道不依赖，发件箱据此在网络未就绪时仍放行
+  bool channelNeedsNet(int channelIdx) const;
+
   // 设置总开关并落盘 NVS
   bool setEnabled(bool on);
 

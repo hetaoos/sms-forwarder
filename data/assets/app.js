@@ -542,6 +542,7 @@ const MENU = [
   ]},
   { group: '短信', items: [
     { id: 'sms', title: '短信', icon: 'sms' },
+    { id: 'outbox', title: '发件箱', icon: 'outbox' },
     { id: 'admin', title: '管理员', icon: 'admin' },
     { id: 'blacklist', title: '黑名单', icon: 'blacklist' },
     { id: 'modem', title: '通信模组', icon: 'modem' },
@@ -575,6 +576,7 @@ const ICONS = {
   push: '<svg viewBox="0 0 24 24"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l4-4"/></svg>',
   mqtt: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7 11l10-4M7 13l10 4"/></svg>',
   sms: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3.5V5z"/></svg>',
+  outbox: '<svg viewBox="0 0 24 24"><path d="M3 13h8V4H3z"/><path d="M13 8h7l-2 5h-5z"/><path d="M3 13v6h18v-6"/><path d="M12 4l5 4"/></svg>',
   modem: '<svg viewBox="0 0 24 24"><rect x="3" y="14" width="3" height="7" rx="1"/><rect x="8.5" y="10" width="3" height="11" rx="1"/><rect x="14" y="6" width="3" height="15" rx="1"/><rect x="19.5" y="3" width="3" height="18" rx="1"/></svg>',
   blacklist: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
   admin: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
@@ -2699,6 +2701,154 @@ function pagePush() {
 /* ---------- 运行日志（PSRAM 环形缓冲：分页 + 级别/关键字过滤 + 自动刷新） ----------
  * 后端无 SSE 事件源（日志为低频事件，且 diff 基线意义不大），采用 5s 轮询；
  * 轮询 GET 不走 apiOp（失败不弹 toast，避免离线时刷屏）。 */
+/* ---------- 发件箱（持久化不丢消息转发队列）----------
+ * 数据来自 GET /api/outbox；每条记录含各通道投递回执。
+ * 5s 轮询整页重拉，页面离开时由 onCleanup 清理定时器。 */
+function pageOutbox() {
+  const CH = {
+    pending:   ['待投',      '#8a8f98'],
+    sending:   ['发送中',    '#c8860d'],
+    ok:        ['成功',      '#17994a'],
+    submitted: ['已入队',    '#17994a'],
+    failed:    ['失败待重试', '#c8860d'],
+    skipped:   ['已跳过',    '#8a8f98'],
+    dead:      ['已放弃',    '#d63a2f'],
+  };
+  return {
+    records: [], total: 0, pending: 0, failed: 0, done: 0,
+    page: 1, pageSize: 20, loading: false, auto: true, enabled: true, timer: null,
+    // 发送短信弹窗
+    modems: [], sendPort: 0, phone: '', content: '',
+    sending: false, sendOpen: false, sendHint: '', sendErr: false,
+
+    init() {
+      this.reload();
+      this.loadPorts();
+      this.timer = setInterval(() => {
+        if (this.auto && !document.hidden && !this.loading) this.reload(true);
+      }, 5000);
+      onCleanup(() => {
+        if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      });
+    },
+
+    async reload(silent) {
+      if (!silent) this.loading = true;
+      try {
+        const r = await apiFetch('/api/outbox?page=' + this.page + '&pageSize=' + this.pageSize);
+        if (!r.ok) return;
+        const j = await r.json();
+        this.enabled = !!j.enabled;
+        this.total = j.total || 0;
+        this.pending = j.pending || 0;
+        this.failed = j.failed || 0;
+        this.done = j.done || 0;
+        this.records = j.records || [];
+        if (this.page > this.pageCount()) { this.page = this.pageCount(); this.reload(true); }
+      } catch (e) {} finally { this.loading = false; }
+    },
+
+    // POST 操作统一走 JSON 契约，成功后静默刷新一次
+    async op(path, body, okMsg) {
+      let r;
+      try { r = await postJson(path, body || {}); }
+      catch (e) { toast('✕ 请求失败：' + (e && e.message ? e.message : e), 'err'); return; }
+      if (r.ok) { toast(okMsg, 'ok'); this.reload(true); }
+      else toast('✕ ' + await errText(r), 'err');
+    },
+
+    retry(id)     { this.op('/api/outbox/retry', { id: id || 0 }, '已重新排队'); },
+    del(id)       { this.op('/api/outbox/delete', { id: id }, '已删除该记录'); },
+    clearDone()   { this.op('/api/outbox/clear', {}, '已完成回执已清空'); },
+    goto(p)       { this.page = Math.max(1, Math.min(this.pageCount(), p)); this.reload(); },
+    pageCount()   { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+    // sms: 通道的 submitted 表示「结果未知」，也允许手动重试（用户自行确认是否重复）
+    hasFailed(r) {
+      return (r.channels || []).some(c => c.s === 'failed' || c.s === 'dead' ||
+        (c.s === 'submitted' && String(c.k || '').startsWith('sms:')));
+    },
+    chText(s, k) {
+      if (s === 'submitted' && String(k || '').startsWith('sms:')) return '结果未知';
+      return (CH[s] || ['未知', '#8a8f98'])[0];
+    },
+    chStyle(s) {
+      const c = (CH[s] || ['未知', '#8a8f98'])[1];
+      return 'color:' + c + ';border-color:' + c;
+    },
+
+    /* ---- 发送短信（复用 POST /api/sms/send，该接口已改为登记到发件箱） ---- */
+    async loadPorts() {
+      try {
+        const r = await apiFetch('/api/sms/ports');
+        if (r.ok) this.modems = (await r.json()).modems || [];
+      } catch (e) {}
+    },
+    enabledPorts() { return this.modems.filter(m => m.enabled); },
+    defaultSendPort() {
+      const enabled = this.enabledPorts();
+      if (!enabled.length) return 0;
+      let saved = 0;
+      try { saved = parseInt(localStorage.getItem(SEND_PORT_KEY) || '0', 10) || 0; } catch (e) {}
+      if (saved && enabled.find(m => m.port === saved)) return saved;
+      return enabled[0].port;
+    },
+    async openSend() {
+      await this.loadPorts();
+      this.sendPort = this.defaultSendPort();
+      try { this.phone = localStorage.getItem(SEND_PHONE_KEY) || ''; } catch (e) {}
+      this.sendHint = ''; this.sendErr = false; this.sendOpen = true;
+      this.$nextTick(() => {
+        const el = this.$refs && this.$refs.phoneInput;
+        if (el && el.focus) el.focus();
+      });
+    },
+    closeSend() { this.sendOpen = false; },
+    savePhone() {
+      try { localStorage.setItem(SEND_PHONE_KEY, this.phone || ''); } catch (e) {}
+    },
+    clearPhone() {
+      this.phone = '';
+      try { localStorage.removeItem(SEND_PHONE_KEY); } catch (e) {}
+    },
+    sendFail(msg) { this.sending = false; this.sendHint = msg; this.sendErr = true; },
+    async send() {
+      const phone = this.phone.trim();
+      if (!phone) { this.sendFail('请输入对方号码'); return; }
+      if (!this.content.length) { this.sendFail('请输入短信内容'); return; }
+      if (!this.sendPort) { this.sendFail('没有可用的通信模组，请先在「通信模组」中启用'); return; }
+      this.sending = true; this.sendErr = false; this.sendHint = '正在登记…';
+      let r;
+      try {
+        r = await postJson('/api/sms/send', {
+          port: this.sendPort, phone: phone, content: this.content
+        });
+      } catch (e) {
+        this.sendFail('请求失败：' + (e && e.message ? e.message : e));
+        return;
+      }
+      if (!r.ok) {
+        this.sendFail('提交失败：' + await errText(r));
+        return;
+      }
+      // 发件箱页不轮询 GET /api/sms/send：记录状态由 5s 自动刷新呈现
+      this.sending = false;
+      this.sendOpen = false;
+      this.content = '';
+      this.savePhone();
+      try { localStorage.setItem(SEND_PORT_KEY, String(this.sendPort)); } catch (e) {}
+      toast('已加入发件箱，等待通信模组发送', 'ok');
+      this.reload(true);
+    },
+
+    fmtTs(ts) {
+      if (!ts || ts < 1600000000) return '时间未同步';
+      const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+             p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    },
+  };
+}
+
 function pageLogs() {
   const LEVELS = { 0: '调试', 1: '信息', 2: '警告', 3: '错误' };
   return {

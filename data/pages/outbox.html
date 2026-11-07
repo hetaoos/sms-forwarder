@@ -1,0 +1,122 @@
+<div x-data="pageOutbox()" x-init="init()">
+  <div class="page-head">
+    <div>
+      <h2>发件箱</h2>
+      <p class="page-desc">持久化转发队列 · 收到的短信先落盘再逐通道投递；网页发出的短信也登记在这里。断电或重启后未送达的转发通道自动续投</p>
+    </div>
+    <div class="bar">
+      <button class="btn" @click="openSend()">发送短信</button>
+      <button class="btn ghost sm" @click="reload()">刷新</button>
+      <button class="btn ghost sm" @click="retry(0)" x-show="failed">重试全部失败</button>
+      <button class="btn ghost sm" @click="clearDone()" x-show="done">清空已完成</button>
+    </div>
+  </div>
+
+  <div class="form-err" x-show="!enabled" style="margin-bottom:12px">
+    用户数据分区不可用，发件箱未启用；短信仍会走原有即时队列。
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">记录总数</div><div class="v" x-text="total"></div></div>
+    <div class="stat"><div class="k">待投通道</div><div class="v" x-text="pending"></div></div>
+    <div class="stat"><div class="k">失败通道</div><div class="v" x-text="failed"></div></div>
+    <div class="stat"><div class="k">已完成记录</div><div class="v" x-text="done"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="bar" style="margin-bottom:12px">
+      <label class="chk"><input type="checkbox" x-model="auto"> 自动刷新（5s）</label>
+      <span class="hint">收到的短信按到达瞬间的通道快照投递；发出的短信只经指定通信模组发送</span>
+    </div>
+
+    <template x-for="r in records" :key="r.id">
+      <div class="card" style="margin-bottom:10px">
+        <div class="bar">
+          <div style="min-width:0">
+            <b x-text="'#' + r.id"></b>
+            <span class="badge" style="margin-left:6px"
+                  x-text="r.kind === 1 ? '发出' : '收到'"></span>
+            <span x-text="r.sender" style="margin-left:6px"></span>
+            <span class="hint" x-text="fmtTs(r.ts) + ' · 模组 ' + r.modem" style="margin-left:6px"></span>
+          </div>
+          <div class="bar">
+            <span class="badge" x-text="r.state === 'done' ? '已完成' : '待投'"></span>
+            <button class="btn ghost sm" @click="retry(r.id)" x-show="hasFailed(r)">重试</button>
+            <button class="btn ghost sm" @click="del(r.id)">删除</button>
+          </div>
+        </div>
+
+        <div class="resp" x-text="r.preview" style="margin:8px 0;word-break:break-all"></div>
+
+        <template x-for="c in r.channels" :key="c.k">
+          <div class="bar" style="margin-top:4px">
+            <span class="badge" :style="chStyle(c.s)" x-text="chText(c.s, c.k)"></span>
+            <b x-text="c.n" style="min-width:88px"></b>
+            <span class="hint" style="word-break:break-all"
+                  x-text="'尝试 ' + c.a + ' 次 · ' + c.ms + 'ms' + (c.e ? ' · ' + c.e : '')"></span>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <div class="hint" style="color:var(--muted)" x-show="!loading && !records.length">
+      暂无记录；收到短信或在此页发送短信后会自动登记
+    </div>
+    <div class="loading" x-show="loading">加载中…</div>
+
+    <div class="pager" x-show="total > pageSize">
+      <div class="pager-info">
+        <span x-text="'共 ' + total + ' 条 · 第 ' + page + ' / ' + pageCount() + ' 页'"></span>
+      </div>
+      <div class="pager-ctrl">
+        <button class="btn ghost sm" :disabled="page <= 1" @click="goto(page - 1)">上一页</button>
+        <button class="btn ghost sm" :disabled="page >= pageCount()" @click="goto(page + 1)">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 发送短信对话框：与短信页共用 POST /api/sms/send，因此同样会登记到发件箱 -->
+  <div class="modal-mask" x-show="sendOpen" @click.self="closeSend()" style="display:none">
+    <div class="modal send-modal" role="dialog" aria-modal="true" aria-labelledby="outboxSendTitle">
+      <div class="modal-head">
+        <h3 id="outboxSendTitle">发送短信</h3>
+        <button class="modal-close" @click="closeSend()" aria-label="关闭">×</button>
+      </div>
+
+      <div class="field">
+        <label>通信模组</label>
+        <select class="inp" x-model.number="sendPort">
+          <option value="0" x-show="!enabledPorts().length">无可用通信模组</option>
+          <template x-for="m in enabledPorts()" :key="m.port">
+            <option :value="m.port" x-text="'通信模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
+          </template>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>对方号码</label>
+        <div class="inp-group">
+          <input class="inp" x-ref="phoneInput" placeholder="如 13800138000 或 +86138..." x-model="phone" @input="savePhone()">
+          <button class="btn ghost sm" type="button" @click="clearPhone()" x-show="phone" title="清除号码">清除</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>短信内容 <span class="counter" x-text="content.length + ' 字'"></span></label>
+        <textarea class="inp" rows="4" placeholder="输入短信内容" x-model="content"></textarea>
+      </div>
+
+      <div class="form-err" x-show="sendErr && sendHint" x-text="sendHint"></div>
+
+      <div class="modal-btns">
+        <button class="btn" :disabled="sending || !sendPort"
+                @click="send()" x-text="sending ? '提交中…' : '加入发件箱'"></button>
+        <button class="btn ghost" @click="closeSend()">取消</button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        提交后即登记到发件箱，实际发送由通信模组队列执行；在此页可查看每条的投递结果。
+        「结果未知」的记录手动重试前请确认对方是否已收到，避免重复发送。
+      </div>
+    </div>
+  </div>
+</div>

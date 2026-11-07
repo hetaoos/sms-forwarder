@@ -3,6 +3,7 @@
 #include <ESPAsyncWebServer.h>
 
 #include "app/Config.h"
+#include "app/Outbox.h"   // 持久化发件箱（不丢消息转发队列）的状态查询与重试接口
 #include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
@@ -53,7 +54,7 @@ class WebPanel {
   WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi, Display &display,
            UIMenu &ui, AdminStore &auth, StatusBus &events, SmsService &sms,
            TimeSync &time, EmailService &email, LogStore &log, MqttService &mqtt,
-           PushService &push, BlackList &blacklist);
+           PushService &push, BlackList &blacklist, Outbox &outbox);
 
   // 挂载 LittleFS、注册路由并启动 HTTP 服务
   void begin();
@@ -272,6 +273,12 @@ class WebPanel {
   void handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data,
                               size_t len, size_t index, size_t total);
 
+  // 持久化发件箱：状态与投递回执 / 重试失败通道 / 清空已完成 / 删除单条
+  void handleOutboxGet(AsyncWebServerRequest *req);
+  void handleOutboxRetry(AsyncWebServerRequest *req, JsonVariant &json);
+  void handleOutboxClear(AsyncWebServerRequest *req);
+  void handleOutboxDelete(AsyncWebServerRequest *req, JsonVariant &json);
+
   // 崩溃转储（coredump）：信息查询 / 导出快照 / 清除分区。
   // panic 时 ESP-IDF 把 ELF 快照写入 coredump 分区，这里只做查询与搬运，
   // 元信息（崩溃时间 / 版本）由 app/Coredump 维护
@@ -294,6 +301,7 @@ class WebPanel {
   MqttService &_mqtt;      // MQTT 服务引用
   PushService &_push;      // 统一 webhook 推送通道引用
   BlackList &_blacklist;   // 号码黑名单引用
+  Outbox &_outbox;         // 持久化发件箱引用
   LogStore &_log;          // 设备日志存储引用（PSRAM 环形缓冲）
 
   // PING 任务共享结果：ping 任务写、GET 轮询读，portMUX 临界区保护
