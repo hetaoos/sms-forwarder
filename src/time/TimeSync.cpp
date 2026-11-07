@@ -62,13 +62,20 @@ String TimeSync::timezoneText() const {
 }
 
 void TimeSync::loadTimezone() {
+  // 首次启动（NVS 无 tz 键）或值越界时，把默认东八区显式写回 NVS，
+  // 而不是只留在内存里：配置导出 / 外部工具读 NVS 都能看到确定的值，
+  // Web 设置页一开始也有明确的选中项。写入失败不致命，内存默认值仍生效。
   Preferences prefs;
   int v = cfg::kTzOffsetMinDefault;
-  if (prefs.begin(cfg::kNvsNamespace, true)) {
+  if (prefs.begin(cfg::kNvsNamespace, false)) {
+    bool missing = !prefs.isKey(cfg::kNvsKeyTz);
     v = prefs.getInt(cfg::kNvsKeyTz, cfg::kTzOffsetMinDefault);
+    if (missing || v < cfg::kTzOffsetMinMin || v > cfg::kTzOffsetMinMax) {
+      v = cfg::kTzOffsetMinDefault;
+      prefs.putInt(cfg::kNvsKeyTz, v);
+    }
     prefs.end();
   }
-  if (v < cfg::kTzOffsetMinMin || v > cfg::kTzOffsetMinMax) v = cfg::kTzOffsetMinDefault;
   _tzOffsetMin = (int16_t)v;
   applyTimezone();
 }

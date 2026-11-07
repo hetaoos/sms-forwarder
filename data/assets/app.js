@@ -632,12 +632,10 @@ function renderShell() {
               '<span>' + escHtml(it.title) + '</span></button>';
     }
   }
-  // 侧栏底部：项目简介 + 源码仓库（不随菜单滚动，所有页面可见）。
+  // 侧栏底部：只放源码仓库入口（不随菜单滚动，所有页面可见）。
   // AP 配网模式无外网时链接打不开，但地址仍可直接看到 / 复制。
   html += '</nav>' +
     '<div class="side-foot">' +
-      '<div class="side-desc">ESP32-S3 双 4G 模组短信转发器<br>' +
-        '短信 / 来电 / SIM 事件转发至邮件、MQTT 与 Webhook</div>' +
       '<div class="side-label">源码仓库</div>' +
       '<a href="https://cnb.cool/null/sms-forwarder" target="_blank"' +
         ' rel="noopener noreferrer" title="打开源码仓库（新标签页）">' +
@@ -947,7 +945,17 @@ function pageTimezone() {
         const r = await apiFetch('/api/timezone');
         if (r.ok) this._sync(await r.json());
       } catch (e) {}
+      this.loaded = true;      // 请求失败也放行，沿用默认东八区
+      this.syncSelect();
       setDirtyGuard(() => this.dirty);
+    },
+    // <option> 由 x-for 动态生成时，x-model 初始化可能早于选项插入，
+    // 首屏下拉框会停在第一项而不是当前时区；DOM 就绪后按当前值对齐一次。
+    syncSelect() {
+      this.$nextTick(() => {
+        const el = this.$refs.tzSelect;
+        if (el) el.value = String(this.tzOffsetMin);
+      });
     },
     _sync(j) {
       this.tzOffsetMin = (typeof j.tzOffsetMin === 'number') ? j.tzOffsetMin : 480;
@@ -956,6 +964,7 @@ function pageTimezone() {
       this.timeSynced = !!j.timeSynced;
       this.loaded = true;
       this.markClean();
+      this.syncSelect();
     },
     markClean() { this._snap = JSON.stringify({ t: this.tzOffsetMin }); },
     get dirty() { return !!this._snap && this._snap !== JSON.stringify({ t: this.tzOffsetMin }); },

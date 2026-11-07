@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏项目信息（§2.9；「前端规划中菜单」按需求否决、已整段撤销）、⑦ 时区可配（默认东八区）与时间失真修复（§2.10）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑦ 的两种配置编译结果（默认 RAM 36.7% / Flash 48.2%，双开关关闭 36.5% / 45.9%）见 §2.10。全部改动**尚未刷机实测**、**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏仓库入口（§2.9；「前端规划中菜单」按需求否决、已整段撤销）、⑦ 时区可配（默认东八区）与时间失真修复（§2.10）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑦ 的两种配置编译结果（默认 RAM 36.7% / Flash 48.2%，双开关关闭 36.5% / 45.9%）见 §2.10。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -49,7 +49,7 @@
 - 任务看门狗（§2.7）：4 个常驻任务订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、复位原因与疑似卡死任务持久化并可在 Web / `/api/status` 查询、`/api/wdt/selftest` 故障注入自检。
 - 推送模板占位符全部可用（§2.8）：`{carrier}` / `{to}` / `{iccid}` / `{signal}` 取模组快照（新增就绪后一次性 `AT+CCID`），`{remark}` 取 NVS `appcfg/remark`（推送通道页配置）；Web 占位符表与 README 已同步。
 - 两个编译期开关均生效（§2.8）：`ENABLE_MQTT=0` / `ENABLE_FIRMWARE_UPGRADE=0` 都能编译并真正裁掉实现，前端按 `mqtt.compiled` / `otaAvailable` 隐藏入口。
-- Web 侧栏项目信息（§2.9）：底部固定显示项目简介与源码仓库 `cnb.cool/null/sms-forwarder`；按需求**不在 Web 展示「规划中 / 待办」**，路线图只在本文维护。
+- Web 仓库入口（§2.9）：侧栏底部与登录页显示 `cnb.cool/null/sms-forwarder`，**不展示项目简介**；按需求**不在 Web 展示「规划中 / 待办」**，路线图只在本文维护。
 - BACK 长按全场景一致（§2.9）：状态页 / 菜单 / 文本页 / 弹窗统一熄屏，长按期间的 `kRepeat` 全部吞掉，修掉了「熄屏后立刻被自己的连发唤醒」这一实际缺陷。
 - 时区可配、默认东八区（§2.10）：Web「系统设置 - 设备时区」可改 UTC-12:00 ~ +14:00（含半时区 / 45 分钟时区），落盘 NVS `appcfg/tz`，即时生效不重启；`/api/timezone` 与配置备份 `timezone` 节；所有 Web 列表按**设备时区**而非浏览器时区显示。
 - 时间戳口径统一（§2.10）：`cfg::kEpochFloorSec` 一处定义、`TimeSync::stamp()` 一处供给，消除裸 `time(nullptr)` 的 1970 小值与多套阈值造成的失真；未同步仍兼容「开机秒数 / 开机 X」。
@@ -346,26 +346,25 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
-### 2.9 已完成：BACK 长按行为 + Web 侧栏项目信息（2026-11-07）
+### 2.9 已完成：BACK 长按行为 + Web 侧栏仓库入口（2026-11-07）
 
 **状态**：代码完成，**两种编译配置均 SUCCESS**、**未刷机实测**、**未提交 git**。
 
-**① Web 不展示「规划中」，改为侧栏项目信息**（§3 P1 的「前端规划中菜单」按需求否决）
+**① Web 不展示「规划中」，改为侧栏仓库入口**（§3 P1 的「前端规划中菜单」按需求否决）
 
 本次先按 §3 P1 做过一版「规划中」菜单（`MENU` 末组 9 项 + `todoPage()` 占位页），
 随后按需求**整段撤销**：Web 控制台不展示路线图 / 待办，侧栏恢复为 16 个已实现页面，
 `todo` 徽标渲染与 `.menu-item .todo` 样式一并删除，`route()` 回到统一的
 `pages/<id>.html` 懒加载。路线图只维护在仓库 `ROADMAP.md`，不进设备 Web UI。
 
-替代做法是在**侧栏底部**固定展示项目信息（`renderShell()` 生成、不随菜单滚动、
-所有页面可见）：
+替代做法是在**侧栏底部**固定放一个源码仓库入口（`renderShell()` 生成、不随菜单滚动、
+所有页面可见）；按后续需求**不放任何项目简介文案**：
 
-- 简介：「ESP32-S3 双 4G 模组短信转发器 / 短信、来电、SIM 事件转发至邮件、MQTT 与 Webhook」；
 - 源码仓库：`https://cnb.cool/null/sms-forwarder`（`target="_blank" rel="noopener noreferrer"`；
   AP 配网模式无外网时链接打不开，但地址仍可见 / 可复制），点击后顺带收起窄屏抽屉；
-- 登录页（`data/login.html`）卡片底部也展示同一份简介与仓库链接，未登录时同样可见；
+- 登录页（`data/login.html`）卡片底部是同一个链接，未登录时同样可见；
 - 新增 `.side-foot` / `.login-repo` 样式（`data/assets/app.css`）；README 顶部补仓库地址、
-  「Web 控制台」章节明确写出「Web 不展示待办 / 规划中内容」；
+  「Web 控制台」章节明确写出「Web 不展示待办 / 规划中内容、不展示项目简介」；
 - 菜单项 `title` 悬停说明与 `hidden` 项注释保留（与路线图无关的通用改进），
   `applyFeatureFlags()`（§2.8）不受影响；
 - **不新增页面、不调用 API**。
@@ -396,9 +395,9 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 **验收（待设备验证）**：
 1. Web 控制台侧栏**没有任何「规划中」条目或徽标**，16 个页面仍正常加载；
    `ENABLE_MQTT=0` 固件里 MQTT 菜单依旧隐藏。
-2. 侧栏底部显示两行项目简介 +「源码仓库」+ `cnb.cool/null/sms-forwarder`；
+2. 侧栏底部只有「源码仓库」标签 + `cnb.cool/null/sms-forwarder`，**没有简介文案**；
    滚动菜单时底部不动，点击链接在新标签页打开，窄屏下抽屉收起；未登录时在登录页
-   卡片底部也能看到同样的简介与链接。
+   卡片底部也能看到同一个链接。
 3. 状态页 / 菜单页 / 短信详情文本页 / 新短信弹窗四种状态下**按住 BACK 超过 600ms 不放**
    → 屏幕熄灭并**保持熄灭**（旧固件会自己亮回来）；松手后短按任意键唤醒、仍停在当前页面。
 4. 短按 BACK 逐层返回 / 退出文本页 / 收起弹窗不变；UP/DOWN/OK 长按连发调值不变。
@@ -416,6 +415,8 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
   `TimeSync` 新增 `_tzOffsetMin` / `timezoneMin()` / `timezoneText()` / `setTimezone()`
   / `loadTimezone()` / `saveTimezone()`。开机**先读时区再恢复时间**：
   `restoreFromNvs()` 会写系统时钟并重新应用 TZ，顺序不能反。
+  `loadTimezone()` 用读写模式打开 `appcfg`：**首次启动无 `tz` 键（或值越界）时把 480
+  显式写回 NVS**，默认值不再只存在于内存；写入失败不致命，内存默认仍生效。
 - `applyTimezone()` 由固定 `UTC-8` 改为按配置生成 POSIX TZ（符号与 UTC 偏移相反：
   `+480 → UTC-8`、`+330 → UTC-5:30`、`-300 → UTC+5`），支持半时区与 45 分钟时区，
   不做夏令时；`syncNTP()` 用 `_tzOffsetMin * 60`，NTP 日志显示当前时区。
@@ -425,7 +426,10 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
   保持默认 / 现值。`/api/status` 新增 `tzOffsetMin` / `tzText`。
 - Web「系统设置 - 设备时区」卡片：`-12:00 ~ +14:00` 每 30 分钟一档 + 3 个 45 分钟
   时区，常用时区带中文别名；`pageTimezone()` 保存后同步 `live.status` 让列表立刻
-  按新时区重绘。仪表盘时间卡片显示 `tzText`。
+  按新时区重绘。仪表盘时间卡片显示 `tzText`。`<option>` 由 `x-for` 动态生成、晚于
+  `x-model` 初始化，首屏下拉会停在「UTC-12:00」而不是当前时区；现加
+  `x-ref="tzSelect"` + `syncSelect()`（`$nextTick` 后按 `tzOffsetMin` 对齐
+  `select.value`），GET 失败也按默认 480 放行，保证首次打开就选中东八区。
 - **前端时间显示改按设备时区**：`fmtDateTime()` / `fmtDateShort()` 以及发件箱 /
   coredump 里两处自写的 `new Date(ts*1000) + getHours()` 全部统一为按
   `status.tzOffsetMin` 平移后用 `getUTC*` 取值，不再跟随浏览器本地时区；
@@ -450,11 +454,14 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 **验证**：两种编译配置 SUCCESS（数值见上）；`node --check data/assets/app.js` 通过；
 前端沙箱校验 `+480 / 0 / +330 / -300` 四个时区的 `fmtDateTime` 输出均符合预期，
-`tzOptions()` 56 档且含默认 +480 与三个 45 分钟时区。
+`tzOptions()` 56 档且含默认 +480 与三个 45 分钟时区；设置页 `<select>` 有
+`x-ref="tzSelect"`、组件含 `syncSelect()`。
 
 **验收（待设备验证）**：
-1. 首次烧录（无 `appcfg/tz`）→ `/api/timezone` 返回 `480` / `UTC+08:00`；
-   NTP 同步后日志、短信、AT 历史显示东八区日期时间。
+1. 首次烧录（无 `appcfg/tz`）→ 开机 `loadTimezone()` 自动写入 `tz=480`，
+   `/api/timezone` 返回 `480` / `UTC+08:00`；**首次打开「系统设置」时区下拉即选中
+   `UTC+08:00 · 北京 / 新加坡 / 香港`**，不是停在 UTC-12:00；NTP 同步后日志、
+   短信、AT 历史显示东八区日期时间。
 2. 在「系统设置」改成 `UTC+05:30`（330）并保存 → 无需重启，`/api/status` 的
    `tzText` 变化、列表时间立即按 +5:30 重绘；重启后仍为 330。
 3. 配置导出 JSON 含 `timezone.tzOffsetMin = 330`；导入后时区恢复；导入旧备份
@@ -487,7 +494,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | SSE 补全 | 全量快照缺 `sms`/`smsports`；`Last-Event-ID` 续传只做了 AT 历史；Bearer 客户端无法用 SSE（可加 query token） | `src/net/StatusBus.cpp:139-185` | 小 |
 | SMTP 587 / STARTTLS | README 明确的已知限制 | `src/net/EmailService.cpp` | 中 |
 | ~~修编译开关~~ ✅ 已实现，见 §2.8 | 两个宏归一化并真正裁掉实现，两种配置均编译通过，前端按 `compiled` 隐藏入口 | `src/app/Config.h`、`src/net/MqttService.h`、`src/ota/Ota.cpp`、`src/net/WebPanel.cpp` | 小 |
-| ~~前端「规划中」菜单~~ ❌ 按需求不做，见 §2.9 | Web 不展示路线图 / 待办；改为侧栏底部显示项目简介与源码仓库，路线图只在本文维护 | `data/assets/app.js`、`app.css` | 小 |
+| ~~前端「规划中」菜单~~ ❌ 按需求不做，见 §2.9 | Web 不展示路线图 / 待办；改为侧栏底部显示源码仓库入口（不含简介），路线图只在本文维护 | `data/assets/app.js`、`app.css` | 小 |
 | ~~时区可配 + 时间失真~~ ✅ 已实现，见 §2.10 | 默认 UTC+8 可配（`/api/timezone`、NVS、备份节），前端按设备时区显示；统一可信下限与时间戳供给，消除裸 `time(nullptr)` 与多套阈值 | `src/time/TimeSync.*`、`src/net/WebPanel.cpp`、`data/pages/settings.html` | 中 |
 | ~~Back 长按行为~~ ✅ 已实现，见 §2.9 | 四种显示态统一熄屏 + 吞掉 `kRepeat`（原实现熄屏后会被自己的连发唤醒） | `src/app/UIMenu.cpp`、`UIMenu.h` | 小 |
 | ~~文档补齐~~ ✅ 已实现，见 §2.8 | 四个 `poll`/`store` 接口进 API 表；BMP 注释改 JPEG；顺带补齐占位符 / `remark` / 编译开关文档 | `README.md`、`src/net/WebPanel.cpp/.h` | 小 |
@@ -528,7 +535,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
-3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）、BACK 长按 + 侧栏项目信息（§2.9；规划中菜单按需求不做）、时区可配 + 时间失真（§2.10）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS。
+3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）、BACK 长按 + 侧栏仓库入口（§2.9；规划中菜单按需求不做）、时区可配 + 时间失真（§2.10）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
 5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
@@ -606,7 +613,9 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 修编译开关（§2.8）：`Config.h` 归一化宏、`ENABLE_MQTT=0` 空实现替身 + 前端菜单隐藏、`ENABLE_FIRMWARE_UPGRADE=0` 裁掉 OTA 升级主体；`/api/status` 增 `mqtt.compiled` / `otaCompiled` | 代码完成，默认 SUCCESS（RAM 36.7% / Flash 48.1%）、双开关关闭 SUCCESS（RAM 36.5% / Flash 45.8%），**待设备验证** |
 | 2026-11-07 | 文档补齐（§2.8）：README 补 `/api/sms/poll` `/api/sms/store` 四行、占位符表格、`remark` / NVS 键 / 编译开关说明；`WebPanel.cpp` 屏幕预览注释 BMP→JPEG；本文 §0/§1.2/§1.3/§2.8/§3/§4/§5/§6/§7 同步 | 已记录，**待设备验证** |
 | 2026-11-07 | 「前端规划中菜单」按需求否决并整段撤销（§2.9）：删掉 `MENU` 规划分组、`todoPage()`、路由 todo 分支与 `.todo` 样式，Web 恢复只显示 16 个已实现页面；路线图只在本文维护 | 已撤销，`node --check` 通过，**待设备验证** |
-| 2026-11-07 | Web 项目信息（§2.9）：`renderShell()` 侧栏底部与 `login.html` 卡片底部新增项目简介与源码仓库 `https://cnb.cool/null/sms-forwarder`（新标签页打开、窄屏收起抽屉），新增 `.side-foot` / `.login-repo` 样式；README 顶部补仓库地址并明确 Web 不展示待办 | 代码完成，**待设备验证**（需重新 `uploadfs`） |
+| 2026-11-07 | Web 仓库入口（§2.9）：`renderShell()` 侧栏底部与 `login.html` 卡片底部只放 `https://cnb.cool/null/sms-forwarder`（新标签页打开、窄屏收起抽屉），按需求**不放项目简介**；新增 `.side-foot` / `.login-repo` 样式；README 顶部补仓库地址并明确 Web 不展示待办 | 代码完成，**待设备验证**（需重新 `uploadfs`） |
 | 2026-11-07 | BACK 长按行为（§2.9）：`handle()` 开头统一熄屏并吞掉 BACK 的 `kRepeat`，修掉「熄屏后立刻被自己连发唤醒」；文本页不再特判无定义操作，弹窗熄屏时顺带收起；`UIMenu.h` 按键注释与 README 按键表同步 | 代码完成，两种配置编译通过，**待设备验证** |
 | 2026-11-07 | 时区可配 + 时间失真（§2.10）：`TimeSync` 可配置 POSIX TZ（默认 UTC+8，NVS `appcfg/tz`，支持半时区）、`GET\|POST /api/timezone`、Web 设置页与仪表盘显示、配置备份 `timezone` 节；新增 `cfg::kEpochFloorSec` 与 `TimeSync::stamp()` 统一时间戳口径，前端列表改按设备时区格式化；README 新增「时间与时区」章节 | 代码完成，两种配置编译 SUCCESS（36.7%/48.2% 与 36.5%/45.9%）、`node --check` 与沙箱校验通过，**待设备验证**（需 `uploadfs`） |
+| 2026-11-07 | 按需求调整：Web 侧栏 / 登录页移除项目简介文案，只保留仓库链接（§2.9）；`TimeSync::loadTimezone()` 在首次启动或值越界时把默认东八区 `tz=480` 显式写回 NVS，并修 `x-for` / `x-model` 时序导致设置页首屏下拉未选中当前时区的问题（§2.10） | 代码完成，两种配置编译 SUCCESS、`node --check` 通过，**待设备验证**（需 `uploadfs`） |
+| 2026-11-07 | 主题微调：侧栏菜单滚动条轨道改为与菜单同色 `#191c24`（标准 `scrollbar-color` + WebKit 两套写法）；模组调试「类型 / 模组」分段控件底色由硬编码 `#11131a` 改为 `var(--bg-soft)`，浅色文字对比度 3.10:1 → 5.58:1；表单控件 `color-scheme` 跟随页面主题，避免系统深色 + 页面浅色时原生下拉颜色错乱 | 代码完成，CSS 括号平衡 / 对比度校验通过，**待设备验证**（需 `uploadfs`） |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

@@ -24,6 +24,15 @@ a{color:var(--primary);text-decoration:none}
   justify-content:center;font-size:14px;color:#fff}
 .sidebar .brand small{display:block;font-size:11px;color:#6b7280;font-weight:400;margin-top:1px}
 .menu{flex:1;overflow-y:auto;padding:6px 10px 16px}
+/* 侧栏菜单滚动条：轨道与侧栏底色 #191c24 完全一致，避免系统默认的浅色
+   滚动条在黑色菜单里露出一条白杠；滑块用略亮的深灰以保持可见。
+   标准属性覆盖 Firefox / 新版 Chromium，::-webkit-* 覆盖 Safari / 旧版 Chromium。 */
+.menu{scrollbar-width:thin;scrollbar-color:#3a3f4c #191c24}
+.menu::-webkit-scrollbar{width:8px}
+.menu::-webkit-scrollbar-track{background:#191c24}
+.menu::-webkit-scrollbar-thumb{background:#3a3f4c;border-radius:8px;
+  border:2px solid #191c24}
+.menu::-webkit-scrollbar-thumb:hover{background:#4a5060}
 .menu-group{font-size:11px;color:#5b6070;padding:14px 10px 6px;letter-spacing:1px}
 .menu-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;
   color:#aeb4c4;cursor:pointer;user-select:none;position:relative;
@@ -34,11 +43,10 @@ a{color:var(--primary);text-decoration:none}
 .menu-item:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
 .menu-item svg{width:17px;height:17px;flex:none;fill:none;stroke:currentColor;
   stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-/* 侧栏底部：项目简介 + 源码仓库，固定在菜单滚动区之外，所有页面可见 */
+/* 侧栏底部：源码仓库入口，固定在菜单滚动区之外，所有页面可见 */
 .sidebar .side-foot{flex:none;border-top:1px solid rgba(255,255,255,.08);
   padding:12px 16px 14px;background:rgba(0,0,0,.12)}
-.sidebar .side-foot .side-desc{font-size:11px;line-height:1.65;color:#8b91a1}
-.sidebar .side-foot .side-label{font-size:10px;letter-spacing:1px;color:#6b7280;margin:10px 0 4px}
+.sidebar .side-foot .side-label{font-size:10px;letter-spacing:1px;color:#6b7280;margin:0 0 4px}
 .sidebar .side-foot a{display:flex;align-items:center;gap:6px;font-size:11px;
   color:#aeb4c4;word-break:break-all;line-height:1.5}
 .sidebar .side-foot a:hover{color:#fff}
@@ -119,12 +127,13 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
 .btn.sm{padding:5px 10px;font-size:12px;border-radius:6px}
 .btn.block{width:100%;padding:11px;font-size:15px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-/* 分段过滤按钮（模组调试日志类型筛选） */
-.seg{display:inline-flex;gap:4px;background:#11131a;border:1px solid var(--border);
+/* 分段过滤按钮（模组调试日志「类型」与「模组」筛选）：底色跟随主题，
+   浅色模式用浅灰而非硬编码深色，否则 --muted 的深灰文字在黑底上几乎看不见。 */
+.seg{display:inline-flex;gap:4px;background:var(--bg-soft);border:1px solid var(--border);
   border-radius:8px;padding:3px}
 .seg-btn{font-size:12px;padding:5px 11px;border-radius:6px;border:none;background:transparent;
   color:var(--muted);cursor:pointer;white-space:nowrap}
-.seg-btn:hover{color:var(--text)}
+.seg-btn:hover{color:var(--text);background:rgba(127,127,127,.10)}
 .seg-btn.on{background:var(--primary);color:#fff}
 .seg-btn:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
 /* 表格横向滚动容器：窄屏下表格内部滚动，避免撑破页面布局 */
@@ -155,7 +164,10 @@ button.chip:hover{color:var(--text);border-color:var(--primary)}
 .fld{display:flex;align-items:center;gap:6px}
 .fld label{font-size:12px;color:var(--muted);white-space:nowrap}
 input,select,textarea{font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
-  background:#fff;color:var(--text);outline:none;min-width:0}
+  background:#fff;color:var(--text);outline:none;min-width:0;
+  /* 原生下拉列表 / 复选框按「页面主题」绘制，而不是跟随系统偏好：
+     否则系统为深色但页面设为浅色时，<select> 的 option 列表仍是黑底白字 */
+  color-scheme:light}
 textarea{resize:vertical;line-height:1.6;font-family:inherit}
 input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 input[type=range]{padding:0;border:none;background:none;height:26px;cursor:pointer;accent-color:var(--primary)}
@@ -348,10 +360,10 @@ input.mono{font-family:var(--mono)}
   accent-color:var(--primary)}
 .login-err{color:var(--danger);font-size:12px;min-height:18px;margin-bottom:8px;text-align:center}
 .login-tip{text-align:center;color:var(--faint);font-size:11px;margin-top:16px;line-height:1.7}
-/* 登录页底部：项目简介 + 源码仓库（与控制台侧栏底部同源信息） */
+/* 登录页底部：源码仓库入口（与控制台侧栏一致的链接） */
 .login-repo{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);
   text-align:center;color:var(--faint);font-size:11px;line-height:1.7}
-.login-repo a{display:block;margin-top:5px}
+.login-repo a{display:block}
 
 /* ================= 移动端 ================= */
 @media (max-width:900px){
@@ -387,7 +399,7 @@ input.mono{font-family:var(--mono)}
 /* 输入/下拉等硬编码白底 -> 卡片色 */
 [data-theme="dark"] input,
 [data-theme="dark"] select,
-[data-theme="dark"] textarea{background:var(--card);color:var(--text)}
+[data-theme="dark"] textarea{background:var(--card);color:var(--text);color-scheme:dark}
 [data-theme="dark"] textarea::placeholder{color:var(--faint)}
 [data-theme="dark"] .btn.ghost{background:var(--card);color:var(--text)}
 [data-theme="dark"] .btn.ghost:hover{background:rgba(255,255,255,.06)}

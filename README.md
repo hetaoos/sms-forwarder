@@ -142,9 +142,9 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
   LittleFS 资源分区（`data/login.html` + `data/index.html` 外壳 +
   `data/pages/*.html` 内容页 + `data/assets/` 资源，支持 gzip）。
   左右布局：左侧分组菜单，右侧按 hash 路由懒加载内容页；
-  侧栏底部固定展示项目简介与源码仓库地址 `cnb.cool/null/sms-forwarder`
+  侧栏底部只放源码仓库入口 `cnb.cool/null/sms-forwarder`
   （由 `renderShell()` 生成，不随菜单滚动、不调用 API；链接在新标签页打开），
-  登录页卡片底部也展示同样信息；
+  登录页卡片底部是同一个链接；**不展示项目简介文案**；
   开发路线图只在仓库 `ROADMAP.md` 维护，**Web 界面不展示待办 / 规划中内容**；
   全部接口统一在 `/api/` 前缀下，页面与静态资源公开，接口需登录
   （Cookie 会话或 Bearer 令牌），防止第三方盗用
@@ -301,7 +301,7 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
 管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
 `disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）、
-`tz`（时区偏移，分钟整数，默认 `480` = UTC+8）、
+`tz`（时区偏移，分钟整数，默认 `480` = UTC+8，首次启动自动写入）、
 `remark`（设备备注，纯字符串，供推送模板 `{remark}` 使用，最长 64 字节）。
 崩溃信息另存于独立命名空间 `coredump`；看门狗诊断另存于 `wdt`
 （`reset` / `reason` / `count` / `wdtTask` / `wdtUptime` / `wdtVer`）。
@@ -403,7 +403,7 @@ Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理�
 设备系统时钟始终是 **UTC 纪元秒**，时区只影响 `localtime_r` / `strftime` 的本地显示与「今日 / 每日定点」计算。
 
 - **默认东八区 UTC+08:00**（`cfg::kTzOffsetMinDefault = 480` 分钟）。可在 Web「系统设置 - 设备时区」选择，或调用 `GET|POST /api/timezone`；范围 UTC-12:00 ~ UTC+14:00（`-720` ~ `840` 分钟，东为正），支持半时区（`330` = +05:30）与 45 分钟时区（`345` = +05:45）。
-- 配置存 NVS `appcfg/tz`，开机由 `TimeSync::loadTimezone()` 读取；改时区即时生效、**不重启、不需要重新对时**。内部用 POSIX TZ 变量实现（符号与 UTC 偏移相反，东八区写 `UTC-8`），每次写系统时钟（`settimeofday` / SNTP 回调）后重新应用，避免 libc 的 TZ 状态被重置为 UTC；设备不做夏令时切换。
+- 配置存 NVS `appcfg/tz`，开机由 `TimeSync::loadTimezone()` 读取；**首次启动无该键（或值越界）时会把默认 `480` 显式写回 NVS**，因此设备、Web 设置页与配置导出从一开始就有确定的东八区。改时区即时生效、**不重启、不需要重新对时**。内部用 POSIX TZ 变量实现（符号与 UTC 偏移相反，东八区写 `UTC-8`），每次写系统时钟（`settimeofday` / SNTP 回调）后重新应用，避免 libc 的 TZ 状态被重置为 UTC；设备不做夏令时切换。
 - Web 列表（日志 / 短信 / AT 历史 / 发件箱 / coredump）的时间戳一律按**设备时区**格式化（取 `/api/status` 的 `tzOffsetMin`），不跟随浏览器本地时区；旧固件无该字段时按 +480 兜底。
 - 配置备份新增 `timezone` 节（`tzOffsetMin` / `tzText`）；导入旧备份（无该节）保持默认 / 现值。
 

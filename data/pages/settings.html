@@ -127,7 +127,7 @@
     <div class="bar" style="margin-top:12px;align-items:flex-end">
       <div class="field" style="flex:1;min-width:220px">
         <label>UTC 偏移</label>
-        <select x-model.number="tzOffsetMin" :disabled="!loaded" style="width:100%">
+        <select x-ref="tzSelect" x-model.number="tzOffsetMin" :disabled="!loaded" style="width:100%">
           <template x-for="o in options" :key="o.v">
             <option :value="o.v" x-text="o.label"></option>
           </template>
