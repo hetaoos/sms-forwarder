@@ -7,6 +7,7 @@
 #include "app/Coredump.h"  // 崩溃转储信息：panic 记录 + coredump 分区查询（工具箱导出用）
 #include "app/KeyInject.h"   // 远程按键注入队列：把 Web /api/key 事件交给 UI 状态机
 #include "app/SystemService.h"  // 定时重启（系统保活）
+#include "app/TaskWatchdog.h"   // 任务看门狗：读回卡死原因 / 重配置 / 注册任务
 #include "app/UserFs.h"
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
@@ -44,9 +45,18 @@ bool App::begin() {
   // 读取以其恢复的时间为准），分区快照由 ESP-IDF panic 处理器自动写入
   Coredump::init();
 
+  // 任务看门狗：须在日志环就绪之后、任何常驻任务创建之前完成——读回上次
+  // WDT 卡死原因（RTC 证据 + NVS）、把 TWDT 超时重配到能覆盖合法长阻塞的
+  // 宽度（默认 5s 会误杀 SMTP/CMGS），并把当前 loopTask 订阅进去。
+  // 其余常驻任务（uart-pump / sms_send / sms_query）在各自入口自行注册。
+  TaskWatchdog::begin();
+
   _led.begin(0);                       // RGB 灯默认关闭（索引 0 = OFF）
   _display.begin();                    // 面板 + LVGL 显示端口
   ui::instance().begin();              // LVGL 页面树（状态页 / 菜单 / 屏幕显示）
+  // setup 阶段 loopTask 已订阅 TWDT 却还没进 App::tick()，长初始化之间补一次心跳，
+  // 避免中文字库加载 / 用户数据扫描等步骤把 60s 超时耗光导致开机即重启。
+  TaskWatchdog::feed();
   _keypad.begin();                     // 4 键输入（OK/UP/DOWN/BACK）
   _ui.begin();                         // 菜单导航状态机（默认停在状态页）
   _ui.setStatusProvider([this](StatusInfo &s) { collectStatus(s); });  // 动态页数据源
@@ -121,6 +131,7 @@ bool App::begin() {
   // 持久化发件箱：扫描 /data/outbox 恢复未送达通道（须在转发服务与 _sms.begin 之后，
   // 发出类记录要靠 _sms.enqueueSend 交给 sms_send worker 执行）
   _outbox.begin(_email, _mqtt, _push, _sms, _wifi, _log);
+  TaskWatchdog::feed();               // 发件箱目录扫描后补一次心跳（同上）
   _sms.setBlackList(&_blacklist);     // 注入黑名单拦截器（handleCmt 内先于落盘/转发判定）
   SystemService::instance().begin();  // 定时重启：载入 NVS 配置（默认禁用）
   // 至此邮件 / MQTT / 推送 / 短信都已持有各自的互斥量，状态快照可以放心读它们了
@@ -475,6 +486,7 @@ const char *App::fmtBytes(uint32_t bytes) {
 // 5. 每 kUiRefreshMs 毫秒重绘一次屏幕（内容变化才会实际刷新）
 // 6. 短暂延时让出 CPU
 void App::tick() {
+  TaskWatchdog::feed();  // loopTask 心跳（内部 1s 节流；长阻塞由下层等待循环续喂）
   _wifi.tick();
   _time.tick();                        // NTP 超时判定 / SIM NITZ 重试 / 时间落盘
   // 崩溃时刻估算：时钟已同步时每 10s 把最新已知时间写入 RTC 内存（panic 重启

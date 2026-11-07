@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6），**完整编译通过**（RAM 36.6% / Flash 47.9%），但**尚未刷机实测**，改动**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）。①~③ **完整编译通过**（RAM 36.6% / Flash 47.9%）；④ 代码完成但**编译验证待补跑**（本次会话的编译命令未执行，接手后先 `pio run -e esp32s3`）。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -24,6 +24,7 @@
 |---|---|
 | `src/main.cpp` | `setup/loop` 仅调 `gApp.begin()` / `gApp.tick()` |
 | `src/app/App.cpp/.h` | 模块装配与主循环调度；`Config.h` 是**唯一集中配置**（引脚/超时/容量/NVS 键全在此） |
+| `src/app/TaskWatchdog.cpp/.h` | TWDT 运行期重配置、常驻任务订阅/喂狗、卡死原因 RTC + NVS 留痕、故障注入自检 |
 | `src/app/UIMenu.cpp`、`src/ui/Ui.cpp`、`src/hal/Display.cpp` | LVGL 9 屏幕菜单、5 个页面、JPEG Web 预览 |
 | `src/serial/SerialBridge.cpp/.h`、`AtHistory.cpp` | 双 UART 抽数任务、端口锁、AT 命令/URC 分流、自愈 |
 | `src/sms/SmsService.cpp/.h` | **最核心**（约 3000 行）：双模组状态机、PDU 收发、主动查询、来电、管理员命令 |
@@ -45,6 +46,7 @@
 - 转发：SMTP 邮件（HTML 卡片 + 验证码高亮 + 5 类通知位 + 定时在线）、MQTT（esp-mqtt，9 类主题 + 6 种远程命令）、13 种 Webhook（含「SMS 短信备份」断网兜底 + 广播/故障转移）。
 - Web 控制台（端口 80、LittleFS、gzip、hash 路由）、Cookie 会话 + Bearer + 持久化 API 令牌、SSE 实时推送、屏幕远程按键注入、JPEG 屏幕预览。
 - WiFi 多组配置（NVS 5 组）、AP 配网、扫描/排序/试连；NTP + SIM NITZ 时间同步；定时重启；OTA 在线/本地双槽升级；coredump 查询/导出/擦除；配置导入导出；PSRAM 日志环与 AT 历史环；CPU/温度遥测。
+- 任务看门狗（§2.7）：4 个常驻任务订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、复位原因与疑似卡死任务持久化并可在 Web / `/api/status` 查询、`/api/wdt/selftest` 故障注入自检。
 
 ### 1.3 构建与验证命令
 
@@ -143,8 +145,9 @@ pio device monitor -e esp32s3        # 串口监视 115200
   「发件箱」页的发送按钮都走该接口，发件箱不可用时回退原直投队列。
 - `kind=1` 记录只生成 `sms:<port>` 单通道，**跳过 `snapshotChannels()`**，从根上切断
   「SMS 短信备份 push 通道 → 再发一条短信」的回环（`README.md` 已说明）。
-- 复用 `SmsService::enqueueSend()`：CMGS 仍在不入任务看门狗的常驻 `sms_send` worker
-  里执行，`Outbox::deliver()` 绝不阻塞 loop；`done` 经 `_sms.tick()` →
+- 复用 `SmsService::enqueueSend()`：CMGS 仍在常驻 `sms_send` worker 里执行
+  （该任务现已订阅任务看门狗，空闲与 CMGS 握手期间持续喂狗，见 §2.7），
+  `Outbox::deliver()` 绝不阻塞 loop；`done` 经 `_sms.tick()` →
   `Outbox::onSendDone()` 回写状态。`applyResult()` 把已入队通道落盘为 `kSending`，
   `load()` 遇到它记 `kSubmitted`（结果未知、不自动重发），`checkSendTimeout()`
   兜底 `done` 丢失（3 分钟）。
@@ -206,6 +209,77 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.7 已完成：显式任务 / 硬件看门狗（§3 P0 最后一项）
+
+**状态**：代码完成，**编译验证待补跑、未刷机实测**（本次会话的编译命令未执行，
+验收前必须先 `pio run -e esp32s3` SUCCESS 并 `uploadfs`，见下方「验收」）。
+
+**问题**：原先全项目没有任何 `esp_task_wdt_*` 调用，仅靠「约定不写死循环」
+规避卡死。框架开机其实已初始化 TWDT（5 秒 / panic / 订阅两个 Idle），
+但 5 秒远短于合法阻塞：SMTP/TLS 15s、Webhook 10s、发件箱单次投递 15s、
+单条 CMGS 握手最坏 5+30s；直接订阅项目任务只会误重启。
+
+**方案：运行期重配置 + 显式订阅 + 全程喂狗 + 两级原因留痕**（新增 `app/TaskWatchdog`）。
+
+- `TaskWatchdog::begin()`（`App::begin()` 早期、日志环就绪后、任何常驻任务创建前）：
+  `esp_task_wdt_reconfigure()` 把超时放宽到 `cfg::kWdtTimeoutMs`（60s，
+  保持 `trigger_panic=true` 与两个 Idle 订阅），并把 `loopTask` 订阅进去。
+  重配置失败则**不订阅任何项目任务**，只留框架默认行为（宁可不监控也不误重启）。
+- 另 3 个常驻任务在各自入口 `registerCurrent()`：`uart-pump`、`sms_send`、
+  `sms_query`（`async_tcp` 由 AsyncTCP 库自行订阅并喂狗，一次性任务不纳入）。
+- 喂狗点：`App::tick()` 每轮、`SerialBridge::readResponse()` 的 AT 等待循环、
+  `sendSmsPdu()` 的 `>` / `+CMGS/OK` 等待循环、`lockPort()` 的等锁循环
+  （由 `portMAX_DELAY` 改为 1s 超时循环）、`sms_send` 的队列等待
+  （由 `portMAX_DELAY` 改为 1s 超时）、`sms_query` / `uart-pump` 每轮。
+  `feed()` 按 1s 节流，且只对「当前已订阅 TWDT 的任务」生效，多任务共用路径安全。
+- **卡死自动重启**：任一订阅任务超过 60s 未喂狗 → IDF panic
+  （`CONFIG_ESP_TASK_WDT_PANIC`）→ 自动重启并写 `ESP_RST_TASK_WDT` 复位提示；
+  panic 时 coredump 分区同样有快照。
+- **记原因**：覆盖弱符号 `esp_task_wdt_isr_user_handler()`（ISR 上下文，只做数值
+  比较 + RTC_NOINIT 写，无日志 / NVS / FreeRTOS 调用），把各任务最近心跳与
+  「心跳明显落后」的槽位写进 RTC 内存；下次开机结合 `esp_reset_reason()` 打一条
+  `wdt` 运行日志，并把复位原因、疑似卡死任务、触发时开机秒数、固件版本、
+  累计次数持久化到 NVS `wdt` 命名空间（不随出厂复位清除）。
+  `/api/status` 的 `wdt` 子对象（SSE 同源）与 Web「系统工具」页可查。
+- **故障注入自检**：`POST /api/wdt/selftest {"task":"loopTask","timeoutMs":10000}`
+  让指定任务停止喂狗（可临时把超时缩到 3~60s），用于设备验收；需认证 + 前端
+  二次确认，Web「系统工具」页有卡片与按钮。**该接口会触发整机重启**。
+
+**关键文件**：`src/app/TaskWatchdog.h/.cpp`（新增）、`src/app/Config.h`（`kWdt*` 常量
+与 NVS 键）、`src/app/App.cpp`（装配 + loop 心跳）、`src/serial/SerialBridge.h/.cpp`
+（等锁 / AT 等待 / CMGS 握手喂狗 + 抽数任务注册）、`src/sms/SmsService.cpp`
+（两个 worker 注册 + 空闲等待续喂）、`src/net/StateJson.h`（`wdt` 字段）、
+`src/net/WebPanel.h/.cpp`（自检 API）、`data/pages/tools.html`、`data/assets/app.js`
+（状态卡片与自检 UI）、`README.md`（「任务看门狗」节与 API 表）。
+
+**已知取舍**：
+- 60s 是「最长合法阻塞 + 余量」的折中，卡死最长需 60s 才恢复；新增同步阻塞
+  超过该值必须调大 `kWdtTimeoutMs` 或在阻塞循环里补喂狗点。
+- 放宽后 Idle 任务的饿死检测同样变成 60s（框架默认 5s），换来不误杀 TLS / CMGS。
+- 疑似卡死任务由 RTC 心跳推断（精度 1s）；若所有任务心跳同时停止（CPU 整体挂死）
+  或断电导致 RTC 证据丢失，`lastWdtTask` 为空（显示「未能定位」），但
+  `reset=TASK_WDT` 仍能确定是看门狗重启；串口 panic 日志与 coredump 有更精确的信息。
+- 自检接口是危险操作，只在验收时使用；普通运行不会调用它。
+
+**验收（待设备验证）**：
+1. `pio run -e esp32s3` → SUCCESS；改过 `data/` 再 `pio run -e esp32s3 -t uploadfs`。
+2. 开机日志依次有「上次复位原因…」或「上次由看门狗重启…」、
+   「任务 loopTask 已注册看门狗」…「任务看门狗已启用：超时 60 秒，监控 …」，
+   `/api/status` 的 `wdt.enabled=true`、`tasks` 含 4 个任务名。
+3. 空载运行 30 分钟（含收/发短信、发邮件、OTA 检查）→ **无意外重启**；
+   `wdt.reset` 保持上电 / 软件重启原因，日志无「看门狗重启」。
+4. Web「系统工具」→「任务看门狗」选 `loopTask` + 10 秒 → 触发自检：
+   设备约 10s 后自动重启；重启后日志出现
+   「上次由看门狗重启：任务看门狗超时；卡死任务 loopTask…」，
+   `wdt.reset=TASK_WDT`、`wdt.bootWasWdt=true`、`wdtCount` 递增、
+   `wdt.lastWdtTask=loopTask`，Web 卡片显示该次记录。
+5. 对 `uart-pump` / `sms_send` / `sms_query` 各重复一次第 4 步，确认原因指向对应任务。
+6. 回归：自检重启后收一条普通短信 + 一条长短信、网页发一条短信、
+   `/api/at/send` 后配置还原，确认 AT 历史无截断 / 串包（喂狗点改动覆盖了
+   `readResponse` / `lockPort`，须重点回归 §6 第 3 项）。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -218,7 +292,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | TLS 证书校验 + OTA 固件验签 | 全部出网 TLS 跳过校验，OTA 无签名/哈希 | `src/utils/HttpSession.cpp:27`、`src/net/EmailService.cpp:200`、`src/net/MqttService.cpp:533`、`src/ota/Ota.cpp` | 中 | 可配置 CA/指纹；校验失败有明确日志；保留兼容开关 |
 | 登录限流 + 口令哈希 + 导出脱敏 | 默认 `admin/admin123`、NVS 明文存密码、导出含明文、`handleLogin` 无失败计数 | `src/net/AdminStore.cpp`、`src/net/WebPanel.cpp:885`、`src/net/WifiManager.cpp:415` | 中 | 连续失败锁定；NVS 存加盐哈希；导出可选脱敏 |
 | MQTT 命令面设备侧鉴权 | 任何能发 `<prefix>/<id>/command` 的主体可执行 `send_at`/`restart`/`send_sms` | `src/net/MqttService.cpp:300-360` | 小 | 命令带签名或白名单，非法命令被拒且记日志 |
-| 显式任务/硬件看门狗 | 全项目无 `esp_task_wdt_*`，靠约定规避卡死 | `src/app/App.cpp` | 中 | 关键任务注册 WDT，卡死自动重启并记原因 |
+| ~~显式任务/硬件看门狗~~ ✅ 已实现，见 §2.7 | 4 个常驻任务已订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、原因持久化 + 自检 API | `src/app/TaskWatchdog.*`、`App.cpp`、`SerialBridge.*`、`SmsService.cpp` | 中 | 关键任务注册 WDT，卡死自动重启并记原因 |
 
 ### P1 半成品补齐（性价比最高）
 
@@ -272,7 +346,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
 3. **半成品批次**：5 个占位符 + 联系人簿 + SSE 快照补全（改动小、体验提升明显）。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
-5. **长期保底**：看门狗 + `pdulib` 单元测试 + CI。
+5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证待补跑）→ 余下 `pdulib` 单元测试 + CI。
 
 > 每个阶段结束都应：编译通过 → 更新本文档 §2/§7 → 在 `README.md` 同步 API/配置变更 → 需要设备验证的写清楚验收步骤。
 
@@ -284,9 +358,11 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 - `async_tcp`（Web）任务栈很小，**禁止在 HTTP handler 里做 TLS 握手 / 同步发邮件 / 长耗时操作**，必须「入队 + 主循环 tick 执行」（见 `WebPanel.cpp` 注释与 `/api/email/test` 的实现）。
 - 串口抽数任务优先级 2、栈 8KB（`SerialBridge.cpp:121`），URC 回调里可做文件 I/O；`onReceiveError` 回调只有 2~4KB 栈，**只能计 O(1) 计数**，日志由抽数任务合并打印（曾因在回调里 printf 触发 DoubleException panic）。
 - 短信查询任务 `sms_query` 栈 8192、优先级 3；pdulib 实例非线程安全，解码/重组必须持 `_codecMutex`。
+- **任务看门狗（§2.7）**：`loopTask` / `uart-pump` / `sms_send` / `sms_query` 已订阅 TWDT（60s / panic 自动重启）。新增常驻任务必须 `TaskWatchdog::registerCurrent()` 并在循环 / 阻塞等待处 `feed()`；新增超过 60s 的同步阻塞必须调大 `cfg::kWdtTimeoutMs` 或补喂狗点，否则会误重启。`async_tcp` 由库自行订阅，其 handler 里长阻塞也会让它无法回循环喂狗。
 
 **串口与 AT**
 - 端口是**每模组独立互斥锁**，`send()` 阻塞、`trySend()` 非阻塞（抽数任务驱动状态机，绝不能阻塞）。
+- `lockPort()` 等锁循环每 1s 喂一次狗，不再 `portMAX_DELAY` 死等；`readResponse()` 与 `sendSmsPdu()` 的等待循环同理（§2.7）。
 - 后台初始化/心跳只许用 `trySend`；长时间持锁会挡住 `pumpOnce` 的 URC 归档。
 - `sendAt()` 会在就绪态自动还原 `AT+CMGF=0` + `cnmiCmd()`（现已校验响应），用户随意改 AT 可能短暂影响查询链路。
 
@@ -301,7 +377,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 - OTA tag 格式 `<VERSION>-<提交时间>-<sha7>`，由 `script/inject_app_version.py` 编译期注入；产物名 `ota-<tag>-<platform>.bin`，`APP_PLATFORM` 必须与 CI 一致。
 
 **配置与认证**
-- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / blacklist / disp / sched / lastts`；`coredump` 是独立命名空间（不随出厂复位清除）。
+- NVS 命名空间 `appcfg`，键：`wifi / appass / auth / sms / apitoken / email / mqtt / push / blacklist / disp / sched / lastts`；`coredump`（崩溃时间 / 版本）与 `wdt`（复位原因 / 卡死任务 / 累计次数）是独立命名空间（不随出厂复位清除）。
 - 出厂管理账号 `admin/admin123`（编译期 `-DWEB_AUTH_*_DEFAULT` 可覆盖）；配置导出**含明文密码**。
 - 所有 `/api/`（除 login/logout/session）需 Cookie `sid` 或 Bearer 或持久化 API 令牌。
 
@@ -322,6 +398,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 3. 串口响应判停相关改动（`readResponse`）影响所有 AT 命令，回归时看「模组调试」页 AT 历史是否有响应被截断/串包、初始化能否正常到 `kReady`。
 4. 不接 USB 时用 Web 取证：`/api/logs`（按 `q=关键词` 过滤）、`/api/at/hist?after=<id>`、`/api/sms/query`、`/api/status`。
 5. 正常收信日志序列（存储模式）：「主动查询任务已启动」→「就绪（PDU 模式…）」→「收到 +CMTI 索引通知」→「待读取短信索引」→「收到短信 #N」→「收到短信：…」→「查询完成…」。缺哪一步即定位到哪一段。
+6. 改看门狗 / 长阻塞路径后，按 §2.7「验收」做空载 30 分钟 + 四个任务的故障注入自检，确认无意外重启且原因记录正确。
 
 ---
 
@@ -335,4 +412,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 网页发送短信接入发件箱（§2.5 发出类记录）；发件箱页新增「发送短信」按钮与弹窗 | 代码完成，编译通过，**待设备验证** |
 | 2026-11-07 | 「短信」页发送弹窗统一为「发件箱」页同款（模组/号码/内容、「加入发件箱」按钮、结果未知提示）；提交即返回，去掉 `pollSend()` 轮询 | 代码完成，`node --check` 通过，**待设备验证** |
 | 2026-11-07 | 修复存储模式长短信分批 `+CMTI` 导致的重复接收（§2.6：分段索引登记 + 拼接成功后补删全部分段） | 代码完成，编译通过（RAM 36.6% / Flash 47.9%），**待设备验证** |
+| 2026-11-07 | 实现显式任务 / 硬件看门狗（§2.7）：TWDT 60s 重配置、4 个常驻任务订阅与喂狗、卡死原因 RTC+NVS 留痕、`/api/wdt/selftest` 与 Web 卡片 | 代码完成，**编译验证待补跑**，**待设备验证** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

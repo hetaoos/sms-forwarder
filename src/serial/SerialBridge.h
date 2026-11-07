@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "app/Config.h"
+#include "app/TaskWatchdog.h"  // lockPort 等待期间喂狗
 #include "serial/AtHistory.h"
 
 // 双串口 AT 透传：专用任务持续抽数据 + 命令/响应同步模型
@@ -157,8 +158,13 @@ class SerialBridge {
   void drainRxLocked(Port &p);
 
   // ---- 锁助手：每端口锁 + 历史锁，互不嵌套（先端口锁后历史锁）----
-  // 取/放端口锁（阻塞）
-  void lockPort(uint8_t i) { xSemaphoreTake(_ports[i].mutex, portMAX_DELAY); }
+  // 取/放端口锁（阻塞）。等待期间周期性喂狗：端口锁可能被 AT+CMGS（最长 38s）
+  // 或 Web 下发的 AT 命令占用，死等 portMAX_DELAY 会让已订阅 TWDT 的任务被判定卡死。
+  void lockPort(uint8_t i) {
+    while (xSemaphoreTake(_ports[i].mutex, pdMS_TO_TICKS(cfg::kWdtFeedGapMs)) != pdTRUE) {
+      TaskWatchdog::feed();
+    }
+  }
   void unlockPort(uint8_t i) { xSemaphoreGive(_ports[i].mutex); }
   // 尝试取端口锁（不阻塞）：成功返回 true
   bool tryLockPort(uint8_t i) { return xSemaphoreTake(_ports[i].mutex, 0) == pdTRUE; }

@@ -7,6 +7,7 @@
 #include <WiFi.h>
 
 #include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
+#include "app/TaskWatchdog.h"  // 任务看门狗状态与上次卡死原因
 #include "hal/CpuMonitor.h"
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
@@ -118,6 +119,22 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
     sc["daily"] = buf;
     sc["intervalH"] = sys.intervalH();
     sc["weekdays"] = sys.weekdays();
+  }
+
+  // 任务看门狗：本次开机复位原因 + 最近一次 WDT 卡死记录（NVS 持久）。
+  // REST /api/status 与 SSE status 事件共用本函数，字段天然一致。
+  {
+    JsonObject w = doc["wdt"].to<JsonObject>();
+    w["enabled"] = TaskWatchdog::enabled();
+    w["timeoutMs"] = TaskWatchdog::timeoutMs();
+    w["tasks"] = TaskWatchdog::monitoredTasks();
+    w["reset"] = TaskWatchdog::resetName();
+    w["resetText"] = TaskWatchdog::resetText();
+    w["bootWasWdt"] = TaskWatchdog::bootWasWdt();
+    w["wdtCount"] = TaskWatchdog::wdtResetCount();
+    w["lastWdtTask"] = TaskWatchdog::lastWdtTask();
+    w["lastWdtUptimeSec"] = TaskWatchdog::lastWdtUptimeSec();
+    w["lastWdtVersion"] = TaskWatchdog::lastWdtVersion();
   }
 
   String out;

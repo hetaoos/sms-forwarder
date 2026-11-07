@@ -1,5 +1,6 @@
 #include "sms/SmsService.h"
 
+#include "app/TaskWatchdog.h"  // 发送 / 查询常驻任务注册 TWDT 并喂狗
 #include "log/LogStore.h"
 
 #include <ArduinoJson.h>
@@ -230,7 +231,8 @@ void SmsService::begin() {
   }
 
   // 统一发送队列 + 专职 worker：所有发送入口只入队，worker 串行执行阻塞式 CMGS
-  // 握手，完成事件在 tick 主循环上下文回调。worker 自创建即运行，不入任务看门狗。
+  // 握手，完成事件在 tick 主循环上下文回调。worker 自创建即注册任务看门狗，
+  // 并在空闲等待与握手循环里喂狗，长耗时不会被误判为卡死。
   _sendQ = xQueueCreate(kSendQueueLen, sizeof(SendJob *));
   _doneQ = xQueueCreate(kDoneQueueLen, sizeof(DoneEvent *));
   if (_sendQ && _doneQ) {
@@ -299,12 +301,19 @@ void SmsService::sendTaskEntry(void *arg) {
 }
 
 // 专职发送任务：串行取出 SendJob，执行阻塞式 CMGS 握手（send 内部持端口锁），
-// 完成后把结果打包成 DoneEvent 投到 _doneQ 由 tick 主循环回调。本任务不入看门狗，
-// 单条发送最坏可达数十秒也不会触发整机复位。
+// 完成后把结果打包成 DoneEvent 投到 _doneQ 由 tick 主循环回调。
+// 已订阅 TWDT：空闲等待与 CMGS 握手（最坏 5s 提示符 + 30s 响应）都会喂狗，
+// 因此单条发送耗时长不会误触发整机复位，只有真正卡死才触发。
 void SmsService::sendTask() {
+  TaskWatchdog::registerCurrent("sms_send");
   SendJob *j = nullptr;
   while (true) {
-    if (xQueueReceive(_sendQ, &j, portMAX_DELAY) != pdTRUE) continue;
+    // 有限超时等待而非 portMAX_DELAY：空闲期间也必须周期性喂狗。
+    if (xQueueReceive(_sendQ, &j, pdMS_TO_TICKS(cfg::kWdtFeedGapMs)) != pdTRUE) {
+      TaskWatchdog::feed();
+      continue;
+    }
+    TaskWatchdog::feed();
     String err;
     bool stored = true;
     uint32_t id = send(j->port, j->phone, j->content, err, &stored);
@@ -2127,7 +2136,9 @@ void SmsService::queryTaskEntry(void *arg) {
 
 // 查询任务主循环：轮询各端口的待查标记（+CMTI / 定时 / 手动触发都会置位）
 void SmsService::queryTask() {
+  TaskWatchdog::registerCurrent("sms_query");
   for (;;) {
+    TaskWatchdog::feed();  // 每轮查询（含阻塞式 AT + 文件落盘）前续心跳
     // 接收模式切换后热下发 CNMI（阻塞 AT 只在本任务里做）
     if (_cnmiDirty) {
       _cnmiDirty = false;

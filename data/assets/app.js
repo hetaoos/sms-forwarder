@@ -3103,7 +3103,40 @@ function pageTools() {
       return '已是最新版本' + (this.curVer ? '（' + this.curVer + '）' : '');
     },
 
-    init() { this.loadStatus(); this.loadCoredumpInfo(); },
+    // ---------- 任务看门狗 ----------
+    wdt: {},                 // GET /api/status 的 wdt 子对象
+    wdtTask: 'loopTask',     // 自检时模拟卡死的任务
+    wdtTimeoutSec: 10,       // 自检临时超时（秒）；60 = 沿用默认
+    wdtBusy: false,
+
+    async loadWdt() {
+      try {
+        const r = await fetch('/api/status', { cache: 'no-store' });
+        if (!r.ok) return;
+        const s = await r.json();
+        this.wdt = s.wdt || {};
+      } catch (e) {}
+    },
+    wdtText() {
+      const w = this.wdt || {};
+      if (!w.wdtCount) return '暂无记录';
+      return '累计 ' + w.wdtCount + ' 次 · 卡死任务 ' + (w.lastWdtTask || '未能定位') +
+             ' · 开机 ' + (w.lastWdtUptimeSec || 0) + ' 秒' +
+             (w.lastWdtVersion ? ' · 版本 ' + w.lastWdtVersion : '');
+    },
+    async wdtSelfTest() {
+      if (this.wdtBusy || !this.wdt.enabled) return;
+      if (typeof confirmDialog === 'function' &&
+          !(await confirmDialog('确认看门狗自检',
+              '所选任务将停止喂狗，设备约 ' + this.wdtTimeoutSec + ' 秒后自动重启。期间短信与网页服务中断，是否继续？', true))) return;
+      this.wdtBusy = true;
+      const r = await postOp('/api/wdt/selftest',
+        { task: this.wdtTask, timeoutMs: Number(this.wdtTimeoutSec) * 1000 },
+        '✓ 自检已启动，设备将自动重启');
+      if (!r) this.wdtBusy = false;
+    },
+
+    init() { this.loadStatus(); this.loadCoredumpInfo(); this.loadWdt(); },
     async loadStatus() {
       try {
         const r = await fetch('/api/ota/status', { cache: 'no-store' });

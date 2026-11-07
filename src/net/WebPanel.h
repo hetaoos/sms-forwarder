@@ -175,6 +175,8 @@ class WebPanel {
   void handleSystemReset(AsyncWebServerRequest *req);
   // 定时重启配置（仅保存，不重启）
   void handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json);
+  // 任务看门狗故障注入自检（会触发整机重启）：POST {"task":"..","timeoutMs":n?}
+  void handleWdtSelfTest(AsyncWebServerRequest *req, JsonVariant &json);
 
   // WiFi：状态 / 扫描 / 列表 / 保存 / 删除 / 排序 / 试连
   void handleWifiStatus(AsyncWebServerRequest *req);

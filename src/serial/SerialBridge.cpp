@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include "app/TaskWatchdog.h"  // 长 AT 等待 / CMGS 握手期间喂狗
 #include "log/LogStore.h"
 
 // 静态成员：单例指针，供中断/静态回调转发使用
@@ -148,8 +149,10 @@ void SerialBridge::begin() {
 // FreeRTOS 任务入口：arg 为 SerialBridge 实例指针
 void SerialBridge::taskEntry(void *arg) {
   SerialBridge *self = static_cast<SerialBridge *>(arg);
+  TaskWatchdog::registerCurrent("uart-pump");
   _log.addf(LogLevel::kInfo, "uart", "串口抽数任务已启动");
   for (;;) {
+    TaskWatchdog::feed();
     self->pumpOnce();
     vTaskDelay(kPumpPeriod);
   }
@@ -298,6 +301,9 @@ String SerialBridge::readResponse(Port &p, uint32_t waitMs, uint32_t gapMs) {
       break;  // 模组未回终止行：仍按静默兜底，避免卡满超时
     } else {
       delay(2);
+      // 所有 AT 等待共用本循环（sms_query / sms_send / loopTask / async_tcp）：
+      // 持续喂狗，避免最长 8s 的 CMGL 列表响应被误判为任务卡死。
+      TaskWatchdog::feed();
     }
   }
   return out;
@@ -445,6 +451,7 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
       if (pre.indexOf("ERROR") >= 0) break;  // 通信模组直接拒绝，不必等满超时
     } else {
       delay(2);  // 让出 CPU：本方法运行于 HTTP(async_tcp) 任务上下文，不能自旋
+      TaskWatchdog::feed();  // 等 '>' 的 5s 窗口内保持心跳
     }
   }
   if (!gotPrompt) {
@@ -482,6 +489,7 @@ SerialBridge::Result SerialBridge::sendSmsPdu(uint8_t port, uint32_t baud,
       // +CMGS 已确认但 2s 内没等到 OK：通信模组已入队，按成功处理
       if (cmgs && millis() - cmgsAt >= 2000) break;
       delay(2);  // 让出 CPU（同上）
+      TaskWatchdog::feed();  // 等 +CMGS/OK 的 30s 窗口内保持心跳
     }
   }
   unlockPort(port - 1);

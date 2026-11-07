@@ -160,6 +160,12 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
 - **崩溃转储**（`app/Coredump`）：`coredump` 分区（128KB）由 ESP-IDF panic 处理器
   自动写入；NVS 独立命名空间记录崩溃时间与固件版本（不随出厂复位清除）。
   Web「系统工具」页可查询 / 导出 bin / 擦除分区
+- **任务看门狗**（`app/TaskWatchdog`）：ESP-IDF TWDT（硬件定时器）运行期重配为
+  60 秒并订阅 4 个常驻任务（`loopTask` / `uart-pump` / `sms_send` / `sms_query`）；
+  长 AT 等待、CMGS 握手、端口锁等待处持续喂狗，卡死超时由 panic 自动重启。
+  触发时在 RTC 内存留下各任务心跳，下次开机写运行日志 + NVS（`wdt` 命名空间），
+  Web「系统工具」页与 `/api/status` 可查复位原因、疑似卡死任务、累计次数与固件版本；
+  `POST /api/wdt/selftest` 可故障注入验证整条自动重启链路
 - **用户数据分区**（`app/UserFs`）：5MB `userdata` 挂载 `/data`，存放短信记录等，
   **重烧固件不丢失**；仅「出厂复位」会格式化
 - **配置导入导出**（`/api/config/export`、`/api/config/import`）：一键备份 / 恢复
@@ -283,7 +289,9 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
 管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
 `disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）。
-崩溃信息另存于独立命名空间 `coredump`（不随出厂复位清除）。
+崩溃信息另存于独立命名空间 `coredump`；看门狗诊断另存于 `wdt`
+（`reset` / `reason` / `count` / `wdtTask` / `wdtUptime` / `wdtVer`）。
+两者都不随出厂复位清除。
 
 ## 编译期配置
 
@@ -446,10 +454,11 @@ Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理�
 |-----------|--------|------|
 | `GET /` | - | 控制台页面（公开） |
 | `GET /login` | - | 独立登录页（公开，已登录自动跳回） |
-| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaAvailable/mqtt{enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}` |
+| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaAvailable/mqtt{enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}/wdt{enabled,timeoutMs,tasks,reset,resetText,bootWasWdt,wdtCount,lastWdtTask,lastWdtUptimeSec,lastWdtVersion}` |
 | `POST /api/system/restart` | 无 | `{"ok":true,"msg":"设备即将重启"}`，2 秒后重启 |
 | `POST /api/system/reset` | 无 | 清空 NVS `appcfg` 全表 + 格式化 `userdata`，2 秒后重启（崩溃记录保留） |
 | `POST /api/sched` | `{enabled,mode,dailyMin,intervalH,weekdays}` 或 `{"sched":{...}}` | 定时重启配置，即时生效不重启。`mode`：`0` 每日定点（`dailyMin` 为当日分钟数）/ `1` 固定间隔（`intervalH` 小时，1-720）；`weekdays` 位掩码（bit0=周日）；无效 400 |
+| `POST /api/wdt/selftest` | `{"task":"loopTask","timeoutMs":10000}` | **会触发整机重启**：让指定受监控任务停止喂狗，验证 WDT 自动重启与原因记录。`task` 取 `wdt.tasks` 中的名字；`timeoutMs` 可选（0 / 缺省 = 沿用 60s，允许 3000~60000 临时缩短）；任务名无效或越界 400 |
 
 ### 屏幕 / RGB / 按键
 
@@ -655,6 +664,44 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 | `GET /api/tools/coredump/export` | - | 分块流式下载 `sms-forwarder-coredump-<ts>.bin`；无数据 404 |
 | `POST /api/tools/coredump/clear` | 无 | 整分区擦除（0xFE0000 起 128KB）；NVS 里的崩溃时间与版本记录保留 |
 
+### 任务看门狗
+
+ESP-IDF 开机已初始化 TWDT（`CONFIG_ESP_TASK_WDT_PANIC`，panic = 打印 + 重启），
+但默认 5 秒超时短于一次合法的 SMTP 会话、发件箱单次投递或 CMGS 握手，
+因此 `App::begin()` 用 `esp_task_wdt_reconfigure()` 放宽到
+`cfg::kWdtTimeoutMs`（60 秒，`src/app/Config.h`），并显式订阅 4 个常驻任务：
+`loopTask`（主循环）、`uart-pump`（串口抽数）、`sms_send`（发送）、`sms_query`（主动查询）。
+`async_tcp` 由 AsyncTCP 库自行订阅并喂狗，其余一次性任务不在监控范围。
+
+喂狗点覆盖所有长阻塞：`App::tick()` 每轮、`readResponse()` 的 AT 等待循环、
+`sendSmsPdu()` 的 `>` 与 `+CMGS/OK` 等待循环、`lockPort()` 的等锁循环，
+以及 `sms_send` 的空闲队列等待（已从 `portMAX_DELAY` 改为 1 秒超时）。
+`TaskWatchdog::feed()` 内部按 1 秒节流，未订阅 TWDT 的任务调用它是 no-op。
+
+超时后由 IDF panic 自动重启；超时 ISR 覆写 `esp_task_wdt_isr_user_handler()`
+把各任务心跳写进 RTC_NOINIT 内存，下次开机结合 `esp_reset_reason()` 写一条
+`wdt` 标签运行日志，并持久化到 NVS `wdt` 命名空间（断电也不丢）。
+`/api/status` 的 `wdt` 字段（SSE `status` 事件同源）：
+
+| 字段 | 含义 |
+|------|------|
+| `enabled` / `timeoutMs` / `tasks` | TWDT 是否启用、当前超时（ms）、已登记的常驻任务名 |
+| `reset` / `resetText` / `bootWasWdt` | 本次开机复位原因枚举名、中文说明、是否由看门狗触发 |
+| `wdtCount` | 累计看门狗重启次数（NVS 持久） |
+| `lastWdtTask` / `lastWdtUptimeSec` / `lastWdtVersion` | 最近一次 WDT 的疑似卡死任务（空 = 心跳同时停止，未能定位）、触发时开机秒数、固件版本 |
+
+**设备验收**：Web「系统工具」→「任务看门狗」→ 选任务与超时（10 秒）→ 点
+「触发卡死自检」（等价 `POST /api/wdt/selftest {"task":"loopTask","timeoutMs":10000}`）。
+设备约 10 秒后自动重启；重启后日志出现
+`上次由看门狗重启：任务看门狗超时；卡死任务 loopTask…`，
+`/api/status` 的 `wdt.reset=TASK_WDT`、`wdt.bootWasWdt=true` 且 `wdtCount` 递增，
+Web 卡片显示该次记录。自检会中断服务，**勿在无人值守时误触**。
+
+> 取舍：60 秒是为「最长合法阻塞」留的余量，若新增同步阻塞超过该值，
+> 必须同步调大 `cfg::kWdtTimeoutMs` 或在阻塞循环里补喂狗点；
+> 断电后 RTC 心跳证据丢失时仍可由复位原因判定 WDT 重启，但
+> `lastWdtTask` 为空（显示「未能定位」）。
+
 ### SSE 实时推送
 
 | 方法与路径 | 说明 |
@@ -774,6 +821,7 @@ src/
 │   ├── UIMenu.h/.cpp     LCD 菜单状态机（12 槽位、动态页、屏幕设置持久化）
 │   ├── SystemService.h/.cpp  定时重启（间隔 / 每日定点 + 星期位掩码）与配置导入导出
 │   ├── Coredump.h/.cpp   崩溃元信息记录、分区查询与清除
+│   ├── TaskWatchdog.h/.cpp  TWDT 运行期重配置、常驻任务订阅/喂狗、卡死原因 NVS 留痕
 │   ├── UserFs.h/.cpp     userdata 分区挂载 /data、容量查询、格式化
 │   └── KeyInject.h/.cpp  Web /api/key -> 主循环 UI 的按键事件队列
 ├── hal/                  硬件抽象层
@@ -838,7 +886,7 @@ data/
 │   ├── display.html      屏幕显示：开关 / 背光亮度 / 自动熄屏 / 自动返回 / Web 预览
 │   ├── rgb.html          RGB 灯：预设 / 自定义颜色 / 亮度
 │   ├── settings.html     系统设置：管理账号 / API 访问令牌 / 定时重启
-│   └── tools.html        系统工具：OTA 升级 / 配置导入导出 / 崩溃转储 / 重启 / 出厂复位
+│   └── tools.html        系统工具：OTA 升级 / 配置导入导出 / 崩溃转储 / 任务看门狗状态与自检 / 重启 / 出厂复位
 └── assets/               静态资源（改后需重新 uploadfs）
     ├── app.css           设计系统与布局样式
     ├── app.js            菜单配置 / hash 路由 / 认证封装 / 各页 Alpine 组件

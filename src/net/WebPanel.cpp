@@ -11,6 +11,7 @@
 #include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
 #include "app/Coredump.h"    // 崩溃转储（coredump）分区查询
 #include "app/SystemService.h"  // 定时重启（单例）
+#include "app/TaskWatchdog.h"   // 看门狗故障注入自检（POST /api/wdt/selftest）
 #include "app/UserFs.h"      // userfs::format()：出厂复位清空用户数据
 #include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
 #include "net/StateJson.h"
@@ -557,6 +558,14 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sched", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) {
                handleSchedPost(req, json);
+             });
+
+  // 任务看门狗故障注入自检：POST {"task":"loopTask","timeoutMs":10000?}。
+  // 仅停止指定任务的喂狗，约 timeoutMs 后 TWDT panic 自动重启；会中断服务，
+  // 需认证（全局 /api/ 中间件）+ 前端二次确认，仅供设备验收使用。
+  _server.on("/api/wdt/selftest", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               handleWdtSelfTest(req, json);
              });
 
   // ================= WiFi 配网 =================
@@ -1311,6 +1320,25 @@ void WebPanel::handleSchedPost(AsyncWebServerRequest *req, JsonVariant &json) {
   }
   // importFrom 内已落盘；不重启，下次 tick 起按新计划执行
   sendOkMsg(req, "已保存，定时重启即时生效");
+}
+
+// 任务看门狗故障注入自检：让指定受监控任务停止喂狗，其余链路照常运行。
+// 约 timeoutMs 后由 TWDT panic 自动重启，下次开机在日志 / NVS / /api/status
+// 里留下「任务看门狗超时 + 疑似卡死任务」。仅用于设备验收，会中断服务。
+void WebPanel::handleWdtSelfTest(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) { sendErr(req, 400, "请求格式错误"); return; }
+  const char *task = json["task"].as<const char *>();
+  const uint32_t timeoutMs = json["timeoutMs"].as<uint32_t>();
+  if (!task || !task[0]) { sendErr(req, 400, "缺少 task"); return; }
+  if (!TaskWatchdog::startSelfTest(task, timeoutMs)) {
+    sendErr(req, 400, "任务名无效、超时越界或看门狗未启用");
+    return;
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["message"] = "已停止该任务喂狗，设备将自动重启并记录原因";
+  doc["restartInSec"] = TaskWatchdog::timeoutMs() / 1000;
+  sendJsonDoc(req, doc);
 }
 
 // ---- WiFi 配网 ----

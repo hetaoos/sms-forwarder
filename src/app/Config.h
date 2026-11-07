@@ -356,6 +356,27 @@ constexpr uint16_t kSchedIntervalHMax = 720;         // 上限（30 天）
 constexpr uint16_t kSchedIntervalHDefault = 24;      // 默认 24h
 constexpr uint16_t kSchedDailyWindowSec = 600;       // 每日模式触发窗口（秒，容忍迟到 tick）
 
+// ---------------- 任务看门狗（TWDT：卡死自动重启 + 原因留痕）----------------
+// ESP-IDF 开机已初始化 TWDT（默认 5s / panic / 订阅两个 Idle），但该超时远小于
+// 一轮主循环里合法的同步阻塞（SMTP/TLS 15s + Webhook 10s + 发件箱单次投递 15s），
+// 也小于单条 CMGS 最坏握手（5s 提示符 + 30s 响应）。故在 App::begin 里用
+// esp_task_wdt_reconfigure() 放宽到下面的值并注册常驻任务；各任务在循环与
+// 长阻塞等待处喂狗（TaskWatchdog::feed），超时由硬件定时器 panic 自动重启。
+// 调整超时时必须同步复核上述最坏路径，太小会误重启、太大会拖长卡死恢复时间。
+constexpr uint32_t kWdtTimeoutMs = 60000;       // TWDT 超时（ms），须 > 最长合法阻塞
+constexpr uint32_t kWdtFeedGapMs = 1000;        // 喂狗 / 心跳节流间隔（ms），远小于超时
+constexpr uint32_t kWdtStaleMs = kWdtTimeoutMs * 3 / 4;  // ISR 判定「心跳落后」的阈值
+constexpr uint32_t kWdtSelfTestMinMs = 3000;    // 自检允许临时缩短到的最小超时（ms）
+constexpr uint8_t  kWdtMaxTasks = 8;            // 被监控 / 喂狗的任务槽位上限
+// 看门狗诊断信息独立 NVS 命名空间：不随出厂复位清除，便于追溯历史卡死。
+constexpr const char *kNvsNamespaceWdt = "wdt";
+constexpr const char *kNvsKeyWdtReset = "reset";     // 本次开机复位原因枚举名
+constexpr const char *kNvsKeyWdtReason = "reason";   // 本次开机复位原因（中文）
+constexpr const char *kNvsKeyWdtCount = "count";     // 累计看门狗重启次数
+constexpr const char *kNvsKeyWdtTask = "wdtTask";    // 最近一次 WDT 疑似卡死任务
+constexpr const char *kNvsKeyWdtUptime = "wdtUptime";// 最近一次 WDT 触发时开机秒数
+constexpr const char *kNvsKeyWdtVersion = "wdtVer";  // 最近一次 WDT 时的固件版本
+
 // ---------------- 持久化发件箱（不丢消息转发队列）----------------
 // 短信到达后先落盘再逐通道投递；重启后未送达的通道自动续投（at-least-once）。
 // 目录相对 /data 挂载点（写成 "/data/outbox" 会变成 /data/data/outbox，见 SmsStore.h 注释）。
