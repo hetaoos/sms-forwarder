@@ -325,6 +325,21 @@ class SmsService {
     };
     StuckGroup stuckGroups[cfg::kSmsConcatSlots];
 
+    // 长短信分段 -> SIM 索引登记：存储模式下同一条长短信的分段常由多个 +CMTI
+    // 分批上报，每轮查询只删「本轮读回」的那一段；先到的分段留在 SIM 上会被
+    // AT+CMGL=1 反复捞回，滞留窗口到期后按「残缺长短信」二次入库（重复接收）。
+    // 这里按重组槽的键 (端口|发送方|参考号|总段数) 记住每个分段的索引，整条
+    // 拼接成功后一次性删除全部分段副本。key 不含时间戳：与 SmsCodec::reassemble
+    // 的槽位匹配键保持一致，避免分段时间戳相差 1 秒时登记项被拆散。
+    struct PartIdxRec {
+      uint32_t key = 0;    // 组指纹
+      uint32_t ms = 0;     // 登记时刻（过期清理，防 SIM 索引复用后残留）
+      uint16_t idx = 0;    // SIM 短信索引
+      uint8_t  port = 0;   // 通信模组端口，0 = 空闲
+    };
+    static constexpr uint8_t kPartIdxSlots = 24;
+    PartIdxRec partIdx[kPartIdxSlots];
+
     // ---- 手动清空 SIM 短信（Web 按钮触发，查询任务执行）----
     bool     clearPending = false;    // 有待执行的清空请求
     bool     clearRunning = false;    // 清空 AT 正在执行

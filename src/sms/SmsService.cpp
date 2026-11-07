@@ -2280,6 +2280,41 @@ bool SmsService::queryPort(uint8_t port) {
   std::vector<Stored> msgs;
   std::vector<int> failed;  // 本轮没能成功读回并解码的索引
   bool truncated = false, modeFixed = false;
+
+  // 长短信分组键：与 SmsCodec::reassemble / StuckGroup 用的 (发送方|ref|总段数)
+  // 一致，加上端口隔离；0 表示非长短信，无需登记
+  auto partGroupKey = [&](const String &gkey) -> uint32_t {
+    return gkey.length() ? textHash(String((unsigned)port) + "|" + gkey) : 0u;
+  };
+  // 登记「本轮读回的这一分段存在 SIM 的哪个索引」。分段可能分多轮到达，
+  // 只有登记下来，拼接成功时才能把前几轮的副本一起删掉。
+  auto notePartIdx = [&](uint32_t key, int idx) {
+    if (!_deleteAfterRead || !key || idx <= 0) return;
+    uint32_t now = millis();
+    for (auto &r : m.partIdx) {
+      if (r.port && now - r.ms >= cfg::kSmsDedupTtlMs) r.port = 0;
+    }
+    for (auto &r : m.partIdx) {
+      if (r.port == port && r.key == key && r.idx == (uint16_t)idx) {
+        r.ms = now;   // 同一分段被已读列表反复捞回，只刷新时刻
+        return;
+      }
+    }
+    int dst = -1;
+    for (uint8_t i = 0; i < ModemState::kPartIdxSlots; i++) {
+      if (!m.partIdx[i].port) { dst = i; break; }
+    }
+    if (dst < 0) {  // 表满：覆盖最旧的一项
+      dst = 0;
+      for (uint8_t i = 1; i < ModemState::kPartIdxSlots; i++) {
+        if (m.partIdx[i].ms < m.partIdx[dst].ms) dst = i;
+      }
+    }
+    m.partIdx[dst].key = key;
+    m.partIdx[dst].ms = now;
+    m.partIdx[dst].idx = (uint16_t)idx;
+    m.partIdx[dst].port = port;
+  };
   for (size_t ii = 0; ii < idxs.size(); ii++) {
     int idx = idxs[ii];
     if (msgs.size() >= cfg::kSmsQueryMaxMsgs) {
@@ -2324,6 +2359,11 @@ bool SmsService::queryPort(uint8_t port) {
                 (unsigned)port, m.lastQueryErr.c_str());
       failed.push_back(idx);
       continue;
+    }
+    // 长短信分段：记住 SIM 索引，拼接成功后连同前几轮残留的分段一起补删
+    if (s.concat[2] > 1) {
+      String gk = s.sender + "|" + (unsigned)s.concat[0] + "|" + (unsigned)s.concat[2];
+      notePartIdx(partGroupKey(gk), s.idx);
     }
     msgs.push_back(s);
   }
@@ -2442,14 +2482,41 @@ bool SmsService::queryPort(uint8_t port) {
     }
     xSemaphoreGive(_codecMutex);
   };
-  auto deleteGroup = [&](const std::vector<int> &grp) {
-    if (!_deleteAfterRead) return false;  // 未删：保留滞留标记，避免重复入库
-    bool all = true;
-    for (int i : grp) {
-      if (deleteStored(msgs[i].idx)) deleted++;
-      else { delFailed++; all = false; }
+  // 取出并清除同一条长短信的全部已登记分段索引
+  auto takePartIdx = [&](uint32_t key, std::vector<int> &out) {
+    if (!key) return;
+    for (auto &r : m.partIdx) {
+      if (r.port == port && r.key == key && r.idx) {
+        out.push_back((int)r.idx);
+        r.port = 0;
+      }
     }
-    return all;
+  };
+  // 删本轮分组 + 前几轮读回的分段副本。长短信由多个 +CMTI 分批上报时，
+  // 只有最后一段落在本轮 groups 里；若不补删先前分段，它们会被 AT+CMGL=1
+  // 反复捞回，滞留窗口到期后按「残缺长短信」二次入库（表现为短信重复）。
+  auto deleteGroup = [&](const std::vector<int> &grp, uint32_t key) {
+    if (!_deleteAfterRead) return false;  // 未删：保留滞留标记，避免重复入库
+    std::vector<int> all;
+    for (int i : grp) all.push_back(msgs[i].idx);
+    takePartIdx(key, all);
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    if (key && all.size() > grp.size()) {
+      _log.addf(LogLevel::kInfo, "sms",
+                "通信模组 %u 长短信拼接完成，连同前几轮残留共删除 %u 个分段副本",
+                (unsigned)port, (unsigned)all.size());
+    }
+    bool allOk = true;
+    for (int idx : all) {
+      if (deleteStored(idx)) deleted++;
+      else {
+        delFailed++;
+        allOk = false;
+        if (key) notePartIdx(key, idx);  // 删除失败：保留登记，下轮补删
+      }
+    }
+    return allOk;
   };
 
   for (auto &grp : groups) {
@@ -2458,11 +2525,12 @@ bool SmsService::queryPort(uint8_t port) {
     });
     const Stored &h = msgs[grp[0]];
     const String gkey = groupKeyOf(grp);
+    const uint32_t pkey = partGroupKey(gkey);
     ModemState::StuckGroup *st = findStuck(gkey);
 
     // 已按「不完整长短信」入库：本轮只补删 SIM 副本，不再重复落盘 / 推送
     if (st && st->saved) {
-      if (deleteGroup(grp)) clearStuck(gkey);
+      if (deleteGroup(grp, pkey)) clearStuck(gkey);
       continue;
     }
 
@@ -2477,7 +2545,7 @@ bool SmsService::queryPort(uint8_t port) {
     if (last == CmtOutcome::kDelete) {
       clearStuck(gkey);
       handled++;
-      deleteGroup(grp);
+      deleteGroup(grp, pkey);
       continue;
     }
 
@@ -2524,7 +2592,7 @@ bool SmsService::queryPort(uint8_t port) {
     st->saved = true;  // 删除失败时下一轮只补删，不重复入库
     clearConcatSlots(h);
     handled++;
-    if (deleteGroup(grp)) clearStuck(gkey);
+    if (deleteGroup(grp, pkey)) clearStuck(gkey);
   }
   m.queryLastHandled = handled;
   m.queryLastDeleted = deleted;
