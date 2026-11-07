@@ -403,9 +403,10 @@ constexpr uint32_t kModemIdStepMs = 300;       // 一次性静态采集逐条下
 constexpr uint32_t kTeleCsqMs  = 15000;        // 信号质量 AT+CSQ 轮询间隔（注册/CPIN 改由 URC 主动上报）
 constexpr uint32_t kTeleOpsMs  = 300000;       // 运营商 AT+COPS? 慢刷兜底（注册状态跃迁 URC 触发刷新）
 // 通信模组硬复位（EN 引脚）：-1 表示不控制（沿用通信模组自身上电时序）
-constexpr int8_t   kModemEnPin1 = -1;
-constexpr int8_t   kModemEnPin2 = -1;
-constexpr bool     kModemEnActiveLow = true;   // true: EN 拉低=关机；false: 拉高=关机
+// 默认 EN1=16、EN2=21，且默认高电平有效（拉高=开机）
+constexpr int8_t   kModemEnPin1 = 16;
+constexpr int8_t   kModemEnPin2 = 21;
+constexpr bool     kModemEnActiveLow = false;  // false: EN 拉高=开机（高电平有效）
 
 // ---------------- 定时重启（系统保活）----------------
 // 配置以 JSON 存于 NVS（appcfg / sched）；模式复用 kSchedModeDaily(0=每日定点)
