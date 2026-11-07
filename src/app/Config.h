@@ -330,7 +330,17 @@ constexpr uint32_t kSmsSafetyPollMs = 60000;     // 1 分钟
 constexpr uint8_t kSmsQueryFailMax = 3;
 
 // ---------------- 时间同步（NTP 为主，SIM NITZ 兜底）----------------
-constexpr int32_t  kNtpGmtOffsetSec = 8 * 3600;                 // 时区偏移：UTC+8
+// 时区用「相对 UTC 的分钟偏移」配置（东为正），默认东八区 UTC+08:00，
+// 支持半时区 / 45 分钟时区；落盘 NVS appcfg/tz，Web /api/timezone 可改。
+constexpr int16_t  kTzOffsetMinDefault = 480;                   // 默认 UTC+8（东八区）
+constexpr int16_t  kTzOffsetMinMin     = -720;                  // UTC-12:00
+constexpr int16_t  kTzOffsetMinMax     = 840;                   // UTC+14:00
+constexpr const char *kNvsKeyTz        = "tz";                  // NVS 键：时区偏移（分钟，int）
+constexpr int32_t  kNtpGmtOffsetSec = kTzOffsetMinDefault * 60; // 兼容常量：默认偏移（秒）
+// 全项目统一的「时钟可信下限」（2020-09-13）：低于此值的时间戳视为
+// 1970 附近的无效系统时间，或按约定解释为「开机秒数」。所有模块共用，
+// 避免不同阈值把同一条记录一会儿当真实时间、一会儿当开机时长。
+constexpr uint32_t kEpochFloorSec   = 1600000000u;
 constexpr uint32_t kNtpTimeoutMs    = 10000;                    // NTP 启动后等待首次同步的上限
 constexpr uint32_t kNtpResyncMs     = 24UL * 3600UL * 1000UL;   // SNTP 后台周期校准间隔
 constexpr uint32_t kSimTimeRetryMs  = 30000;                    // NTP 不可用时 SIM NITZ 重试间隔

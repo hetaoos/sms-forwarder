@@ -17,8 +17,9 @@ LogStore &_log = devLog();
 // 由 App::tick 在时钟已同步时每 10s 更新一次
 RTC_DATA_ATTR static time_t s_rtcLastKnownTime = 0;
 
-// 「时钟真正同步过」的纪元秒下限（2020-01-01），与 TimeSync 的 kEpochFloor
-// 同量级：低于该值的 time_t 一律视为未同步，不参与崩溃时刻估算
+// 崩溃时刻估算专用下限（2020-01-01）：故意比全项目统一的
+// cfg::kEpochFloorSec（2020-09-13）宽松，以免把 2020 上半年的历史崩溃记录
+// 判成无效。业务时间戳一律用 cfg::kEpochFloorSec，只有这里保留专用值。
 constexpr time_t kEpochFloor = 1577836800L;
 
 }  // namespace

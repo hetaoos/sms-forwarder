@@ -61,6 +61,10 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
   doc["time"] = time.dateStr();
   doc["timeSynced"] = time.isSynced();
   doc["timeSrc"] = time.srcName();
+  // 设备时区：前端列表按此偏移把 epoch 秒格式化为设备本地时间，
+  // 避免浏览器所在的时区与设备不一致时显示错乱（旧固件无此字段时前端默认 +480）
+  doc["tzOffsetMin"] = time.timezoneMin();
+  doc["tzText"] = time.timezoneText();
   // OTA 是否可用（编译期开关 + 设备分区表是否具备双槽）。前端据此决定是否展示升级入口
   doc["otaCompiled"] = (ENABLE_FIRMWARE_UPGRADE != 0);
   doc["otaAvailable"] = otaPartitionAvailable();

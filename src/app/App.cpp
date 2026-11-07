@@ -432,7 +432,7 @@ void App::fillPreview(const SmsMessage &m, SmsPreview &out) {
       snprintf(out.alias, sizeof(out.alias), "%s", ms.alias);
     }
   }
-  if (m.ts >= 1600000000u) {
+  if (m.ts >= cfg::kEpochFloorSec) {
     time_t tv = (time_t)m.ts;
     struct tm ti;
     localtime_r(&tv, &ti);

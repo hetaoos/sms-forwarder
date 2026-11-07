@@ -83,22 +83,34 @@ function fmtBytes(b) {
 const fmt = fmtUptime;  // 模板里用的短名
 
 /* ---- 时间格式化（全站统一，各页面不再各写一套）----
- * ts：纪元秒；小于阈值视为「开机后秒数」，显示为开机时长 */
+ * ts：纪元秒；小于阈值视为「开机后秒数」，显示为开机时长。
+ * 时间一律按「设备配置的时区」显示，不用浏览器本地时区：设备装在北京、
+ * 运维在海外时看到的仍是设备时间。状态未到达 / 旧固件按默认东八区兜底。 */
+function tzOffsetMin() {
+  try {
+    const s = window.Alpine && Alpine.store('live') && Alpine.store('live').status;
+    const v = s && s.tzOffsetMin;
+    return (typeof v === 'number' && v >= -720 && v <= 840) ? v : 480;
+  } catch (e) { return 480; }
+}
+// 把 epoch 秒平移到设备时区后再用 UTC getter 取值，彻底绕开浏览器本地时区
+function tzDate(ts) { return new Date((ts + tzOffsetMin() * 60) * 1000); }
 function fmtDateTime(ts) {
   if (!ts) return '-';
   if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
-  const d = new Date(ts * 1000);
+  const d = tzDate(ts);
   const p = n => (n < 10 ? '0' : '') + n;
-  return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-         p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  return p(d.getUTCFullYear()) + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
+         p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
 }
 // 列表用短时间：MM-DD HH:mm（详情与日志用完整格式）
 function fmtDateShort(ts) {
   if (!ts) return '-';
   if (ts < 1600000000) return '开机 ' + fmtUptime(ts);
-  const d = new Date(ts * 1000);
+  const d = tzDate(ts);
   const p = n => (n < 10 ? '0' : '') + n;
-  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  return p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
+         p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
 }
 // 数量单位统一：「123 条」/「12 个」等，避免各页面手拼
 function fmtCount(n, unit) {
@@ -901,6 +913,64 @@ function pageSched() {
       } finally {
         this.saving = false;
       }
+    },
+  };
+}
+
+/* ---------- 系统设置：设备时区 ---------- */
+// UTC 偏移选项：-12:00 ~ +14:00 每 30 分钟一档，另补 3 个 45 分钟时区。
+const TZ_ALIAS = {
+  0: 'UTC', 60: '中欧（柏林 / 巴黎）', 330: '印度', 345: '尼泊尔',
+  480: '北京 / 新加坡 / 香港', 525: '澳中西部 Eucla', 540: '东京 / 首尔',
+  570: '缅甸', 600: '悉尼', 765: '查塔姆群岛', '-300': '美东（纽约）',
+  '-480': '美西（洛杉矶）', '-720': 'UTC-12', 840: 'UTC+14',
+};
+function tzLabel(m) {
+  const a = Math.abs(m);
+  const s = 'UTC' + (m >= 0 ? '+' : '-') +
+            String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
+  return s + (TZ_ALIAS[m] ? ' · ' + TZ_ALIAS[m] : '');
+}
+function tzOptions() {
+  const v = [];
+  for (let m = -720; m <= 840; m += 30) v.push(m);
+  [345, 525, 765].forEach(m => { if (!v.includes(m)) v.push(m); });
+  v.sort((a, b) => a - b);
+  return v.map(m => ({ v: m, label: tzLabel(m) }));
+}
+function pageTimezone() {
+  return {
+    loaded: false, saving: false, tzOffsetMin: 480, tzText: '', time: '', timeSynced: false,
+    options: tzOptions(), _snap: '',
+    async init() {
+      try {
+        const r = await apiFetch('/api/timezone');
+        if (r.ok) this._sync(await r.json());
+      } catch (e) {}
+      setDirtyGuard(() => this.dirty);
+    },
+    _sync(j) {
+      this.tzOffsetMin = (typeof j.tzOffsetMin === 'number') ? j.tzOffsetMin : 480;
+      this.tzText = j.tzText || '';
+      this.time = j.time || '';
+      this.timeSynced = !!j.timeSynced;
+      this.loaded = true;
+      this.markClean();
+    },
+    markClean() { this._snap = JSON.stringify({ t: this.tzOffsetMin }); },
+    get dirty() { return !!this._snap && this._snap !== JSON.stringify({ t: this.tzOffsetMin }); },
+    async save() {
+      if (!this.loaded || this.saving) return;
+      this.saving = true;
+      try {
+        const r = await postOp('/api/timezone', { tzOffsetMin: Number(this.tzOffsetMin) }, '时区已保存');
+        if (!r) return;
+        this._sync(await r.json());
+        // 立刻让列表时间按新时区渲染（SSE 下一次 status 快照也会带来新值）
+        const st = Alpine.store('live').status;
+        st.tzOffsetMin = this.tzOffsetMin;
+        st.tzText = this.tzText;
+      } finally { this.saving = false; }
     },
   };
 }
@@ -2840,9 +2910,7 @@ function pageOutbox() {
 
     fmtTs(ts) {
       if (!ts || ts < 1600000000) return '时间未同步';
-      const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
-      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-             p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      return fmtDateTime(ts);   // 统一按设备时区格式化
     },
   };
 }
@@ -3301,10 +3369,7 @@ function pageTools() {
 
     cdTimeText() {
       if (!this.cdTime) return '时间未知';
-      const d = new Date(this.cdTime * 1000);
-      const p = n => String(n).padStart(2, '0');
-      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
-             ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      return fmtDateTime(this.cdTime);   // 统一按设备时区格式化
     },
     cdSizeText() {
       const b = this.cdSize;

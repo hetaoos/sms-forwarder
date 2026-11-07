@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏项目信息（§2.9；「前端规划中菜单」按需求否决、已整段撤销）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑥ 的两种配置编译结果见 §2.9。全部改动**尚未刷机实测**、**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏项目信息（§2.9；「前端规划中菜单」按需求否决、已整段撤销）、⑦ 时区可配（默认东八区）与时间失真修复（§2.10）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑦ 的两种配置编译结果（默认 RAM 36.7% / Flash 48.2%，双开关关闭 36.5% / 45.9%）见 §2.10。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -51,6 +51,8 @@
 - 两个编译期开关均生效（§2.8）：`ENABLE_MQTT=0` / `ENABLE_FIRMWARE_UPGRADE=0` 都能编译并真正裁掉实现，前端按 `mqtt.compiled` / `otaAvailable` 隐藏入口。
 - Web 侧栏项目信息（§2.9）：底部固定显示项目简介与源码仓库 `cnb.cool/null/sms-forwarder`；按需求**不在 Web 展示「规划中 / 待办」**，路线图只在本文维护。
 - BACK 长按全场景一致（§2.9）：状态页 / 菜单 / 文本页 / 弹窗统一熄屏，长按期间的 `kRepeat` 全部吞掉，修掉了「熄屏后立刻被自己的连发唤醒」这一实际缺陷。
+- 时区可配、默认东八区（§2.10）：Web「系统设置 - 设备时区」可改 UTC-12:00 ~ +14:00（含半时区 / 45 分钟时区），落盘 NVS `appcfg/tz`，即时生效不重启；`/api/timezone` 与配置备份 `timezone` 节；所有 Web 列表按**设备时区**而非浏览器时区显示。
+- 时间戳口径统一（§2.10）：`cfg::kEpochFloorSec` 一处定义、`TimeSync::stamp()` 一处供给，消除裸 `time(nullptr)` 的 1970 小值与多套阈值造成的失真；未同步仍兼容「开机秒数 / 开机 X」。
 
 ### 1.3 构建与验证命令
 
@@ -403,6 +405,65 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.10 已完成：时区可配（默认东八区）+ 时间失真修复（2026-11-07）
+
+**状态**：代码完成，**两种编译配置均 SUCCESS**（默认 RAM 36.7% / Flash 48.2%，
+双开关关闭 RAM 36.5% / Flash 45.9%）、**未刷机实测**、**未提交 git**。
+
+**① 时区可配，默认东八区**（§3 P1）
+
+- `Config.h` 新增 `kTzOffsetMinDefault = 480`、`[-720, 840]` 范围与 NVS 键 `tz`；
+  `TimeSync` 新增 `_tzOffsetMin` / `timezoneMin()` / `timezoneText()` / `setTimezone()`
+  / `loadTimezone()` / `saveTimezone()`。开机**先读时区再恢复时间**：
+  `restoreFromNvs()` 会写系统时钟并重新应用 TZ，顺序不能反。
+- `applyTimezone()` 由固定 `UTC-8` 改为按配置生成 POSIX TZ（符号与 UTC 偏移相反：
+  `+480 → UTC-8`、`+330 → UTC-5:30`、`-300 → UTC+5`），支持半时区与 45 分钟时区，
+  不做夏令时；`syncNTP()` 用 `_tzOffsetMin * 60`，NTP 日志显示当前时区。
+- `GET|POST /api/timezone`（`WebPanel`）：范围校验、即时生效、落盘 NVS、**不重启、
+  不需要重新对时**（系统时钟是 UTC epoch，改时区只影响 `localtime_r` / `strftime`
+  与「今日 / 每日定点」计算）。配置备份新增 `timezone` 节，导入旧备份（无该节）
+  保持默认 / 现值。`/api/status` 新增 `tzOffsetMin` / `tzText`。
+- Web「系统设置 - 设备时区」卡片：`-12:00 ~ +14:00` 每 30 分钟一档 + 3 个 45 分钟
+  时区，常用时区带中文别名；`pageTimezone()` 保存后同步 `live.status` 让列表立刻
+  按新时区重绘。仪表盘时间卡片显示 `tzText`。
+- **前端时间显示改按设备时区**：`fmtDateTime()` / `fmtDateShort()` 以及发件箱 /
+  coredump 里两处自写的 `new Date(ts*1000) + getHours()` 全部统一为按
+  `status.tzOffsetMin` 平移后用 `getUTC*` 取值，不再跟随浏览器本地时区；
+  旧固件 / 状态未到达时按 +480 兜底。
+
+**② 时间失真修复**（§3 P1）
+
+- 统一可信下限 `cfg::kEpochFloorSec = 1600000000`（2020-09-13），替换散落在
+  `TimeSync` / `MqttService` / `EmailService` / `SmsService` / `SmsStore` /
+  `SystemService` / `App` 里的 `1600000000` / `1000000` / `100000` 阈值；
+  `dateStr()` 额外要求 `isSynced()`，未同步不再拼出看似真实的 1970 日期。
+  崩溃时刻估算保留更宽松的 2020-01-01 下限并加注释（兼容历史 coredump）。
+- 新增静态 `TimeSync::stamp()`（取全局唯一实例的 `epochOrUptime()`）：发件箱
+  `in.ts` / `r.created`、测试推送 `job.timestamp` 改走它，不再直接拿
+  `time(nullptr)` 的 1970 小值当记录时间戳，避免同一列表里开机秒数与无效纪元秒混排。
+- 邮件 Date 头只在时钟可信时填真实 epoch（否则留给库默认）；`localDateStr()`
+  改用统一阈值，未同步时模板 `{date}` 为空串；配置导出文件名从 `now > 100000`
+  改为 `isSynced() && now >= kEpochFloorSec`，不再生成 `19700101` 这种误导性文件名。
+- **保留兼容约定**：未同步时仍记「开机秒数」、前端显示「开机 X」，历史记录与
+  前端 `>= 1.6e9` 判断都不需要迁移。这次修的是「裸 `time(nullptr)` 混入」与
+  「多套阈值」造成的真实失真，不改成伪造时间。
+
+**验证**：两种编译配置 SUCCESS（数值见上）；`node --check data/assets/app.js` 通过；
+前端沙箱校验 `+480 / 0 / +330 / -300` 四个时区的 `fmtDateTime` 输出均符合预期，
+`tzOptions()` 56 档且含默认 +480 与三个 45 分钟时区。
+
+**验收（待设备验证）**：
+1. 首次烧录（无 `appcfg/tz`）→ `/api/timezone` 返回 `480` / `UTC+08:00`；
+   NTP 同步后日志、短信、AT 历史显示东八区日期时间。
+2. 在「系统设置」改成 `UTC+05:30`（330）并保存 → 无需重启，`/api/status` 的
+   `tzText` 变化、列表时间立即按 +5:30 重绘；重启后仍为 330。
+3. 配置导出 JSON 含 `timezone.tzOffsetMin = 330`；导入后时区恢复；导入旧备份
+   （无该节）保持当前时区且不报错。
+4. 未同步（无 NTP / SIM）时收一条短信 → 列表显示「开机 X」、模板 `{date}` 为空串、
+   导出文件名用默认名（不带 1970 日期）；同步后新记录切换为真实日期。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -427,7 +488,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | SMTP 587 / STARTTLS | README 明确的已知限制 | `src/net/EmailService.cpp` | 中 |
 | ~~修编译开关~~ ✅ 已实现，见 §2.8 | 两个宏归一化并真正裁掉实现，两种配置均编译通过，前端按 `compiled` 隐藏入口 | `src/app/Config.h`、`src/net/MqttService.h`、`src/ota/Ota.cpp`、`src/net/WebPanel.cpp` | 小 |
 | ~~前端「规划中」菜单~~ ❌ 按需求不做，见 §2.9 | Web 不展示路线图 / 待办；改为侧栏底部显示项目简介与源码仓库，路线图只在本文维护 | `data/assets/app.js`、`app.css` | 小 |
-| 时区可配 + 时间失真 | UTC+8 硬编码；未同步时时间戳退化为开机秒数，日志/短信/AT 历史共用该口径 | `src/time/TimeSync.cpp`、`src/app/App.cpp:131` | 中 |
+| ~~时区可配 + 时间失真~~ ✅ 已实现，见 §2.10 | 默认 UTC+8 可配（`/api/timezone`、NVS、备份节），前端按设备时区显示；统一可信下限与时间戳供给，消除裸 `time(nullptr)` 与多套阈值 | `src/time/TimeSync.*`、`src/net/WebPanel.cpp`、`data/pages/settings.html` | 中 |
 | ~~Back 长按行为~~ ✅ 已实现，见 §2.9 | 四种显示态统一熄屏 + 吞掉 `kRepeat`（原实现熄屏后会被自己的连发唤醒） | `src/app/UIMenu.cpp`、`UIMenu.h` | 小 |
 | ~~文档补齐~~ ✅ 已实现，见 §2.8 | 四个 `poll`/`store` 接口进 API 表；BMP 注释改 JPEG；顺带补齐占位符 / `remark` / 编译开关文档 | `README.md`、`src/net/WebPanel.cpp/.h` | 小 |
 
@@ -467,7 +528,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
-3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8），**BACK 长按 + 侧栏项目信息已完成**（§2.9；规划中菜单按需求不做）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS、时区可配。
+3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）、BACK 长按 + 侧栏项目信息（§2.9；规划中菜单按需求不做）、时区可配 + 时间失真（§2.10）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
 5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
@@ -507,7 +568,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 **其它**
 - 所有出网 TLS 目前 `setInsecure()`，OTA 无签名 → P0 待修。
 - 队列普遍偏浅且满则丢弃：邮件 6、推送 6（丢最旧）、短信发送 8、管理员命令单槽、SSE 8 客户端（顶掉最旧）。**短信事件已改走持久化发件箱**（§2.5），不再受这些队列限制；其余事件仍在原队列里。
-- 时间未同步时时间戳为开机秒数，前端以 `>= 1.6e9` 区分。
+- 时间未同步时时间戳仍为**开机秒数**（兼容约定，前端显示「开机 X」）；可信下限统一为 `cfg::kEpochFloorSec`（§2.10），记录时间戳一律经 `TimeSync::stamp()` / `epochOrUptime()`，**不要再直接 `time(nullptr)`**。时区可在 Web 配置，前端按设备时区格式化。
 - 两个编译期开关已修复（§2.8）：宏在 `src/app/Config.h` 归一化（未定义默认 1），`ENABLE_MQTT=0` 用空实现替身顶住装配代码、`ENABLE_FIRMWARE_UPGRADE=0` 裁掉 `Ota.cpp` 升级主体；改开关必须两种组合都编译验证。
 - 推送模板的模组专属字段（`carrier/to/iccid/signal`）取的是**推送时刻的模组快照**，不会为了渲染模板临时发 AT；`AT+CCID` 只在模组就绪后的一次性静态采集里发一次。
 - `managed_components/` 有约 40 个 ESP-IDF 组件但源码无任何引用；`include/`、`test/` 基本是模板空目录。
@@ -526,6 +587,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 7. 改编译开关相关代码后，除默认配置外还要按 §1.3 的命令验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0`，并在两个 `firmware.elf` 里确认应裁掉的字符串确实消失。改过 `data/` 别忘了 `uploadfs`。
 8. 改推送模板 / 模组快照后，按 §2.8「验收」核对占位符取值、ICCID 采集与备注持久化；改过 `AT+CCID` 静态采集步骤（`idStep`）时重点看初始化仍能正常到 `kReady`。
 9. 改按键状态机后按 §2.9「验收」回归四种显示态的 BACK 长按 / 短按、唤醒、UP/DOWN/OK 连发；改 `data/assets/app.js` 后跑 `node --check`，改过 `data/` 必须重新 `uploadfs` 才能在设备上看生效。
+10. 改时间 / 时区后按 §2.10「验收」回归默认 +480、改成半时区、重启沿用、导入导出与未同步显示；新增记录时间戳必须用 `TimeSync::stamp()`，判断时钟可信一律用 `cfg::kEpochFloorSec`，不要再直接 `time(nullptr)`。
 
 ---
 
@@ -546,4 +608,5 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 「前端规划中菜单」按需求否决并整段撤销（§2.9）：删掉 `MENU` 规划分组、`todoPage()`、路由 todo 分支与 `.todo` 样式，Web 恢复只显示 16 个已实现页面；路线图只在本文维护 | 已撤销，`node --check` 通过，**待设备验证** |
 | 2026-11-07 | Web 项目信息（§2.9）：`renderShell()` 侧栏底部与 `login.html` 卡片底部新增项目简介与源码仓库 `https://cnb.cool/null/sms-forwarder`（新标签页打开、窄屏收起抽屉），新增 `.side-foot` / `.login-repo` 样式；README 顶部补仓库地址并明确 Web 不展示待办 | 代码完成，**待设备验证**（需重新 `uploadfs`） |
 | 2026-11-07 | BACK 长按行为（§2.9）：`handle()` 开头统一熄屏并吞掉 BACK 的 `kRepeat`，修掉「熄屏后立刻被自己连发唤醒」；文本页不再特判无定义操作，弹窗熄屏时顺带收起；`UIMenu.h` 按键注释与 README 按键表同步 | 代码完成，两种配置编译通过，**待设备验证** |
+| 2026-11-07 | 时区可配 + 时间失真（§2.10）：`TimeSync` 可配置 POSIX TZ（默认 UTC+8，NVS `appcfg/tz`，支持半时区）、`GET\|POST /api/timezone`、Web 设置页与仪表盘显示、配置备份 `timezone` 节；新增 `cfg::kEpochFloorSec` 与 `TimeSync::stamp()` 统一时间戳口径，前端列表改按设备时区格式化；README 新增「时间与时区」章节 | 代码完成，两种配置编译 SUCCESS（36.7%/48.2% 与 36.5%/45.9%）、`node --check` 与沙箱校验通过，**待设备验证**（需 `uploadfs`） |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |

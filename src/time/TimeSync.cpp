@@ -19,9 +19,6 @@ LogStore &_log = devLog();
 
 TimeSync *TimeSync::sSelf = nullptr;
 
-// 纪元时间下限：低于此值视为「未真正同步」（1970 附近的系统时间）
-static constexpr uint32_t kEpochFloor = 1600000000u;
-
 // 把「已是 UTC 的墙钟时间」换算成 time_t：纯算术、不依赖全局 TZ 环境变量，
 // 因此与其它任务并发调用也安全（不会像 mktime/timegm 那样受 TZ 状态影响）。
 static time_t utcWallClockToEpoch(int yy, int mo, int dd, int hh, int mi, int ss) {
@@ -42,9 +39,75 @@ static time_t utcWallClockToEpoch(int yy, int mo, int dd, int hh, int mi, int ss
 }
 
 void TimeSync::applyTimezone() {
-  // 固定显示时区 UTC+8（POSIX TZ 符号相反，"UTC-8" 即 UTC+8）
-  setenv("TZ", "UTC-8", 1);
+  // POSIX TZ 的偏移符号与 UTC 偏移相反：UTC+8 写 "UTC-8"，UTC-5 写 "UTC+5"。
+  // 格式 <name>[+|-]hh[:mm]；不带 DST 规则（设备不做夏令时切换），分钟数
+  // 支持 +05:30 / +05:45 这类半时区与 45 分钟时区。
+  int posix = -_tzOffsetMin;
+  int mag = posix < 0 ? -posix : posix;
+  int h = mag / 60, m = mag % 60;
+  char tz[24];
+  if (posix == 0) snprintf(tz, sizeof(tz), "UTC0");
+  else if (m) snprintf(tz, sizeof(tz), "UTC%c%d:%02d", posix > 0 ? '+' : '-', h, m);
+  else snprintf(tz, sizeof(tz), "UTC%c%d", posix > 0 ? '+' : '-', h);
+  setenv("TZ", tz, 1);
   tzset();
+}
+
+String TimeSync::timezoneText() const {
+  int off = _tzOffsetMin;
+  int mag = off < 0 ? -off : off;
+  char buf[20];
+  snprintf(buf, sizeof(buf), "UTC%c%02d:%02d", off >= 0 ? '+' : '-', mag / 60, mag % 60);
+  return String(buf);
+}
+
+void TimeSync::loadTimezone() {
+  Preferences prefs;
+  int v = cfg::kTzOffsetMinDefault;
+  if (prefs.begin(cfg::kNvsNamespace, true)) {
+    v = prefs.getInt(cfg::kNvsKeyTz, cfg::kTzOffsetMinDefault);
+    prefs.end();
+  }
+  if (v < cfg::kTzOffsetMinMin || v > cfg::kTzOffsetMinMax) v = cfg::kTzOffsetMinDefault;
+  _tzOffsetMin = (int16_t)v;
+  applyTimezone();
+}
+
+bool TimeSync::saveTimezone() const {
+  Preferences prefs;
+  if (!prefs.begin(cfg::kNvsNamespace, false)) return false;
+  size_t n = prefs.putInt(cfg::kNvsKeyTz, _tzOffsetMin);
+  prefs.end();
+  return n > 0;
+}
+
+bool TimeSync::setTimezone(int minutes) {
+  int v = minutes;
+  if (v < cfg::kTzOffsetMinMin) v = cfg::kTzOffsetMinMin;
+  if (v > cfg::kTzOffsetMinMax) v = cfg::kTzOffsetMinMax;
+  _tzOffsetMin = (int16_t)v;
+  applyTimezone();       // 立即生效：所有 localtime_r / strftime 改用新时区
+  bool ok = saveTimezone();
+  String t = timezoneText();
+  _log.addf(LogLevel::kInfo, "time", "时区已设为 %s（UTC 偏移 %d 分钟）%s",
+            t.c_str(), (int)_tzOffsetMin, ok ? "" : "，NVS 写入失败");
+  return ok;
+}
+
+void TimeSync::exportTo(JsonObject &o) const {
+  o["tzOffsetMin"] = _tzOffsetMin;
+  o["tzText"] = timezoneText();
+}
+
+bool TimeSync::importFrom(const JsonObject &o) {
+  // 旧备份没有时区节、或字段类型异常时保持当前值（默认东八区），不视为导入失败
+  JsonVariant v = o["tzOffsetMin"];
+  if (v.isNull() || !v.is<int>()) return true;
+  return setTimezone(v.as<int>());
+}
+
+uint32_t TimeSync::stamp() {
+  return sSelf ? sSelf->epochOrUptime() : (uint32_t)(millis() / 1000);
 }
 
 void TimeSync::begin(SerialBridge &bridge, SmsService &sms) {
@@ -52,17 +115,20 @@ void TimeSync::begin(SerialBridge &bridge, SmsService &sms) {
   _sms = &sms;
   sSelf = this;  // SNTP 回调跳板取回实例（全局仅一份，由 App 单例持有）
 
+  loadTimezone();    // 必须先于 restoreFromNvs()：后者写时钟后会重新应用 TZ
   restoreFromNvs();
 
   _lastPersistMs = millis();
   // 先给 WiFi/NTP 一个优先窗口（kSimTimeRetryMs），期间若 NTP 成功则不碰
   // 系统时钟；窗口内通信模组就绪事件仍可即时触发一次 SIM 同步
   _simRetryNext = millis() + cfg::kSimTimeRetryMs;
-  _log.addf(LogLevel::kInfo, "time", "时间通信模组已初始化（NTP 为主，SIM NITZ 兜底，UTC+8）");
+  String t = timezoneText();
+  _log.addf(LogLevel::kInfo, "time", "时间通信模组已初始化（NTP 为主，SIM NITZ 兜底，%s）",
+            t.c_str());
 }
 
 void TimeSync::syncNTP() {
-  configTime(cfg::kNtpGmtOffsetSec, 0, "ntp.aliyun.com", "ntp.ntsc.ac.cn",
+  configTime((long)_tzOffsetMin * 60, 0, "ntp.aliyun.com", "ntp.ntsc.ac.cn",
              "pool.ntp.org");
   applyTimezone();
   // 后台周期校准：首次成功后 SNTP 任务按此间隔自动重新对时，系统时钟长期精准
@@ -90,13 +156,9 @@ void TimeSync::onNtpSynced(struct timeval *tv) {
   // SNTP 内部通过 settimeofday 写时钟，可能重置 libc TZ 状态，必须补调
   applyTimezone();
   if (first) _persistDue = true;  // 首次成功立即落盘，保证重启后有个较新的近似值
-  if (first) {
-    _log.addf(LogLevel::kInfo, "time", "NTP 首次同步成功（UTC+8）：%ld",
-              (long)tv->tv_sec);
-  } else {
-    _log.addf(LogLevel::kInfo, "time", "NTP 周期同步成功（UTC+8）：%ld",
-              (long)tv->tv_sec);
-  }
+  String t = timezoneText();
+  _log.addf(LogLevel::kInfo, "time", "NTP %s同步成功（%s）：%ld",
+            first ? "首次" : "周期", t.c_str(), (long)tv->tv_sec);
 }
 
 void TimeSync::requestSimSync(uint8_t port) {
@@ -215,7 +277,7 @@ void TimeSync::restoreFromNvs() {
   if (!prefs.begin(cfg::kNvsNamespace, true)) return;  // 只读方式打开
   uint32_t ts = prefs.getUInt(cfg::kNvsKeyLastTs, 0);
   prefs.end();
-  if (ts < kEpochFloor) return;  // 无记录或异常值，不恢复
+  if (ts < cfg::kEpochFloorSec) return;  // 无记录或异常值，不恢复
 
   struct timeval tv = {(time_t)ts, 0};
   settimeofday(&tv, nullptr);
@@ -228,7 +290,7 @@ void TimeSync::restoreFromNvs() {
 void TimeSync::persistToNvs() {
   if (!_synced) return;
   time_t now = time(nullptr);
-  if (now < 0 || (uint32_t)now < kEpochFloor) return;  // 时钟未真正同步，不写
+  if (now < 0 || (uint32_t)now < cfg::kEpochFloorSec) return;  // 时钟未真正同步，不写
 
   Preferences prefs;
   if (!prefs.begin(cfg::kNvsNamespace, false)) return;  // 读写方式打开
@@ -247,7 +309,8 @@ const char *TimeSync::srcName() const {
 
 String TimeSync::dateStr() const {
   time_t now = time(nullptr);
-  if (now < 1000000) return "未知";
+  // 时钟未同步 / 仍是 1970 附近的小值时，不要拼出一个看似真实的 1970 日期
+  if (!_synced || now < 0 || (uint32_t)now < cfg::kEpochFloorSec) return "未知";
   struct tm t;
   localtime_r(&now, &t);
   char buf[32];
@@ -258,7 +321,7 @@ String TimeSync::dateStr() const {
 
 String TimeSync::clockStr() const {
   time_t now = time(nullptr);
-  if (!_synced || now < 1000000) return "--:--:--";
+  if (!_synced || now < 0 || (uint32_t)now < cfg::kEpochFloorSec) return "--:--:--";
   struct tm t;
   localtime_r(&now, &t);
   char buf[16];

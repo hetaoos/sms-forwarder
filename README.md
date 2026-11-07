@@ -15,6 +15,7 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
 - [快速开始](#快速开始)
 - [编译期配置](#编译期配置)
 - [屏幕 UI 与按键](#屏幕-ui-与按键)
+- [时间与时区](#时间与时区)
 - [MQTT 主题与命令](#mqtt-主题与命令)
 - [推送模板占位符](#推送模板占位符)
 - [Web API 参考](#web-api-参考)
@@ -160,9 +161,12 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
 - **设备日志**（`log/LogStore`）：运行日志存入 PSRAM 定长记录环（有 PSRAM 时
   2048 条 ≈467KB，无 PSRAM 退化为 256 条），写满 FIFO 淘汰最旧；
   支持按级别 / 关键字过滤的分页查询、增量拉取与一键清空
-- **时间同步**（`time/TimeSync`）：NTP 为主（UTC+8，24 小时周期校准）、
+- **时间同步**（`time/TimeSync`）：NTP 为主（24 小时周期校准）、
   SIM NITZ（`AT+CCLK?`）兜底（30 秒重试），每 10 分钟落盘 NVS，重启可恢复；
-  未同步时短信/日志时间戳退化为开机秒数
+  显示时区可在「系统设置 - 设备时区」配置（**默认东八区 UTC+08:00**，落盘
+  `appcfg/tz`，支持半时区 / 45 分钟时区），所有页面按设备时区显示时间；
+  未同步时日志 / 短信 / AT 历史统一按约定记为开机秒数并显示「开机 X」，
+  详见 [时间与时区](#时间与时区)
 - **定时重启（系统保活）**（`app/SystemService`）：固定间隔（1-720 小时）或
   每日定点 + 星期位掩码，配置存 NVS（`appcfg` / `sched`），默认禁用
 - **崩溃转储**（`app/Coredump`）：`coredump` 分区（128KB）由 ESP-IDF panic 处理器
@@ -297,6 +301,7 @@ Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调
 其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
 管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
 `disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）、
+`tz`（时区偏移，分钟整数，默认 `480` = UTC+8）、
 `remark`（设备备注，纯字符串，供推送模板 `{remark}` 使用，最长 64 字节）。
 崩溃信息另存于独立命名空间 `coredump`；看门狗诊断另存于 `wdt`
 （`reset` / `reason` / `count` / `wdtTask` / `wdtUptime` / `wdtVer`）。
@@ -392,6 +397,17 @@ build_flags =
 - `bright`：背光亮度 0-100%
 
 Web 端 `POST /api/key` 可注入按键事件，远程操作菜单（与物理键同一路径）。
+
+## 时间与时区
+
+设备系统时钟始终是 **UTC 纪元秒**，时区只影响 `localtime_r` / `strftime` 的本地显示与「今日 / 每日定点」计算。
+
+- **默认东八区 UTC+08:00**（`cfg::kTzOffsetMinDefault = 480` 分钟）。可在 Web「系统设置 - 设备时区」选择，或调用 `GET|POST /api/timezone`；范围 UTC-12:00 ~ UTC+14:00（`-720` ~ `840` 分钟，东为正），支持半时区（`330` = +05:30）与 45 分钟时区（`345` = +05:45）。
+- 配置存 NVS `appcfg/tz`，开机由 `TimeSync::loadTimezone()` 读取；改时区即时生效、**不重启、不需要重新对时**。内部用 POSIX TZ 变量实现（符号与 UTC 偏移相反，东八区写 `UTC-8`），每次写系统时钟（`settimeofday` / SNTP 回调）后重新应用，避免 libc 的 TZ 状态被重置为 UTC；设备不做夏令时切换。
+- Web 列表（日志 / 短信 / AT 历史 / 发件箱 / coredump）的时间戳一律按**设备时区**格式化（取 `/api/status` 的 `tzOffsetMin`），不跟随浏览器本地时区；旧固件无该字段时按 +480 兜底。
+- 配置备份新增 `timezone` 节（`tzOffsetMin` / `tzText`）；导入旧备份（无该节）保持默认 / 现值。
+
+**时间失真与统一口径**：NTP 未同步时 `TimeSync::stamp()` / `epochOrUptime()` 返回**开机秒数**（约定值小于 `cfg::kEpochFloorSec = 1600000000`，即 2020-09-13），前端显示成「开机 X」；同步后返回真实纪元秒。全项目共用这一个可信下限，不再散落 `1.6e9` / `100000` / `1000000` 等不同阈值；发件箱、测试推送、邮件 Date 头等处不再直接拿 `time(nullptr)` 的 1970 小值当记录时间戳，避免同一列表里开机秒数与无效纪元秒混排、或配置导出文件名拼出 `19700101`。崩溃时刻估算保留更宽松的 2020-01-01 下限（仅为兼容历史 coredump 记录）。未同步时推送模板 `{date}` 渲染为空串、`{timestamp}` 为开机秒数。
 
 ## MQTT 主题与命令
 
@@ -491,7 +507,9 @@ Mailgun 通道的自定义请求体（`customBody`）渲染时取值会先做 HT
 |-----------|--------|------|
 | `GET /` | - | 控制台页面（公开） |
 | `GET /login` | - | 独立登录页（公开，已登录自动跳回） |
-| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/otaCompiled/otaAvailable/mqtt{compiled,enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}/wdt{enabled,timeoutMs,tasks,reset,resetText,bootWasWdt,wdtCount,lastWdtTask,lastWdtUptimeSec,lastWdtVersion}` |
+| `GET /api/status` | - | 状态 JSON：`ssid/ip/rssi/uptime/heap/heapSize/psram/psramSize/romSize/color/rgb[]/disp/dispBright/rgbBright/connected/mode/time/timeSynced/timeSrc/tzOffsetMin/tzText/otaCompiled/otaAvailable/mqtt{compiled,enabled,configured,connected,error}/cpuAvail/cpu/tempAvail/temp/chip/hwVer/swVer/mac/todaySms{recv,sent}/sched{enabled,mode,daily,intervalH,weekdays}/wdt{enabled,timeoutMs,tasks,reset,resetText,bootWasWdt,wdtCount,lastWdtTask,lastWdtUptimeSec,lastWdtVersion}` |
+| `GET /api/timezone` | - | `{"ok":true,"tzOffsetMin":480,"tzText":"UTC+08:00","tzOffsetMinMin":-720,"tzOffsetMinMax":840,"time":"..","timeSynced":bool,"timeSrc":"ntp"}` |
+| `POST /api/timezone` | `{"tzOffsetMin":480}` | 修改设备时区（UTC 偏移分钟，东为正），立即重新应用 TZ 并落盘 NVS，`timezone` 节随之可导出；不重启、无需重新对时。越界 400、NVS 写失败 500，成功回显同 GET |
 | `POST /api/system/restart` | 无 | `{"ok":true,"msg":"设备即将重启"}`，2 秒后重启 |
 | `POST /api/system/reset` | 无 | 清空 NVS `appcfg` 全表 + 格式化 `userdata`，2 秒后重启（崩溃记录保留） |
 | `POST /api/sched` | `{enabled,mode,dailyMin,intervalH,weekdays}` 或 `{"sched":{...}}` | 定时重启配置，即时生效不重启。`mode`：`0` 每日定点（`dailyMin` 为当日分钟数）/ `1` 固定间隔（`intervalH` 小时，1-720）；`weekdays` 位掩码（bit0=周日）；无效 400 |
@@ -697,7 +715,7 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 
 | 方法与路径 | 请求体 | 说明 |
 |-----------|--------|------|
-| `GET /api/config/export` | - | 下载 `sms_forwarder_config_YYYYMMDD.json`（`application/octet-stream`），含 `wifi/auth/email/sms/mqtt/push/blacklist/disp/sched`（含密码等敏感信息） |
+| `GET /api/config/export` | - | 下载 `sms_forwarder_config_YYYYMMDD.json`（`application/octet-stream`），含 `wifi/auth/email/sms/mqtt/push/blacklist/disp/sched/timezone`（含密码等敏感信息；导出文件名按设备时区生成，时钟不可信时用默认名） |
 | `POST /api/config/import` | 原始 JSON（`application/json`，>64KB 返回 413） | 导入并落盘，返回 `{"ok":true,"msg":".."}` 后 2 秒重启；导入即作废全部会话 |
 
 ### 崩溃转储
@@ -904,7 +922,7 @@ src/
 ├── ota/
 │   └── Ota.h/.cpp         OTA 状态机：版本检查、在线升级、本地固件 / LittleFS 分片烧录
 ├── time/
-│   └── TimeSync.h/.cpp    NTP 为主 + SIM NITZ 兜底，NVS 持久化，UTC+8
+│   └── TimeSync.h/.cpp    NTP 为主 + SIM NITZ 兜底，NVS 持久化，可配置时区（默认 UTC+8）
 ├── log/
 │   └── LogStore.h/.cpp    PSRAM 环形日志缓冲（定长条目 / FIFO / 分级 / 分页查询）
 └── utils/

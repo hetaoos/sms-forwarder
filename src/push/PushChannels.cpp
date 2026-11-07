@@ -70,6 +70,9 @@ static String dingtalkSign(const String& secret, int64_t timestamp) {
   return urlEncode(computeHmacSha256Base64(secret, String(timestamp) + "\n" + secret));
 }
 
+// 协议签名（钉钉 / 飞书等）必须用真实 UTC 毫秒：服务端会校验时间窗。
+// 这是「记录时间戳走 TimeSync::stamp()」的例外，不要换成 stamp()——
+// 未同步时本来就发不出去，用开机秒数只会让签名失败原因更难排查。
 static int64_t getUtcMillis() {
   struct timeval tv;
   if (gettimeofday(&tv, NULL) == 0) {
@@ -320,7 +323,7 @@ bool PushChannels::sendFeishu(const PushChannel& ch, const String& sender, const
   JsonDocument doc;
 
   if (ch.key1.length() > 0) {
-    int64_t ts = time(nullptr);
+    int64_t ts = time(nullptr);   // 同上：HMAC 签名要求真实 UTC，不走 stamp()
     doc["timestamp"] = String(ts);
     doc["sign"]      = computeHmacSha256Base64(ch.key1, String(ts) + "\n" + ch.key1);
   }

@@ -2,6 +2,7 @@
 #include "log/LogStore.h"
 #include "sms/ModemSnapshot.h"  // ModemSnapshot：模板的模组专属占位符数据源
 #include "sms/SmsService.h"     // SmsService::modemSnapshot()
+#include "time/TimeSync.h"      // TimeSync::stamp()：统一事件时间戳供给
 #include "utils/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
 #include <WiFi.h>
@@ -70,7 +71,9 @@ String PushService::deviceName() { return Device::name(); }
 
 String PushService::localDateStr() {
   time_t now = time(nullptr);
-  if (now < 100000) return "";  // 未同步
+  // 未同步时 time(nullptr) 可能是 1970 附近的小值，旧的 now < 100000 会把
+  // "1970-01-02 ..." 当成本地时间塞进模板 {date}；统一用可信下限判定。
+  if (now < 0 || (uint32_t)now < cfg::kEpochFloorSec) return "";  // 未同步：{date} 留空
   struct tm t;
   localtime_r(&now, &t);
   char buf[32];
@@ -133,7 +136,7 @@ bool PushService::requestTest() {
   PushJob job;
   job.sender = "测试号码";
   job.message = "这是一条来自 SMS-Forwarder 的测试推送消息。";
-  job.timestamp = String((uint32_t)time(nullptr));
+  job.timestamp = String(TimeSync::stamp());
   job.modem = -1;
   job.type = MSG_TYPE_SMS;
   {

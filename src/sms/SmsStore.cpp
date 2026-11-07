@@ -279,7 +279,7 @@ void SmsStore::todayCount(int &recv, int &sent) {
   if (!_enabled) return;
 
   time_t now = time(nullptr);
-  if (now < 1600000000) return;            // 时钟未同步，无法判定「今日」
+  if (now < (time_t)cfg::kEpochFloorSec) return;  // 时钟未同步，无法判定「今日」
   struct tm t;
   localtime_r(&now, &t);
   t.tm_hour = 0; t.tm_min = 0; t.tm_sec = 0;

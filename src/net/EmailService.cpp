@@ -595,7 +595,7 @@ bool EmailService::dailyDueLocked() {
   // 每日模式依赖本地时间：NTP / SIM 未同步时系统时钟不可信，不触发
   if (!_time || !_time->isSynced()) return false;
   time_t nowT = time(nullptr);
-  if (nowT < 100000) return false;  // 时钟明显异常（未同步），跳过
+  if (nowT < (time_t)cfg::kEpochFloorSec) return false;  // 时钟不可信（1970 附近），跳过
 
   struct tm t;
   localtime_r(&nowT, &t);
@@ -620,7 +620,7 @@ bool EmailService::dailyDueLocked() {
 
 void EmailService::markDailyFiredLocked() {
   time_t nowT = time(nullptr);
-  if (nowT < 100000) return;  // 时间未同步，不记录
+  if (nowT < (time_t)cfg::kEpochFloorSec) return;  // 时间不可信，不记录
   if (_lastDailyEpoch >= (uint32_t)nowT) return;  // 已有更晚的记录
   _lastDailyEpoch = (uint32_t)nowT;
   persistConfig();  // 落盘（每日最多一次，开销可忽略）
@@ -938,7 +938,10 @@ bool EmailService::sendOnce(const String &subject, const PsBuffer &html,
   } else {
     msg.text.body(text);
   }
-  msg.timestamp = (uint32_t)time(nullptr);
+  // 只有时钟真正可信时才填 Date 用的 epoch；未同步时保留库的默认值，
+  // 不要拿 time(nullptr) 的 1970 小值或开机秒数当邮件 Date 头。
+  time_t nowT = time(nullptr);
+  if (nowT >= (time_t)cfg::kEpochFloorSec) msg.timestamp = (uint32_t)nowT;
 
   bool ok = s_smtp.send(msg);
   s_smtp.stop();
@@ -1310,7 +1313,7 @@ String EmailService::operCn(const String &code) {
 
 String EmailService::formatTs(uint32_t ts) {
   // 短信时间戳统一为纪元秒；小于 1.6e9 说明设备尚未同步时间（开机秒数）
-  if (ts < 1600000000u) return "时间未同步";
+  if (ts < cfg::kEpochFloorSec) return "时间未同步";
   time_t t = (time_t)ts;
   struct tm tmInfo;
   localtime_r(&t, &tmInfo);

@@ -90,7 +90,7 @@ void SystemService::tick(TimeSync &ts) {
   // ---- 每日定点：需时间已同步 ----
   if (!ts.isSynced()) return;
   time_t now = time(nullptr);
-  if (now < 1600000000) return;
+  if (now < (time_t)cfg::kEpochFloorSec) return;
   struct tm t;
   localtime_r(&now, &t);
 

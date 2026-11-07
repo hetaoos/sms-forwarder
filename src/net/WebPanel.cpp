@@ -554,6 +554,15 @@ void WebPanel::setupRoutes() {
   // 浏览器端同时经 /api/sse 实时推送，序列化共用 StateJson.h）
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *req) { handleStatus(req); });
 
+  // 时区配置：GET 回显当前偏移 / 可读文本 / 时间状态；POST {"tzOffsetMin":480}
+  // 即时生效并落盘 NVS，不重启设备（默认东八区）
+  _server.on("/api/timezone", HTTP_GET,
+             [this](AsyncWebServerRequest *req) { handleTimezoneGet(req); });
+  _server.on("/api/timezone", HTTP_POST,
+             [this](AsyncWebServerRequest *req, JsonVariant &json) {
+               handleTimezonePost(req, json);
+             });
+
   // ================= 系统维护 =================
   // 立即重启（延迟 2s，给响应留出发送时间）
   _server.on("/api/system/restart", HTTP_POST,
@@ -1288,6 +1297,41 @@ void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {
 // ---- 系统状态 ----
 void WebPanel::handleStatus(AsyncWebServerRequest *req) {
   sendJson(req, stateStatusJson(_wifi, _led, _display, _time, _sms.store()));
+}
+
+// ---- 时区配置（默认东八区，Web 可改）----
+// GET 与 POST 成功后的回显共用，避免两条通道字段不一致。
+static void fillTimezoneJson(JsonDocument &doc, TimeSync &time) {
+  doc["ok"] = true;
+  doc["tzOffsetMin"] = time.timezoneMin();
+  doc["tzText"] = time.timezoneText();
+  doc["tzOffsetMinMin"] = cfg::kTzOffsetMinMin;
+  doc["tzOffsetMinMax"] = cfg::kTzOffsetMinMax;
+  doc["time"] = time.dateStr();
+  doc["timeSynced"] = time.isSynced();
+  doc["timeSrc"] = time.srcName();
+}
+
+void WebPanel::handleTimezoneGet(AsyncWebServerRequest *req) {
+  JsonDocument doc;
+  fillTimezoneJson(doc, _time);
+  sendJsonDoc(req, doc);
+}
+
+void WebPanel::handleTimezonePost(AsyncWebServerRequest *req, JsonVariant &json) {
+  if (!json.is<JsonObject>()) { sendErr(req, 400, "请求格式错误"); return; }
+  int v = 0;
+  if (!jsonInt(json["tzOffsetMin"], v)) { sendErr(req, 400, "缺少 tzOffsetMin"); return; }
+  if (v < cfg::kTzOffsetMinMin || v > cfg::kTzOffsetMinMax) {
+    sendErr(req, 400, "时区偏移超出范围（-720 ~ 840 分钟）");
+    return;
+  }
+  // setTimezone() 会钳制、立即重新应用 TZ 并写 NVS；系统时钟是 UTC epoch，
+  // 改时区不需要重新对时，也不会重启设备。
+  if (!_time.setTimezone(v)) { sendErr(req, 500, "时区写入 NVS 失败"); return; }
+  JsonDocument doc;   // setTimezone() 已记运行日志，这里不再重复
+  fillTimezoneJson(doc, _time);
+  sendJsonDoc(req, doc);
 }
 
 // ---- 系统维护：立即重启 / 出厂复位 ----
@@ -2394,13 +2438,17 @@ void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   _ui.exportTo(oDisp);
   JsonObject oSched = doc["sched"].to<JsonObject>();
   SystemService::instance().exportTo(oSched);
+  JsonObject oTz = doc["timezone"].to<JsonObject>();
+  _time.exportTo(oTz);
 
   String body;
   serializeJsonPretty(doc, body);
 
   char filename[40] = "sms_forwarder_config.json";
   time_t now = time(nullptr);
-  if (now > 100000) {  // 时间已同步才用日期命名，否则用默认名
+  // 只在时钟真正可信时按设备本地日期命名：未同步时 time(nullptr) 是 1970 附近的
+  // 小值，旧的 now > 100000 会生成 "19700101" 这种误导性文件名。
+  if (_time.isSynced() && now >= (time_t)cfg::kEpochFloorSec) {
     struct tm t;
     localtime_r(&now, &t);
     snprintf(filename, sizeof(filename),
@@ -2516,9 +2564,16 @@ void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
     }
     anyApplied = true;
   }
+  if (doc["timezone"].is<JsonObject>()) {
+    if (!_time.importFrom(doc["timezone"].as<JsonObject>())) {
+      sendErr(req, 500, "时区配置写入失败");
+      return;
+    }
+    anyApplied = true;
+  }
 
   if (!anyApplied) {
-    sendErr(req, 400, "配置格式不兼容，未找到可识别的配置节（wifi/auth/email/sms/mqtt）");
+    sendErr(req, 400, "配置格式不兼容，未找到可识别的配置节（wifi/auth/email/sms/mqtt/timezone）");
     return;
   }
 

@@ -2914,7 +2914,7 @@ void SmsService::pollSchedule() {
 
   // 每日定点：需时间已同步（未同步时 nowTs() 返回开机秒数 < 1.6e9）
   uint32_t now = nowTs();
-  if (now < 1600000000) return;
+  if (now < cfg::kEpochFloorSec) return;
   time_t tt = (time_t)now;
   struct tm t;
   localtime_r(&tt, &t);

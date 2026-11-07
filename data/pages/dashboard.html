@@ -63,7 +63,9 @@
       <div class="row"><span class="k">时间来源</span><span class="v" x-text="timeSrcText()"></span></div>
       <div class="row"><span class="k">校准方式</span>
         <span class="v" style="font-size:12px" x-text="calibText()"></span></div>
-      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由通信模组 AT+CCLK? 兜底。时间每 10 分钟保存一次，重启后以此恢复近似值。</div>
+      <div class="row"><span class="k">设备时区</span>
+        <span class="v" x-text="st.tzText || 'UTC+08:00（默认）'"></span></div>
+      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由通信模组 AT+CCLK? 兜底。时间每 10 分钟保存一次，重启后以此恢复近似值。时区可在「系统设置」修改，所有记录时间随之按设备时区显示。</div>
     </div>
   </div>
 

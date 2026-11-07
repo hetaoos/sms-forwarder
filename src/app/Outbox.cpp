@@ -15,6 +15,7 @@
 #include "push/PushService.h"
 #include "push/PushTypes.h"
 #include "sms/SmsService.h"
+#include "time/TimeSync.h"   // TimeSync::stamp()：统一事件时间戳供给
 
 namespace {
 
@@ -291,7 +292,7 @@ bool Outbox::enqueueOutgoingSms(uint8_t port, const String &phone,
   in.port = port;
   in.sender = phone;  // 列表里统一用 sender 展示号码
   in.text = clip(content, cfg::kOutboxTextLimit);
-  in.ts = (uint32_t)time(nullptr);
+  in.ts = TimeSync::stamp();  // 已同步=纪元秒，未同步=开机秒数（与日志/短信/AT 历史同口径）
   in.modem = (int8_t)port;
   in.done = done;
   _incoming.push_back(in);
@@ -316,7 +317,7 @@ void Outbox::tick() {
     r.text = in.text;
     r.ts = in.ts;
     r.modem = in.modem;
-    r.created = (uint32_t)time(nullptr);
+    r.created = TimeSync::stamp();
     r.done = in.done;
     snapshotChannels(r);
     lock();

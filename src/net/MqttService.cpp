@@ -82,7 +82,7 @@ String MqttService::fullTopic(const String &sub) {
 
 // ── 时间格式化（与 EmailService 同款）──────────────────────
 static String mqttFormatTs(uint32_t ts) {
-  if (ts < 1600000000u) return "时间未同步";
+  if (ts < cfg::kEpochFloorSec) return "时间未同步";
   time_t t = (time_t)ts;
   struct tm tmInfo;
   localtime_r(&t, &tmInfo);

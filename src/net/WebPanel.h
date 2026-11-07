@@ -170,6 +170,10 @@ class WebPanel {
   // 系统汇总状态
   void handleStatus(AsyncWebServerRequest *req);
 
+  // 时区配置：GET 回显当前偏移 / 可读文本 / 时间状态；POST {"tzOffsetMin":480} 立即生效并落盘
+  void handleTimezoneGet(AsyncWebServerRequest *req);
+  void handleTimezonePost(AsyncWebServerRequest *req, JsonVariant &json);
+
   // 系统维护：立即重启 / 出厂复位（清全部配置 + 用户数据）
   void handleSystemRestart(AsyncWebServerRequest *req);
   void handleSystemReset(AsyncWebServerRequest *req);
