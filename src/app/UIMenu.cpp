@@ -219,6 +219,20 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     return;
   }
 
+  // 长按 BACK 期间 Button 每 kBtnRepeatMs 还会发一次 kRepeat，必须整段吞掉：
+  // 否则长按刚把屏熄掉，紧随其后的连发会被上面的「熄屏时任意键唤醒」当成
+  // 唤醒键，屏幕立刻又被自己点亮 —— 长按熄屏实际上永远不会生效。
+  if (key == KeyId::kBack && ev == KeyEvent::kRepeat) return;
+
+  // 长按 BACK：任意显示态统一熄屏（状态页 / 菜单 / 可滚动文本页 / 短信弹窗）。
+  // 内容保留在帧缓冲，任意键唤醒后仍停在当前页面；弹窗顺带收起，避免唤醒后
+  // 又看到一条已经不看的旧短信。放在弹窗分支之前，保证四处行为一致。
+  if (ev == KeyEvent::kLongPress && key == KeyId::kBack) {
+    if (_popup) dismissPopup();
+    _disp.setScreenOn(false);
+    return;  // 熄屏后无需重绘
+  }
+
   // 新短信弹窗期间：OK 打开全文（可滚动），其余任意键收起
   if (_popup) {
     if (ev == KeyEvent::kClick && key == KeyId::kOk) {
@@ -242,9 +256,8 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
     return;
   }
 
-  // 可滚动文本页：独立处理滚动 / 刷新 / 返回（Back 长按暂未定义，忽略）
+  // 可滚动文本页：独立处理滚动 / 返回（长按 BACK 已在上面统一熄屏，不在这里特判）
   if (_view) {
-    if (ev == KeyEvent::kLongPress && key == KeyId::kBack) return;  // 无定义操作
     if (ev == KeyEvent::kClick) {
       if (key == KeyId::kUp) _viewScroll -= 1;
       else if (key == KeyId::kDown) _viewScroll += 1;
@@ -255,16 +268,10 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
       if (page < 1) page = 1;
       if (key == KeyId::kUp) _viewScroll -= page;
       else if (key == KeyId::kDown) _viewScroll += page;
-      // OK/BACK 连发忽略
+      // OK 连发忽略；BACK 连发已在 handle() 开头统一吞掉
     }
     if (key == KeyId::kUp || key == KeyId::kDown || key == KeyId::kOk) _dirty = true;
     return;
-  }
-
-  // 长按 BACK：熄屏/唤醒
-  if (ev == KeyEvent::kLongPress && key == KeyId::kBack) {
-    _disp.setScreenOn(false);
-    return;  // 熄屏后无需重绘
   }
 
   // 纯信息页（无选项）的 UP/DOWN 是滚正文，有选项时才是移动光标
@@ -288,7 +295,7 @@ void UIMenu::handle(KeyId key, KeyEvent ev) {
       if (infoPage) ui::instance().menuScrollBy(page); else moveCursor(1);
     }
     else if (key == KeyId::kOk) activate(ev);
-    // BACK 连发忽略
+    // BACK 连发已在 handle() 开头统一吞掉（避免刚熄的屏被自己唤醒）
   }
   _dirty = true;
 }

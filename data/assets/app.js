@@ -612,15 +612,32 @@ function renderShell() {
   for (const g of MENU) {
     html += '<div class="menu-group">' + g.group + '</div>';
     for (const it of g.items) {
-      if (it.hidden) continue;  // 隐藏项（如 AT 调试）不进主菜单，仅可经直达链接访问
-      html += '<button type="button" class="menu-item" data-id="' + it.id + '">' + ICONS[it.icon] +
-              '<span>' + it.title + '</span>' + (it.todo ? '<span class="todo">规划中</span>' : '') +
-              '</button>';
+      // hidden 项仍留在 MENU 里（findMenu 能找到、hash 可直达），只是不进侧栏；
+      // 目前无此类页面，预留给后续需要「直达但不展示」的调试页。
+      if (it.hidden) continue;
+      html += '<button type="button" class="menu-item" data-id="' + escHtml(it.id) + '"' +
+              ' title="' + escHtml(it.title) + '">' + ICONS[it.icon] +
+              '<span>' + escHtml(it.title) + '</span></button>';
     }
   }
-  html += '</nav>';
+  // 侧栏底部：项目简介 + 源码仓库（不随菜单滚动，所有页面可见）。
+  // AP 配网模式无外网时链接打不开，但地址仍可直接看到 / 复制。
+  html += '</nav>' +
+    '<div class="side-foot">' +
+      '<div class="side-desc">ESP32-S3 双 4G 模组短信转发器<br>' +
+        '短信 / 来电 / SIM 事件转发至邮件、MQTT 与 Webhook</div>' +
+      '<div class="side-label">源码仓库</div>' +
+      '<a href="https://cnb.cool/null/sms-forwarder" target="_blank"' +
+        ' rel="noopener noreferrer" title="打开源码仓库（新标签页）">' +
+        '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+          '<path d="M14 4h6v6M20 4l-9 9"/>' +
+          '<path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>' +
+        '</svg><span>cnb.cool/null/sms-forwarder</span>' +
+      '</a>' +
+    '</div>';
   sb.innerHTML = html;
   sb.addEventListener('click', e => {
+    if (e.target.closest('.side-foot a')) { closeSidebar(); return; }
     const item = e.target.closest('.menu-item');
     if (!item) return;
     location.hash = '#/' + item.dataset.id;

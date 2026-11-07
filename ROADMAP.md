@@ -8,7 +8,7 @@
 
 ## 0. 快速接手（先读这一节）
 
-1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）。全部改动**尚未刷机实测**、**未提交 git**。
+1. **当前状态**：核心链路已完整可运行；2026-11-07 完成 ① 存储模式 `CNMI=2,1` 收短信不入库缺陷修复（§2）、② 持久化不丢消息转发队列 / 发件箱（§2.5，含收到短信转发、网页主动发短信、两页发送弹窗统一）、③ 长短信分批 `+CMTI` 导致的重复接收修复（§2.6）、④ 显式任务 / 硬件看门狗（§2.7）、⑤ P1 半成品批次中的三项（§2.8：5 个模板占位符、编译开关、文档补齐）、⑥ BACK 长按行为与 Web 侧栏项目信息（§2.9；「前端规划中菜单」按需求否决、已整段撤销）。④ 的**编译验证已补跑通过**（`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3` → SUCCESS，RAM 36.7% / Flash 48.1%）；另验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0` 组合编译 SUCCESS（RAM 36.5% / Flash 45.8%）；⑥ 的两种配置编译结果见 §2.9。全部改动**尚未刷机实测**、**未提交 git**。
 2. **接手第一件事**：按 §2.4 做设备验证，通过后才把 `debug-sms-store-parse-fail.md` 的 Status 改为 `CLOSED`。**不要跳过验证就宣称修好**。
 3. **验证通过后的下一步**：按 §4 做「可靠转发」三件套（持久化投递队列 + 投递回执 + 规则引擎），这是收益最高的一块。
 4. **不要重复劳动**：§1.2 列出的能力都已实现，别再作为「新功能」提出。
@@ -49,6 +49,8 @@
 - 任务看门狗（§2.7）：4 个常驻任务订阅 TWDT（60s / panic 自动重启）、长阻塞全程喂狗、复位原因与疑似卡死任务持久化并可在 Web / `/api/status` 查询、`/api/wdt/selftest` 故障注入自检。
 - 推送模板占位符全部可用（§2.8）：`{carrier}` / `{to}` / `{iccid}` / `{signal}` 取模组快照（新增就绪后一次性 `AT+CCID`），`{remark}` 取 NVS `appcfg/remark`（推送通道页配置）；Web 占位符表与 README 已同步。
 - 两个编译期开关均生效（§2.8）：`ENABLE_MQTT=0` / `ENABLE_FIRMWARE_UPGRADE=0` 都能编译并真正裁掉实现，前端按 `mqtt.compiled` / `otaAvailable` 隐藏入口。
+- Web 侧栏项目信息（§2.9）：底部固定显示项目简介与源码仓库 `cnb.cool/null/sms-forwarder`；按需求**不在 Web 展示「规划中 / 待办」**，路线图只在本文维护。
+- BACK 长按全场景一致（§2.9）：状态页 / 菜单 / 文本页 / 弹窗统一熄屏，长按期间的 `kRepeat` 全部吞掉，修掉了「熄屏后立刻被自己的连发唤醒」这一实际缺陷。
 
 ### 1.3 构建与验证命令
 
@@ -342,6 +344,65 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 ---
 
+### 2.9 已完成：BACK 长按行为 + Web 侧栏项目信息（2026-11-07）
+
+**状态**：代码完成，**两种编译配置均 SUCCESS**、**未刷机实测**、**未提交 git**。
+
+**① Web 不展示「规划中」，改为侧栏项目信息**（§3 P1 的「前端规划中菜单」按需求否决）
+
+本次先按 §3 P1 做过一版「规划中」菜单（`MENU` 末组 9 项 + `todoPage()` 占位页），
+随后按需求**整段撤销**：Web 控制台不展示路线图 / 待办，侧栏恢复为 16 个已实现页面，
+`todo` 徽标渲染与 `.menu-item .todo` 样式一并删除，`route()` 回到统一的
+`pages/<id>.html` 懒加载。路线图只维护在仓库 `ROADMAP.md`，不进设备 Web UI。
+
+替代做法是在**侧栏底部**固定展示项目信息（`renderShell()` 生成、不随菜单滚动、
+所有页面可见）：
+
+- 简介：「ESP32-S3 双 4G 模组短信转发器 / 短信、来电、SIM 事件转发至邮件、MQTT 与 Webhook」；
+- 源码仓库：`https://cnb.cool/null/sms-forwarder`（`target="_blank" rel="noopener noreferrer"`；
+  AP 配网模式无外网时链接打不开，但地址仍可见 / 可复制），点击后顺带收起窄屏抽屉；
+- 登录页（`data/login.html`）卡片底部也展示同一份简介与仓库链接，未登录时同样可见；
+- 新增 `.side-foot` / `.login-repo` 样式（`data/assets/app.css`）；README 顶部补仓库地址、
+  「Web 控制台」章节明确写出「Web 不展示待办 / 规划中内容」；
+- 菜单项 `title` 悬停说明与 `hidden` 项注释保留（与路线图无关的通用改进），
+  `applyFeatureFlags()`（§2.8）不受影响；
+- **不新增页面、不调用 API**。
+
+**② BACK 长按行为**（§3 P1）
+
+原实现有两处问题：`UIMenu.cpp` 在可滚动文本页里明确写着「Back 长按暂未定义，忽略」，
+而菜单页的长按 BACK 熄屏**实际上根本不生效** —— `hal/Button` 在 `kLongPress` 之后
+每 `kBtnRepeatMs`（180ms）还会发一次 `kRepeat`，该事件落到 `handle()` 开头的
+「熄屏时任意键唤醒」分支，刚熄掉的屏立刻被自己的连发点亮。
+
+- 把「长按 BACK 熄屏」提升到 `handle()` 开头（唤醒分支之后、弹窗分支之前），
+  状态页 / 菜单 / 可滚动文本页 / 短信弹窗**四种显示态行为一致**；弹窗可见时顺带
+  `dismissPopup()`，避免唤醒后又看到一条已经不看的旧短信。熄屏后内容仍保留在帧缓冲。
+- 长按 BACK 期间的 `kRepeat` 一律吞掉，修掉上述自唤醒缺陷；菜单 / 文本页里
+  「BACK 连发忽略」的注释同步改为指向统一处理处。
+- 删除文本页里「无定义操作」的特判；`UIMenu.h` 状态机注释与 README 按键表
+  （短按 / 长按 / 连发 / 唤醒 / 状态页 / 信息页滚动）全部补齐，并删掉与实现不符的
+  「文本页长按 OK 刷新」旧描述（`_viewLive` 从未被置位，文本页由 `renderView()` 重绘）。
+- 行为边界：熄屏时按住 BACK 只唤醒不导航；短按 BACK 仍是逐层返回 / 退出文本页 /
+  收起弹窗；UP/DOWN/OK 的 180ms 连发不受影响。
+
+**验证**：C++ 侧（`UIMenu.cpp/.h`）默认配置与 `ENABLE_MQTT=0` +
+`ENABLE_FIRMWARE_UPGRADE=0` 组合均编译 SUCCESS（RAM 36.7% / Flash 48.1% 与
+36.5% / 45.8%）；`node --check data/assets/app.js` 通过；`read_lints` 0 错误；
+前端沙箱校验确认侧栏 16 项、无「规划中」字样、`side-foot` 含仓库地址。
+
+**验收（待设备验证）**：
+1. Web 控制台侧栏**没有任何「规划中」条目或徽标**，16 个页面仍正常加载；
+   `ENABLE_MQTT=0` 固件里 MQTT 菜单依旧隐藏。
+2. 侧栏底部显示两行项目简介 +「源码仓库」+ `cnb.cool/null/sms-forwarder`；
+   滚动菜单时底部不动，点击链接在新标签页打开，窄屏下抽屉收起；未登录时在登录页
+   卡片底部也能看到同样的简介与链接。
+3. 状态页 / 菜单页 / 短信详情文本页 / 新短信弹窗四种状态下**按住 BACK 超过 600ms 不放**
+   → 屏幕熄灭并**保持熄灭**（旧固件会自己亮回来）；松手后短按任意键唤醒、仍停在当前页面。
+4. 短按 BACK 逐层返回 / 退出文本页 / 收起弹窗不变；UP/DOWN/OK 长按连发调值不变。
+
+---
+
 ## 3. 待办清单
 
 难度：小 = 半天内；中 = 1~2 天；大 = 需分阶段。**验收标准**用于判断是否做完。
@@ -365,9 +426,9 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | SSE 补全 | 全量快照缺 `sms`/`smsports`；`Last-Event-ID` 续传只做了 AT 历史；Bearer 客户端无法用 SSE（可加 query token） | `src/net/StatusBus.cpp:139-185` | 小 |
 | SMTP 587 / STARTTLS | README 明确的已知限制 | `src/net/EmailService.cpp` | 中 |
 | ~~修编译开关~~ ✅ 已实现，见 §2.8 | 两个宏归一化并真正裁掉实现，两种配置均编译通过，前端按 `compiled` 隐藏入口 | `src/app/Config.h`、`src/net/MqttService.h`、`src/ota/Ota.cpp`、`src/net/WebPanel.cpp` | 小 |
-| 前端「规划中」菜单 | `data/assets/app.js:599-601` 已支持 `todo`/`hidden` 徽标但 MENU 无数据，正好标注本清单待办 | `data/assets/app.js:539-565` | 小 |
+| ~~前端「规划中」菜单~~ ❌ 按需求不做，见 §2.9 | Web 不展示路线图 / 待办；改为侧栏底部显示项目简介与源码仓库，路线图只在本文维护 | `data/assets/app.js`、`app.css` | 小 |
 | 时区可配 + 时间失真 | UTC+8 硬编码；未同步时时间戳退化为开机秒数，日志/短信/AT 历史共用该口径 | `src/time/TimeSync.cpp`、`src/app/App.cpp:131` | 中 |
-| Back 长按行为 | `src/app/UIMenu.cpp:245-247` 注明「暂未定义」 | `src/app/UIMenu.cpp` | 小 |
+| ~~Back 长按行为~~ ✅ 已实现，见 §2.9 | 四种显示态统一熄屏 + 吞掉 `kRepeat`（原实现熄屏后会被自己的连发唤醒） | `src/app/UIMenu.cpp`、`UIMenu.h` | 小 |
 | ~~文档补齐~~ ✅ 已实现，见 §2.8 | 四个 `poll`/`store` 接口进 API 表；BMP 注释改 JPEG；顺带补齐占位符 / `remark` / 编译开关文档 | `README.md`、`src/net/WebPanel.cpp/.h` | 小 |
 
 ### P2 新功能
@@ -406,7 +467,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 
 1. **设备验证**：关闭 OPEN 缺陷（§2.4）+ 验证发件箱续投（§2.5）—— 核心链路可用性优先于一切新功能。
 2. ✅ **持久化投递队列 + 投递回执已完成**（§2.5）→ 下一步做**条件转发规则引擎**，与发件箱的通道快照衔接（在 `snapshotChannels()` 处按规则裁剪通道），避免返工。
-3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8）→ 余下联系人簿（号码备注）与 SSE 快照补全。
+3. ✅ **半成品批次：5 个占位符 + 编译开关 + 文档补齐已完成**（§2.8），**BACK 长按 + 侧栏项目信息已完成**（§2.9；规划中菜单按需求不做）→ 余下联系人簿（号码备注）、SSE 快照补全、SMTP 587 / STARTTLS、时区可配。
 4. **安全三件套**：TLS 校验（可配置 CA/指纹，保留 `setInsecure` 兼容开关）、登录限流、口令哈希；顺带做 MQTT 命令鉴权。
 5. ✅ **长期保底：看门狗已完成**（§2.7，编译验证已补跑通过，见 §2.8）→ 余下 `pdulib` 单元测试 + CI。
 
@@ -464,6 +525,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 6. 改看门狗 / 长阻塞路径后，按 §2.7「验收」做空载 30 分钟 + 四个任务的故障注入自检，确认无意外重启且原因记录正确。
 7. 改编译开关相关代码后，除默认配置外还要按 §1.3 的命令验证 `ENABLE_MQTT=0` + `ENABLE_FIRMWARE_UPGRADE=0`，并在两个 `firmware.elf` 里确认应裁掉的字符串确实消失。改过 `data/` 别忘了 `uploadfs`。
 8. 改推送模板 / 模组快照后，按 §2.8「验收」核对占位符取值、ICCID 采集与备注持久化；改过 `AT+CCID` 静态采集步骤（`idStep`）时重点看初始化仍能正常到 `kReady`。
+9. 改按键状态机后按 §2.9「验收」回归四种显示态的 BACK 长按 / 短按、唤醒、UP/DOWN/OK 连发；改 `data/assets/app.js` 后跑 `node --check`，改过 `data/` 必须重新 `uploadfs` 才能在设备上看生效。
 
 ---
 
@@ -481,4 +543,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
 | 2026-11-07 | 补齐 5 个推送模板占位符（§2.8）：新增 `AT+CCID` / `ModemSnapshot.iccid`，`{carrier}/{to}/{iccid}/{signal}` 取模组快照，`{remark}` 取 NVS `appcfg/remark`；推送页新增设备备注配置与占位符表 | 代码完成，两种配置编译通过，`node --check` 通过，**待设备验证** |
 | 2026-11-07 | 修编译开关（§2.8）：`Config.h` 归一化宏、`ENABLE_MQTT=0` 空实现替身 + 前端菜单隐藏、`ENABLE_FIRMWARE_UPGRADE=0` 裁掉 OTA 升级主体；`/api/status` 增 `mqtt.compiled` / `otaCompiled` | 代码完成，默认 SUCCESS（RAM 36.7% / Flash 48.1%）、双开关关闭 SUCCESS（RAM 36.5% / Flash 45.8%），**待设备验证** |
 | 2026-11-07 | 文档补齐（§2.8）：README 补 `/api/sms/poll` `/api/sms/store` 四行、占位符表格、`remark` / NVS 键 / 编译开关说明；`WebPanel.cpp` 屏幕预览注释 BMP→JPEG；本文 §0/§1.2/§1.3/§2.8/§3/§4/§5/§6/§7 同步 | 已记录，**待设备验证** |
+| 2026-11-07 | 「前端规划中菜单」按需求否决并整段撤销（§2.9）：删掉 `MENU` 规划分组、`todoPage()`、路由 todo 分支与 `.todo` 样式，Web 恢复只显示 16 个已实现页面；路线图只在本文维护 | 已撤销，`node --check` 通过，**待设备验证** |
+| 2026-11-07 | Web 项目信息（§2.9）：`renderShell()` 侧栏底部与 `login.html` 卡片底部新增项目简介与源码仓库 `https://cnb.cool/null/sms-forwarder`（新标签页打开、窄屏收起抽屉），新增 `.side-foot` / `.login-repo` 样式；README 顶部补仓库地址并明确 Web 不展示待办 | 代码完成，**待设备验证**（需重新 `uploadfs`） |
+| 2026-11-07 | BACK 长按行为（§2.9）：`handle()` 开头统一熄屏并吞掉 BACK 的 `kRepeat`，修掉「熄屏后立刻被自己连发唤醒」；文本页不再特判无定义操作，弹窗熄屏时顺带收起；`UIMenu.h` 按键注释与 README 按键表同步 | 代码完成，两种配置编译通过，**待设备验证** |
 | — | 后续每次阶段性工作，请在此追加一行并同步 §0/§2/§3 的状态 | — |
