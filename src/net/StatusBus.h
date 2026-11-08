@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/Config.h"
+#include "app/Psram.h"    // PsBuffer：SSE 快照 PSRAM 直发（方案 #2）
 #include "app/UIMenu.h"   // 屏幕设置（自动熄屏 / 自动返回状态页）
 #include "hal/Display.h"
 #include "hal/RgbLed.h"
@@ -51,9 +52,13 @@ class StatusBus {
 
   // 向全部客户端发送一个事件（id 自动递增）
   void publish(const char *event, const String &json);
+  // 同上，但直接从 PSRAM 缓冲直发（省去 DRAM String 副本，见方案 #2）
+  void publish(const char *event, const PsBuffer &buf);
 
   // 向单个客户端发送一个事件（新连接快照用）
   void publishTo(AsyncEventSourceClient *client, const char *event, const String &json);
+  // 同上，但直接从 PSRAM 缓冲直发
+  void publishTo(AsyncEventSourceClient *client, const char *event, const PsBuffer &buf);
 
   // 推送全部六类状态的全量快照（to 为空表示广播）
   void publishSnapshot(AsyncEventSourceClient *client);

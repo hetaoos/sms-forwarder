@@ -7,6 +7,7 @@
 #include <WiFi.h>
 
 #include "app/Config.h"  // ENABLE_MQTT / ENABLE_FIRMWARE_UPGRADE（编译期开关）
+#include "app/Psram.h"    // PsBuffer / psramJsonAllocator()：状态 JSON 直发 PSRAM（方案 #2）
 #include "app/UIMenu.h"   // 屏幕设置的持有者（亮度 / 自动熄屏 / 自动返回状态页）
 #include "app/TaskWatchdog.h"  // 任务看门狗状态与上次卡死原因
 #include "hal/CpuMonitor.h"
@@ -30,10 +31,12 @@
 // 均为纯函数（不持有状态），可在任意任务上下文调用。
 
 // 汇总状态：与 GET /api/status 响应一致
-inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
-                              TimeSync &time, SmsStore &store) {
+// PsBuffer 重载：直接序列化进 PSRAM 缓冲（方案 #2），供 SSE 快照等免 DRAM 直发；
+// String 重载仅作兼容，内部转调前者（返回前仍会按阈值落到 PSRAM）。
+inline void stateStatusJson(PsBuffer &out, WifiManager &wifi, RgbLed &led, Display &display,
+                           TimeSync &time, SmsStore &store) {
   const RgbLed::Color &c = led.color();
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["ssid"] = wifi.ssid();
   doc["ip"] = wifi.ip();
   doc["rssi"] = wifi.rssi();
@@ -149,29 +152,39 @@ inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
     w["lastWdtVersion"] = TaskWatchdog::lastWdtVersion();
   }
 
-  String out;
-  serializeJson(doc, out);
-  return out;
+  out.serialize(doc);
+}
+
+// 兼容旧调用点（REST 接口等）：内部转调 PsBuffer 重载，返回的 String 在
+// CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 调低后也会落到 PSRAM。
+inline String stateStatusJson(WifiManager &wifi, RgbLed &led, Display &display,
+                             TimeSync &time, SmsStore &store) {
+  PsBuffer b;
+  stateStatusJson(b, wifi, led, display, time, store);
+  return String(b.c_str());
 }
 
 // 屏幕状态：与 GET /api/disp 响应一致
 // ui 提供持久化的自动熄屏 / 自动返回状态页时间（秒）
-inline String stateDispJson(Display &display, UIMenu &ui) {
-  JsonDocument doc;
+inline void stateDispJson(PsBuffer &out, Display &display, UIMenu &ui) {
+  JsonDocument doc(psramJsonAllocator());
   doc["ok"] = true;
   doc["on"] = display.screenOn();
   doc["bright"] = display.brightness();
   doc["autoOffSec"] = ui.autoOffSec();
   doc["idleSec"] = ui.idleSec();
-  String out;
-  serializeJson(doc, out);
-  return out;
+  out.serialize(doc);
+}
+inline String stateDispJson(Display &display, UIMenu &ui) {
+  PsBuffer b;
+  stateDispJson(b, display, ui);
+  return String(b.c_str());
 }
 
 // RGB 状态：与 GET /api/rgb 响应一致
-inline String stateRgbJson(RgbLed &led) {
+inline void stateRgbJson(PsBuffer &out, RgbLed &led) {
   const RgbLed::Color &c = led.color();
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["ok"] = true;
   doc["color"] = c.name;
   JsonArray rgb = doc["rgb"].to<JsonArray>();
@@ -180,23 +193,29 @@ inline String stateRgbJson(RgbLed &led) {
   rgb.add(c.b);
   doc["index"] = led.index();
   doc["bright"] = led.brightness();
-  String out;
-  serializeJson(doc, out);
-  return out;
+  out.serialize(doc);
+}
+inline String stateRgbJson(RgbLed &led) {
+  PsBuffer b;
+  stateRgbJson(b, led);
+  return String(b.c_str());
 }
 
 // OTA 升级进度：与 GET /api/ota/status 响应一致（SSE ota 事件用）。
 // 升级是分钟级长任务，进度/阶段/失败原因强实时，推给浏览器免去轮询。
-inline String stateOtaJson() {
+inline void stateOtaJson(PsBuffer &out) {
   OtaStatusPayload s = Ota::status();
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   doc["state"]          = (uint8_t)s.state;
   doc["progress"]       = s.progress;
   doc["message"]        = s.message;
   doc["currentVersion"] = s.currentVersion;
   doc["latestVersion"]  = s.latestVersion;
   doc["available"]      = otaPartitionAvailable();
-  String out;
-  serializeJson(doc, out);
-  return out;
+  out.serialize(doc);
+}
+inline String stateOtaJson() {
+  PsBuffer b;
+  stateOtaJson(b);
+  return String(b.c_str());
 }

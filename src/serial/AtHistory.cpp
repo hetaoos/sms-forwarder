@@ -4,6 +4,8 @@
 #include <esp_heap_caps.h>
 #include <string.h>
 
+#include "app/Psram.h"  // psramJsonAllocator()：AT 历史可达上百条，doc 池放 PSRAM（方案 #2）
+
 namespace {
 
 // 安全拷贝定长字段：超长截断并保证 '\0' 结尾
@@ -92,7 +94,7 @@ String AtHistory::toJson(int32_t afterId, size_t limit) const {
   uint32_t from = afterId < 0 ? _start : (uint32_t)(afterId + 1);
   if (from < _start) from = _start;
 
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   JsonArray arr = doc.to<JsonArray>();
   for (uint32_t id = from; _buf && id < _end && (limit == 0 || arr.size() < limit);
        id++) {
@@ -112,7 +114,7 @@ String AtHistory::toJson(int32_t afterId, size_t limit) const {
 }
 
 String AtHistory::statsJson() const {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   if (!_buf) {
     doc["ok"] = false;
     doc["error"] = "AT 历史缓冲区未就绪";

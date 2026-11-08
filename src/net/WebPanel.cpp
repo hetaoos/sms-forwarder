@@ -17,6 +17,7 @@
 #include "hal/Button.h"      // KeyId / KeyEvent：/api/key 解析
 #include "net/StateJson.h"
 #include "utils/CryptoUtil.h"  // FNV 哈希等登录限流工具
+#include "utils/MemDiag.h"     // 内存量化诊断（/api/debug/mem）
 #include "ota/Ota.h"  // OTA 升级（固件 + LittleFS 烧录）
 
 #include <esp_system.h>            // esp_restart()
@@ -482,6 +483,14 @@ void WebPanel::sendJson(AsyncWebServerRequest *req, const String &json) {
   req->send(200, "application/json", json);
 }
 
+// req：请求对象；buf：承载 JSON 的 PSRAM 缓冲（由 PsBuffer::serialize 生成）。
+// 大响应（短信列表 / 日志 / AT 历史）经此直发，避免先在 DRAM 生成 String 副本
+// （见内存优化方案 #2）；buf 内容本身已在 PSRAM，AsyncWebServer 的发送拷贝在
+// CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 调低后也会落到 PSRAM。
+void WebPanel::sendJson(AsyncWebServerRequest *req, const PsBuffer &buf) {
+  req->send(200, "application/json", buf.c_str());
+}
+
 // 注册全部路由（纯路由表：只注册 + 一行转发，逻辑见下方 handleXxx()）。
 //
 // ============================ 注册顺序规则（必读）============================
@@ -666,6 +675,10 @@ void WebPanel::setupRoutes() {
   // 汇总状态 JSON（页面为静态文件，所有状态由前端从此接口拉取渲染；
   // 浏览器端同时经 /api/sse 实时推送，序列化共用 StateJson.h）
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *req) { handleStatus(req); });
+
+  // 内存量化诊断（方案 1）：heap_caps 按能力拆分 + 任务栈 high-water，JSON。
+  // 落在 /api/ 下自动受登录中间件保护；用于分析内部 DRAM 占用来源
+  _server.on("/api/debug/mem", HTTP_GET, [this](AsyncWebServerRequest *req) { handleDebugMem(req); });
 
   // 时区配置：GET 回显当前偏移 / 可读文本 / 时间状态；POST {"tzOffsetMin":480}
   // 即时生效并落盘 NVS，不重启设备（默认东八区）
@@ -1447,7 +1460,8 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
     int total = 0;
     _log.tail(after, limit, (int8_t)minLevel, q, inc, total);
 
-    JsonDocument doc;
+    // 内存池放 PSRAM（日志条目可达数百条，序列化后可达数十 KB）
+    JsonDocument doc(psramJsonAllocator());
     doc["ok"] = true;
     doc["last"] = _log.lastId();
     doc["total"] = total;
@@ -1461,7 +1475,9 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
       o["tag"] = e.tag;
       o["msg"] = e.msg;
     }
-    sendJsonDoc(req, doc);
+    PsBuffer out;
+    if (!out.serialize(doc) || !out.ok()) { sendErr(req, 500, "序列化失败"); return; }
+    sendJson(req, out);
     return;
   }
 
@@ -1476,7 +1492,8 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
   int total = 0;
   _log.list(page, pageSize, (int8_t)minLevel, q, logs, total);
 
-  JsonDocument doc;
+  // 内存池放 PSRAM
+  JsonDocument doc(psramJsonAllocator());
   doc["ok"] = true;
   doc["total"] = total;
   doc["page"] = page;
@@ -1489,11 +1506,13 @@ void WebPanel::handleLogList(AsyncWebServerRequest *req) {
     o["level"] = e.level;
     o["tag"] = e.tag;
     o["msg"] = e.msg;
-  }
-  sendJsonDoc(req, doc);
-}
+    }
+    PsBuffer out;
+    if (!out.serialize(doc) || !out.ok()) { sendErr(req, 500, "序列化失败"); return; }
+    sendJson(req, out);
+    }
 
-void WebPanel::handleLogClear(AsyncWebServerRequest *req) {
+    void WebPanel::handleLogClear(AsyncWebServerRequest *req) {
   _log.clear();
   _log.add(LogLevel::kInfo, "log", "日志已清空");
   sendOk(req);
@@ -1595,6 +1614,16 @@ void WebPanel::handleAtBaud(AsyncWebServerRequest *req) {
 // ---- 系统状态 ----
 void WebPanel::handleStatus(AsyncWebServerRequest *req) {
   sendJson(req, stateStatusJson(_wifi, _led, _display, _time, _sms.store()));
+}
+
+// ---- 内存量化诊断（方案 1）----
+// heap_caps 按能力拆分（internal/DMA/PSRAM）+ 历史最小空闲堆 + 各任务栈 high-water。
+// 落在 /api/ 下，受全局登录中间件保护；用于定位内部 DRAM 占用来源。
+// 经 PsBuffer 直发（PSRAM），避免最后在 DRAM 生成 String 副本（方案 #2）
+void WebPanel::handleDebugMem(AsyncWebServerRequest *req) {
+  PsBuffer b;
+  memdiag::toJson(b);
+  sendJson(req, b);
 }
 
 // ---- 时区配置（默认东八区，Web 可改）----
@@ -1861,7 +1890,10 @@ void WebPanel::handleSmsList(AsyncWebServerRequest *req) {
     o["modem"] = m.modem;
     o["code"] = m.code;  // 落库时已解析的验证码，供前端高亮
   }
-  sendJsonDoc(req, doc);
+  // 直接序列化进 PSRAM 缓冲并发送，避免最后一步在 DRAM 生成 String 副本（方案 #2）
+  PsBuffer out;
+  if (!out.serialize(doc) || !out.ok()) { sendErr(req, 500, "序列化失败"); return; }
+  sendJson(req, out);
 }
 
 void WebPanel::handleSmsDelete(AsyncWebServerRequest *req) {

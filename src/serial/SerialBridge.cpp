@@ -1,6 +1,7 @@
 #include "serial/SerialBridge.h"
 
 #include <ArduinoJson.h>
+#include "app/Psram.h"  // psramJsonAllocator()：statsJson 内存池放 PSRAM（方案 #2）
 
 #include "app/TaskWatchdog.h"  // 长 AT 等待 / CMGS 握手期间喂狗
 #include "log/LogStore.h"
@@ -150,7 +151,7 @@ void SerialBridge::begin() {
   // AT 历史环形缓冲：PSRAM 优先（容量放宽），失败退化内部堆（收紧条数），
   // 与设备日志 _log 同策略；分配就绪后再起抽数任务，避免历史写入竞态
   _hist.begin(cfg::kAtHistoryRingSize);
-  xTaskCreatePinnedToCore(&SerialBridge::taskEntry, "uart-pump", 8192, this, 2,
+  xTaskCreatePinnedToCore(&SerialBridge::taskEntry, "uart-pump", 5120, this, 2,
                           &_task, 1);
   _log.addf(LogLevel::kInfo, "uart",
             "AT 历史缓冲就绪：%u 条 x %u B = %u B，位于 %s", (unsigned)_hist.max(),
@@ -560,7 +561,7 @@ SerialBridge::Stats SerialBridge::stats(uint8_t port) {
 
 // 汇总两个串口的统计为 JSON 数组字符串
 String SerialBridge::statsJson() {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   JsonArray arr = doc.to<JsonArray>();
   for (uint8_t i = 0; i < 2; i++) {
     Stats s = stats(i + 1);

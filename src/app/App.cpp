@@ -14,6 +14,7 @@
 #include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
 #include "utils/tls_mem.h"   // TLS 内存重定向到 PSRAM（须在任何 mbedTLS 分配前生效）
+#include "utils/MemDiag.h"    // 内存量化诊断（heap_caps 拆分 + 任务栈 high-water）
 
 #include <Preferences.h>
 #include <esp_system.h>          // esp_restart()

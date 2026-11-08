@@ -1,6 +1,7 @@
 #include "sms/SmsStore.h"
 
 #include <ArduinoJson.h>
+#include "app/Psram.h"  // psramJsonAllocator()：statsJson 内存池放 PSRAM（方案 #2）
 
 #include "log/LogStore.h"
 
@@ -254,7 +255,7 @@ void SmsStore::clear() {
 
 // 存储统计
 String SmsStore::statsJson() {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   if (!_enabled) {
     doc["ok"] = false;
     doc["error"] = "短信存储未启用";

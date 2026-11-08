@@ -1,6 +1,7 @@
 #include "log/LogStore.h"
 
 #include <ArduinoJson.h>
+#include "app/Psram.h"  // psramJsonAllocator()：statsJson 内存池放 PSRAM（方案 #2）
 
 #include <esp_heap_caps.h>
 
@@ -229,7 +230,7 @@ void LogStore::clear() {
 }
 
 String LogStore::statsJson() const {
-  JsonDocument doc;
+  JsonDocument doc(psramJsonAllocator());
   if (!_buf) {
     doc["ok"] = false;
     doc["error"] = "日志缓冲区未就绪";

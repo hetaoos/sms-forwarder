@@ -22,6 +22,7 @@
 #include <cstring>
 #include <new>
 
+#include <ArduinoJson.h>  // measureJson / serializeJson：PsBuffer::serialize 用
 #include <ArduinoJson/Memory/Allocator.hpp>
 
 // ---- PSRAM 容量查询（开机自检 / 日志用）----
@@ -103,6 +104,20 @@ class PsBuffer {
     _len = 0;
     if (_buf) _buf[0] = '\0';
     _oom = false;
+  }
+
+  // 把 JsonDocument 直接序列化进本缓冲（PSRAM），避免先生成 DRAM String 再发送，
+  // 消除大响应最后一步的 DRAM 副本（见内存优化方案 #2）。失败（分配不足）返回 false，
+  // 此时内容不应使用。序列化后内容以 '\0' 结尾，可直接当 C 字符串交给第三方库。
+  // 注意：doc 自身的内存池也应走 PSRAM 分配器（psramJsonAllocator()），否则只是
+  // 把 DRAM 里的池搬到 PSRAM 字符串，省不到内存。
+  bool serialize(const JsonDocument &doc) {
+    const size_t n = measureJson(doc);
+    if (!reserve(n + 1)) return false;
+    serializeJson(doc, _buf, n);
+    _len = n;
+    _buf[_len] = '\0';
+    return true;
   }
 
  private:

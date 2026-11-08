@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include "app/Psram.h"  // PsBuffer：SSE 快照经 PSRAM 直发（方案 #2）
 #include "log/LogStore.h"
 #include "net/StateJson.h"
 
@@ -218,22 +219,41 @@ void StatusBus::publish(const char *event, const String &json) {
   _events.send(json.c_str(), event, ++_eventId);
 }
 
+// 广播一个事件（PSRAM 缓冲直发，省去 DRAM String 副本，见方案 #2）
+void StatusBus::publish(const char *event, const PsBuffer &buf) {
+  _events.send(buf.c_str(), event, ++_eventId);
+}
+
 // 向单个客户端发送一个事件
 void StatusBus::publishTo(AsyncEventSourceClient *client, const char *event,
                           const String &json) {
   if (client) client->send(json.c_str(), event, ++_eventId);
 }
 
+// 向单个客户端发送一个事件（PSRAM 缓冲直发）
+void StatusBus::publishTo(AsyncEventSourceClient *client, const char *event,
+                          const PsBuffer &buf) {
+  if (client) client->send(buf.c_str(), event, ++_eventId);
+}
+
 // 全量快照：六类状态 + 短信统计 + 最近的 AT 历史
+// status / rgb / disp / ota 直接序列化进 PSRAM 缓冲并直发；其余（stats/wifi/saved/
+// smsstats/at）经 String 兼容接口发送，其 JsonDocument 池已改为 PSRAM，最终字符串
+// 在 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 调低后亦落 PSRAM（方案 #3）。
 void StatusBus::publishSnapshot(AsyncEventSourceClient *client) {
-  publishTo(client, "status", stateStatusJson(_wifi, _led, _display, _time, _sms.store()));
+  PsBuffer b;
+  stateStatusJson(b, _wifi, _led, _display, _time, _sms.store());
+  publishTo(client, "status", b);
   publishTo(client, "stats", _bridge.statsJson());
   publishTo(client, "wifi", _wifi.statusJson());
   publishTo(client, "saved", _wifi.listJson());
-  publishTo(client, "rgb", stateRgbJson(_led));
-  publishTo(client, "disp", stateDispJson(_display, _ui));
+  stateRgbJson(b, _led);
+  publishTo(client, "rgb", b);
+  stateDispJson(b, _display, _ui);
+  publishTo(client, "disp", b);
   publishTo(client, "smsstats", _sms.store().statsJson());
-  publishTo(client, "ota", stateOtaJson());
+  stateOtaJson(b);
+  publishTo(client, "ota", b);
   // 来电：仅当已有过派发才推（避免首连推一份空 "{}"）
   if (_sms.lastCallSeq() > 0) publishTo(client, "call", _sms.lastCallJson());
   // 历史从较大的一端给：要么断点续传点，要么当前最新

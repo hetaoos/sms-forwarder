@@ -278,7 +278,7 @@ void SmsService::begin() {
   _sendQ = xQueueCreate(kSendQueueLen, sizeof(SendJob *));
   _doneQ = xQueueCreate(kDoneQueueLen, sizeof(DoneEvent *));
   if (_sendQ && _doneQ) {
-    xTaskCreate(&SmsService::sendTaskEntry, "sms_send", 8192, this, 4, &_sendTask);
+    xTaskCreate(&SmsService::sendTaskEntry, "sms_send", 5120, this, 4, &_sendTask);
   } else {
     if (_sendQ) vQueueDelete(_sendQ);
     if (_doneQ) vQueueDelete(_doneQ);
@@ -293,7 +293,7 @@ void SmsService::begin() {
   // 主动查询任务（通信模组存储兜底）：独立任务执行阻塞式 AT 查询，
   // 不占用抽数任务（URC 解析）与主循环的时间片；优先级低于发送任务。
   if (_codecMutex) {
-    if (xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 8192, this, 3, &_queryTask) != pdPASS) {
+    if (xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 5120, this, 3, &_queryTask) != pdPASS) {
       _log.addf(LogLevel::kError, "sms", "主动查询任务创建失败，短信只能等 +CMTI 后手动查询");
     } else {
       _log.addf(LogLevel::kInfo, "sms", "主动查询任务已启动");

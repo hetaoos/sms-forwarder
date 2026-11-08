@@ -86,6 +86,8 @@ class WebPanel {
   // 以 200 + application/json 发送响应体
   // req：请求对象；json：JSON 文本
   void sendJson(AsyncWebServerRequest *req, const String &json);
+  // 同上，但直接从 PSRAM 缓冲（PsBuffer）直发，省去 DRAM String 副本（方案 #2）
+  void sendJson(AsyncWebServerRequest *req, const PsBuffer &buf);
 
   // 判断请求是否已认证：会话 Cookie（sid）或 Bearer 访问令牌任一有效即可
   // req：请求对象
@@ -193,6 +195,9 @@ class WebPanel {
 
   // 系统汇总状态
   void handleStatus(AsyncWebServerRequest *req);
+
+  // 内存量化诊断：heap_caps 按能力拆分 + 各任务栈 high-water（JSON，需登录）
+  void handleDebugMem(AsyncWebServerRequest *req);
 
   // 时区配置：GET 回显当前偏移 / 可读文本 / 时间状态；POST {"tzOffsetMin":480} 立即生效并落盘
   void handleTimezoneGet(AsyncWebServerRequest *req);
