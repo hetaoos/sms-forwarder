@@ -853,6 +853,8 @@ Web 卡片显示该次记录。自检会中断服务，**勿在无人值守时�
 | `sms` | 同 `/api/sms/latest` | 新短信才推 |
 | `smsports` | 同 `/api/sms/ports` | 变化才推 |
 | `smsstats` | 同 `/api/sms/stats` | 变化才推 |
+| `ota` | 同 `/api/ota/status`（`state`/`progress`/`message`/`currentVersion`/`latestVersion`/`available`） | 变化才推；升级长任务的进度/阶段/失败原因实时驱动「系统工具」页，替代原有 1 秒轮询 |
+| `call` | `{"number":..,"ts":..,"modem":..}`（最近一次实际派发的来电，与 `sms` 事件对称） | 有新派发（非黑名单拦截）才推；仪表盘「最近来电」卡片实时呈现 |
 | `log` | `{"total":n,"logs":[{id,ts,level,tag,msg}...]}`（同 `/api/logs` 增量，按 ID 升序） | 有新日志才推（增量，仿 `at`）；前端按自身级别/关键字过滤并去重并入 |
 | `outbox` | `{}`（脏信号） | 发件箱任意可见变更（入队 / 投递结果 / 重试 / 删除 / 清空 / 淘汰）即推，前端收到即刷新当前视图 |
 

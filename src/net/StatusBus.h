@@ -85,6 +85,8 @@ class StatusBus {
   uint32_t _lastSmsId = 0;   // 上次已推送的最新短信 ID
   String _lastSmsPorts;      // 上次已推送的通信模组配置 JSON
   String _lastSmsStats;      // 上次已推送的短信存储统计 JSON
+  String _lastOta;           // 上次已推送的 OTA 进度 JSON
   uint32_t _lastLogId = 0;     // 已推送的最新日志 ID（0 = 下次连接重新基线）
   uint32_t _lastOutboxRev = 0;  // 已推送的发件箱变更修订号（见 Outbox::revision）
+  uint32_t _lastCallSeq = 0;    // 已推送的来电派发序号（call 事件 diff）
 };

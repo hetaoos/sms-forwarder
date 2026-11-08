@@ -208,4 +208,24 @@
       </div>
     </div>
   </div>
+
+  <!-- 最近来电（SSE call 事件实时推送） -->
+  <div class="card">
+    <h3>最近来电 <span class="sub">实时推送 · 最近 20 条</span></h3>
+    <template x-for="c in calls" :key="c.ts + '-' + c.modem">
+      <div class="row" style="align-items:flex-start">
+        <span class="k">模组<span x-text="c.modem"></span>
+          <span class="badge" :class="(c.number && c.number.indexOf('未知') >= 0) || (c.number && c.number.indexOf('保密') >= 0) ? 'warn' : 'ok'"
+                x-text="(c.number && c.number.indexOf('未知') >= 0) || (c.number && c.number.indexOf('保密') >= 0) ? '未知' : '来电'"></span></span>
+        <span class="v" style="text-align:left;font-weight:400">
+          <div x-text="c.number"></div>
+          <div style="color:var(--muted);font-size:12px" x-text="c.ts ? fmtTs(c.ts) : ''"></div>
+        </span>
+      </div>
+    </template>
+    <div class="hint" x-show="!calls.length">暂无来电记录</div>
+    <div class="bar" style="margin-top:12px">
+      <button class="btn ghost sm" @click="go('modem')">通信模组管理</button>
+    </div>
+  </div>
 </div>

@@ -258,6 +258,12 @@ class SmsService {
   // 最新一条短信的摘要 JSON（SSE sms 事件用）；无记录返回 "{}"
   String latestJson();
 
+  // 最新来电派发序号（SSE diff 用）：每次实际派发（非黑名单拦截）自增
+  uint32_t lastCallSeq() const { return _lastCallSeq; }
+
+  // 最新一条来电的摘要 JSON（SSE call 事件用）；无记录返回 "{}"
+  String lastCallJson();
+
  private:
   // 通信模组初始化状态机：从「上电」到「短信就绪」的全异步流程
   // （适配 esp32-sms-forwarding：等 AT 就绪 -> SIM -> 射频 -> 网络注册 ->
@@ -544,6 +550,8 @@ class SmsService {
   uint16_t _max = cfg::kSmsStoreMax;           // 存储条数上限
   uint32_t _lastSmsId = 0;                     // 最新记录 ID（SSE diff）
   mutable SemaphoreHandle_t _mutex = nullptr;  // 保护 _lastSmsId / 配置读写
+  uint32_t _lastCallSeq = 0;                    // 最新来电派发序号（SSE diff）
+  String   _lastCallJson;                       // 最近一次来电摘要 JSON（call 事件推送）
 
   ModemReadyFn _onReady;    // 通信模组就绪回调（抽数任务上下文触发）
   SmsReceivedFn _onSms;     // 短信接收回调（抽数任务上下文触发）

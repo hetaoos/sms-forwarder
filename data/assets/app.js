@@ -350,6 +350,8 @@ Alpine.store('live', {
   sms: {},              // 最新一条短信摘要（SSE sms 事件）
   smsports: [],         // 通信模组配置 [{port,enabled}]（SSE smsports 事件）
   smsstats: {},         // 短信存储统计（SSE smsstats 事件）
+  ota: {},              // OTA 升级进度（SSE ota 事件，同 /api/ota/status）
+  calls: [],            // 最近来电 [{number,ts,modem}]（SSE call 事件，最新在前，上限 20）
   // 追加 AT 记录：按 id 去重（SSE 重推/自身回显/REST 兜底三种来源安全合并），
   // 非数字 id（本地占位）直接入列
   pushAt(entries) {
@@ -421,6 +423,10 @@ async function restSnapshot() {
     const r = await fetch('/api/sms/latest');
     if (r.ok) live.sms = await r.json();
   } catch (e) {}
+  try {
+    const r = await fetch('/api/ota/status', { cache: 'no-store' });
+    if (r.ok) live.ota = await r.json();
+  } catch (e) {}
 }
 
 // 降级轮询（SSE 不可用/持续失败时）
@@ -450,12 +456,43 @@ function connectSSE() {
   on('rgb', d => { live.rgb = d; });
   on('disp', d => { live.disp = d; });
   on('at', d => { live.pushAt(d); });
-  on('sms', d => { live.sms = d; });
+  // 通知基线：连接后首条 sms/call 多为快照/历史，不弹通知；其后变化才提示
+  let _lastSmsId = undefined, _lastCallTok = undefined;
+
+  on('sms', d => {
+    live.sms = d;
+    if (_lastSmsId === undefined) { _lastSmsId = d.id; return; }   // 首条=快照基线
+    if (d.id !== _lastSmsId) {
+      _lastSmsId = d.id;
+      if (d.incoming) {   // 仅「到来」的短信提示（管理员代发等出站不提示）
+        const full = d.content || '';   // 完整正文（可能很长），toast 内可滚动查看
+        // 停留时长随长度延长（最长 15s），方便读完长短信
+        const ms = Math.min(15000, 4000 + full.length * 25);
+        toast('收到短信（' + (d.phone || '未知号码') + '）' + (full ? '：' + full : ''),
+              'ok', ms, () => showSmsModal(d.phone, full, d.ts));
+      }
+    }
+  });
   on('smsports', d => { live.smsports = d.modems || []; });
   on('smsstats', d => { live.smsstats = d; });
   // 运行日志增量（仿 at）与发件箱变更脏信号：转交给当前打开页的槽位
   on('log', d => { if (_logSink) _logSink(d); });
   on('outbox', () => { if (_outboxSink) _outboxSink(); });
+  // OTA 升级进度（同 /api/ota/status）：工具页据此实时刷新，免去 1s 轮询
+  on('ota', d => { live.ota = d; });
+  // 来电：最新一条前插，上限 20 条；并弹右上角通知
+  on('call', d => {
+    const c = Alpine.store('live').calls.slice();
+    c.unshift(d);
+    if (c.length > 20) c.length = 20;
+    Alpine.store('live').calls = c;
+    const tok = (d.ts || 0) + '|' + (d.modem || 0) + '|' + (d.number || '');
+    if (_lastCallTok === undefined) { _lastCallTok = tok; return; }  // 首条=快照基线
+    if (tok !== _lastCallTok) {
+      _lastCallTok = tok;
+      toast('来电：' + (d.number || '未知号码'), 'ok');
+    }
+  });
   es.onopen = () => {
     setConn('online');
     restSnapshot();   // 兜底快照：补齐建连前数据与断线期记录
@@ -483,8 +520,9 @@ function closeSSE() {
 }
 
 /* ---------- Toast / 确认框 ---------- */
-// 右上角滑入提示；type: ''|'ok'|'err'|'warn'；duration: 停留 ms（错误默认 5s，其余 3s）
-function toast(msg, type, duration) {
+// 右上角滑入提示；type: ''|'ok'|'err'|'warn'；duration: 停留 ms（错误默认 5s，其余 3s）；
+// onClick: 传入则 toast 可点击（光标变手型，点击触发回调并关闭），用于点开完整详情
+function toast(msg, type, duration, onClick) {
   const wrap = $('#toastWrap');
   if (!wrap) return;
   type = type || '';
@@ -497,6 +535,11 @@ function toast(msg, type, duration) {
   el.innerHTML = '<span class="toast-ico"></span><span class="toast-msg"></span><span class="toast-bar"></span>';
   el.querySelector('.toast-ico').textContent = ico;
   el.querySelector('.toast-msg').textContent = msg;  // 文本走 textContent，防 XSS
+  if (onClick) {
+    el.style.cursor = 'pointer';
+    el.title = '点击查看完整内容';
+    el.addEventListener('click', () => { onClick(); closeToast(el); });
+  }
   wrap.appendChild(el);
   const ms = duration || (type === 'err' ? 5000 : 3000);
   requestAnimationFrame(() => {
@@ -505,7 +548,35 @@ function toast(msg, type, duration) {
     if (bar) { bar.style.transitionDuration = ms + 'ms';
       requestAnimationFrame(() => bar.classList.add('run')); }
   });
-  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, ms);
+  setTimeout(() => closeToast(el), ms);
+}
+
+// 带淡出动画地移除一条 toast（点击或超时通用）
+function closeToast(el) {
+  if (!el || el._closing) return;
+  el._closing = true;
+  el.classList.remove('show');
+  setTimeout(() => el.remove(), 350);
+}
+
+// 短信详情弹窗：完整展示可能很长的短信正文（点击短信 toast 时调用）
+function showSmsModal(phone, content, ts) {
+  const ov = document.createElement('div');
+  ov.className = 'modal-mask';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-modal', 'true');
+  ov.innerHTML = '<div class="modal"><h3>短信详情</h3>'
+    + '<div class="modal-body">'
+    +   '<div class="row"><span class="k">号码</span><span class="v" style="word-break:break-all">'
+    +     escHtml(phone || '未知号码') + '</span></div>'
+    +   (ts ? '<div class="row"><span class="k">时间</span><span class="v">' + escHtml(fmtDateTime(ts)) + '</span></div>' : '')
+    +   '<div style="margin-top:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;'
+    +     'white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;font-size:14px;line-height:1.7">'
+    +     escHtml(content || '(无内容)') + '</div>'
+    + '</div>'
+    + '<div class="modal-btns"><button class="btn" data-a="0">关闭</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', e => { if (e.target === ov || e.target.dataset.a === '0') ov.remove(); });
 }
 function confirmDialog(title, text, danger) {
   return new Promise(resolve => {
@@ -776,6 +847,7 @@ function pageDashboard() {
     },
     get smsstats() { return Alpine.store('live').smsstats; },
     get lastSms() { return Alpine.store('live').sms; },
+    get calls() { return Alpine.store('live').calls || []; },  // 最近来电（SSE call 事件实时推送）
     // MQTT 推送连接状态（取自 SSE status.mqtt，实时更新）
     get mqtt() {
       return Alpine.store('live').status.mqtt ||
@@ -3333,6 +3405,7 @@ function pageTools() {
     pending: false,            // 已发起操作、尚未观察到非空闲状态（避免轮询提前结束）
     _polling: false,
     pollCount: 0,
+    _otaDone: false,            // 终态提示节流（避免 SSE 与轮询双通道重复 toast）
 
     busy() {
       return this.otaState === 1 || this.otaState === 2 || this.otaState === 3 || this.otaState === 6;
@@ -3385,19 +3458,36 @@ function pageTools() {
       if (!r) this.wdtBusy = false;
     },
 
-    init() { this.loadStatus(); this.loadCoredumpInfo(); this.loadWdt(); },
+    init() {
+      this.loadStatus(); this.loadCoredumpInfo(); this.loadWdt();
+      // SSE 在线时由 ota 事件实时驱动升级进度；离线降级才轮询（见 startPolling）
+      this.$watch('$store.live.ota', v => this.applyOta(v));
+    },
     async loadStatus() {
       try {
         const r = await fetch('/api/ota/status', { cache: 'no-store' });
         if (!r.ok) return;
-        const s = await r.json();
-        this.otaAvailable = !!s.available;
-        this.curVer = s.currentVersion || '';
-        this.latestVer = s.latestVersion || '';
-        this.otaState = s.state || 0;
-        this.otaProgress = s.progress || 0;
-        this.otaMessage = s.message || '';
+        this.applyOta(await r.json());
       } catch (e) {}
+    },
+    // 统一把 OTA 状态快照（REST 或 SSE ota 事件）落到本页字段；
+    // 终态只提示一次（_otaDone 防 SSE 与轮询双通道重复 toast）
+    applyOta(s) {
+      if (!s) return;
+      this.otaAvailable = !!s.available;
+      this.curVer = s.currentVersion || '';
+      this.latestVer = s.latestVersion || '';
+      this.otaState = s.state || 0;
+      this.otaProgress = s.progress || 0;
+      this.otaMessage = s.message || '';
+      if (this.otaState !== 0) this.pending = false;          // 操作已真正开始
+      if (this.otaState === 4 && !this._otaDone) {
+        this._otaDone = true; toast('升级成功，设备重启中…', 'ok');
+      } else if (this.otaState === 5 && !this._otaDone) {
+        this._otaDone = true; toast('升级失败：' + (this.otaMessage || ''), 'err');
+      } else if (this.otaState === 0) {
+        this._otaDone = false;                                 // 回到空闲重置
+      }
     },
 
     async checkUpdate() {
@@ -3439,17 +3529,16 @@ function pageTools() {
       this.startPolling();
     },
 
-    // 轮询 OTA 状态：每 1s 拉一次 /api/ota/status，直到终态或回到空闲
+    // 轮询 OTA 状态：仅当 SSE 离线降级时每 1s 拉一次 /api/ota/status；
+    // SSE 在线时由 ota 事件实时驱动（见 init 的 $watch），不再轮询
     startPolling() {
+      if (Alpine.store('live').conn === 'online') return;
       if (this._polling) return;
       this._polling = true;
       this.pollCount = 0;
       const tick = async () => {
         await this.loadStatus();
         this.pollCount++;
-        if (this.otaState === 4) { this._polling = false; toast('升级成功，设备重启中…', 'ok'); return; }
-        if (this.otaState === 5) { this._polling = false; toast('升级失败：' + (this.otaMessage || ''), 'err'); return; }
-        if (this.otaState !== 0) this.pending = false;               // 操作已真正开始
         if (this.otaState === 0 && !this.pending) { this._polling = false; return; }
         if (this.pollCount > 180) { this._polling = false; return; } // 安全上限 ~3 分钟
         setTimeout(tick, 1000);

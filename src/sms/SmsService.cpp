@@ -1071,6 +1071,21 @@ void SmsService::dispatchCall(uint8_t port) {
 
   _log.addf(LogLevel::kInfo, "call", "通信模组 %u 来电通知：%s", (unsigned)port,
             num.c_str());
+
+  // SSE call 事件：记录最新来电摘要（与 sms 事件对称），下次 tick diff 推送
+  {
+    JsonDocument doc;
+    doc["number"] = num;
+    doc["ts"]     = nowTs();
+    doc["modem"]  = (int8_t)port;
+    String out;
+    serializeJson(doc, out);
+    lock();
+    _lastCallJson = out;
+    _lastCallSeq++;
+    unlock();
+  }
+
   if (_onCall) _onCall(num, nowTs(), (int8_t)port);
 }
 
@@ -3040,6 +3055,14 @@ String SmsService::latestJson() {
   }
   String out;
   serializeJson(doc, out);
+  return out;
+}
+
+// 最新来电摘要（SSE call 事件用）；无记录返回 "{}"
+String SmsService::lastCallJson() {
+  lock();
+  String out = _lastCallJson;
+  unlock();
   return out;
 }
 

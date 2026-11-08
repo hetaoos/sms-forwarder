@@ -84,6 +84,15 @@ void StatusBus::tick() {
     _lastDisp = js;
   }
 
+  // ---- OTA 升级进度：变化才推（镜像 /api/ota/status）----
+  // 升级是分钟级长任务，下载阶段 progress 频繁变化；ESPAsyncWebServer 的 SSE
+  // 为异步写、客户端上限 8，频繁推送可控
+  String ota = stateOtaJson();
+  if (!_baseline || ota != _lastOta) {
+    publish("ota", ota);
+    _lastOta = ota;
+  }
+
   // ---- AT 历史：只推 lastHistoryId 之后的新记录 ----
   uint32_t lastId = _bridge.lastHistoryId();
   if (lastId != _lastHistId) {
@@ -98,6 +107,12 @@ void StatusBus::tick() {
   if (_sms.lastSmsId() != _lastSmsId) {
     _lastSmsId = _sms.lastSmsId();
     publish("sms", _sms.latestJson());
+  }
+
+  // ---- 来电：有新派发才推最新来电摘要（与 sms 事件对称）----
+  if (_sms.lastCallSeq() != _lastCallSeq) {
+    _lastCallSeq = _sms.lastCallSeq();
+    publish("call", _sms.lastCallJson());
   }
 
   // ---- 通信模组配置：变化才推 ----
@@ -218,6 +233,9 @@ void StatusBus::publishSnapshot(AsyncEventSourceClient *client) {
   publishTo(client, "rgb", stateRgbJson(_led));
   publishTo(client, "disp", stateDispJson(_display, _ui));
   publishTo(client, "smsstats", _sms.store().statsJson());
+  publishTo(client, "ota", stateOtaJson());
+  // 来电：仅当已有过派发才推（避免首连推一份空 "{}"）
+  if (_sms.lastCallSeq() > 0) publishTo(client, "call", _sms.lastCallJson());
   // 历史从较大的一端给：要么断点续传点，要么当前最新
   uint32_t from = _lastHistId;
   String json = _bridge.historyJson((int32_t)from, 50);

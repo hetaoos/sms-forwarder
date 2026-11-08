@@ -184,3 +184,19 @@ inline String stateRgbJson(RgbLed &led) {
   serializeJson(doc, out);
   return out;
 }
+
+// OTA 升级进度：与 GET /api/ota/status 响应一致（SSE ota 事件用）。
+// 升级是分钟级长任务，进度/阶段/失败原因强实时，推给浏览器免去轮询。
+inline String stateOtaJson() {
+  OtaStatusPayload s = Ota::status();
+  JsonDocument doc;
+  doc["state"]          = (uint8_t)s.state;
+  doc["progress"]       = s.progress;
+  doc["message"]        = s.message;
+  doc["currentVersion"] = s.currentVersion;
+  doc["latestVersion"]  = s.latestVersion;
+  doc["available"]      = otaPartitionAvailable();
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
