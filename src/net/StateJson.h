@@ -64,6 +64,8 @@ inline void stateStatusJson(PsBuffer &out, WifiManager &wifi, RgbLed &led, Displ
   doc["time"] = time.dateStr();
   doc["timeSynced"] = time.isSynced();
   doc["timeSrc"] = time.srcName();
+  // 最近一次成功同步的时刻（纪元秒）：0 = 从未；前端按设备时区格式化展示
+  doc["lastSyncSec"] = time.lastSyncSec();
   // 设备时区：前端列表按此偏移把 epoch 秒格式化为设备本地时间，
   // 避免浏览器所在的时区与设备不一致时显示错乱（旧固件无此字段时前端默认 +480）
   doc["tzOffsetMin"] = time.timezoneMin();

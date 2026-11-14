@@ -48,6 +48,10 @@ class TimeSync {
   // 时钟是否可用：NTP / SIM 同步过，或开机时从 NVS 恢复过
   bool isSynced() const { return _synced; }
 
+  // 最近一次成功同步的时刻（纪元秒，已按设备时区格式化由前端完成）；
+  // 0 表示从未成功同步（含开机尚未同步、或旧固件升级未写入该值前）
+  uint32_t lastSyncSec() const { return _lastSyncSec; }
+
   // NTP 是否至少成功过一次（权威源；此后 SIM 不再覆盖系统时钟）
   bool ntpOk() const { return _ntpOk; }
 
@@ -119,6 +123,7 @@ class TimeSync {
   SmsService *_sms = nullptr;      // 模组就绪状态查询
 
   bool _synced = false;        // 时钟可用（任意源，含 NVS 恢复）
+  uint32_t _lastSyncSec = 0;   // 最近一次成功同步的时刻（纪元秒；0 = 从未）
   bool _ntpOk = false;         // NTP 至少成功过一次（权威源，SIM 不再覆盖）
   bool _ntpPending = false;    // NTP 已启动、等待 SNTP 回调
   bool _ntpFailed = false;     // NTP 本次启动等待超时（转 SIM 兜底）

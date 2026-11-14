@@ -160,6 +160,9 @@ void TimeSync::onNtpSynced(struct timeval *tv) {
   _ntpOk = true;
   _synced = true;
   _src = TimeSrc::kNtp;
+  // 记录本次成功同步的时刻（SNTP 回调给出的就是权威的当前纪元秒）；
+  // 周期校准每次都更新，前端据此展示「最近一次同步成功时间」。
+  _lastSyncSec = (uint32_t)tv->tv_sec;
   // SNTP 内部通过 settimeofday 写时钟，可能重置 libc TZ 状态，必须补调
   applyTimezone();
   if (first) _persistDue = true;  // 首次成功立即落盘，保证重启后有个较新的近似值
@@ -274,6 +277,8 @@ void TimeSync::syncFromSIM(uint8_t port) {
   bool first = !_synced;
   _synced = true;
   _src = TimeSrc::kSim;
+  // 记录本次成功同步的时刻（CCLK 换算出的 UTC 纪元秒即当前时间）
+  _lastSyncSec = (uint32_t)utcTime;
   if (first) _persistDue = true;
   _log.addf(LogLevel::kInfo, "time", "已从模组 %u 的 NITZ 同步时间：%s",
             (unsigned)port, ts.c_str());
@@ -291,6 +296,7 @@ void TimeSync::restoreFromNvs() {
   applyTimezone();
   _synced = true;  // 近似时间即可用（NTP/SIM 成功后会被校准覆盖）
   _src = TimeSrc::kNvs;
+  // 注意：_lastSyncSec 不持久化，重启后归零；下次同步成功前仪表盘显示「从未同步」
   _log.addf(LogLevel::kInfo, "time", "已从 NVS 恢复上次已知时间：%u", (unsigned)ts);
 }
 

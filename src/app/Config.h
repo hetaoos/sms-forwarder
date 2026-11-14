@@ -383,7 +383,7 @@ constexpr uint32_t kNtpResyncMs     = 24UL * 3600UL * 1000UL;   // SNTP 后台�
 constexpr uint32_t kSimTimeRetryMs  = 30000;                    // NTP 不可用时 SIM NITZ 重试间隔
 constexpr uint32_t kSimTimeCmdMs    = 3000;                     // AT+CCLK? 响应收集超时
 constexpr uint32_t kTimePersistMs   = 10UL * 60UL * 1000UL;     // 时间落盘周期（10 分钟）
-constexpr const char *kNvsKeyLastTs = "lastts";                 // NVS 键：最后已知纪元时间（秒）
+constexpr const char *kNvsKeyLastTs  = "lastts";                // NVS 键：最后已知纪元时间（秒）
 
 // ---------------- 模组初始化状态机（适配 esp32-sms-forwarding 健壮流程）-
 // 全部非阻塞：每个状态的动作经 tick() 节流驱动，单个动作最多持端口锁 1.5s，

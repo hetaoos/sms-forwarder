@@ -61,6 +61,8 @@
       <div style="font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;margin:2px 0 10px"
            x-text="st.timeSynced ? st.time : '--:--:--'"></div>
       <div class="row"><span class="k">时间来源</span><span class="v" x-text="timeSrcText()"></span></div>
+      <div class="row"><span class="k">上次同步</span>
+        <span class="v" x-text="st.lastSyncSec ? (fmtTs(st.lastSyncSec) + '（' + (st.tzText || 'UTC+08:00') + '）') : '从未同步'"></span></div>
       <div class="row"><span class="k">校准方式</span>
         <span class="v" style="font-size:12px" x-text="calibText()"></span></div>
       <div class="row"><span class="k">设备时区</span>
