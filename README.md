@@ -2,7 +2,7 @@
 
 源码仓库：<https://cnb.cool/null/sms-forwarder>
 
-基于 ESP32-S3 的短信转发设备：外接两个 4G 通信模组（Cat.1），通过 LVGL 驱动的
+基于 ESP32-S3 的短信转发设备：外接两个 4G 模组（Cat.1），通过 LVGL 驱动的
 ST7789 屏幕与物理按键提供本地交互，并内置 Web 控制台做远程管理。短信、来电、
 SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 种 webhook 推送通道**。
 
@@ -25,10 +25,10 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
 ## 功能特性
 
 - **短信收发与存储**（`sms/SmsService`、`sms/SmsStore`、`sms/SmsCodec`）
-  - 双通信模组独立收发，PDU 编解码（UCS2 / GSM7 / 8bit）+ 长短信自动重组
+  - 双模组独立收发，PDU 编解码（UCS2 / GSM7 / 8bit）+ 长短信自动重组
     （5 个并发重组槽位、单条最多 20 段、30 秒超时）
   - 落盘 `userdata` 分区（`/data/sms/<id>.txt`，一条一文件），FIFO 上限 1000 条
-  - 列表分页 / 关键字搜索 / 按通信模组过滤 / 单条删除 / 清空，今日收发计数
+  - 列表分页 / 关键字搜索 / 按模组过滤 / 单条删除 / 清空，今日收发计数
   - 发送走独立任务执行 CMGS 两段式握手（不阻塞 HTTP 与抽数任务），
     POST 启动 + GET 轮询结果；长短信自动分段
   - 新短信在屏幕上弹窗提示（30 秒自动收起，任意键立即收起）
@@ -49,7 +49,7 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
   - `SMS:<号码>:<内容>`：从收到命令的那个模组代发一条短信，
     执行结果（成功 / 失败原因）从同一模组回复给**发命令的那个管理员**
   - `RESET`：2 秒后重启设备（重启前先回复确认短信）
-  - `PING [主机]`：经通信模组做网络连通性测试（默认 `8.8.8.8`，可指定如 `PING 1.1.1.1`），
+  - `PING [主机]`：经模组做网络连通性测试（默认 `8.8.8.8`，可指定如 `PING 1.1.1.1`），
     并回附系统运行状态（在线 / WiFi / IP / 运行时间 / 内存 / 模组 / MQTT 等）；测完自动还原短信模式
   - `HELP`：回复命令清单与参数说明
   - 关键字（RESET / PING / HELP 与 `SMS:` 前缀）大小写不敏感
@@ -60,7 +60,7 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
   （`*` 任意串、`?` 单字符），作用域按位覆盖 **短信 / 来电**，
   命中动作 **仅记录不推送**（默认，照常入库但不转发）或 **静默丢弃**（不入库不转发）；
   匹配前归一化号码（去空格与 `-()./` 等分隔符）；网页可输入号码做规则测试
-- **通信模组管理**（`sms/SmsService`、`sms/ModemSnapshot`）
+- **模组管理**（`sms/SmsService`、`sms/ModemSnapshot`）
   - 每个模组可独立**启用 / 禁用**并设**别名**（落盘 NVS），支持网页触发**热重初始化**
   - 非阻塞初始化状态机：等 AT（~20s）→ 等 SIM（~22s）→ 等注册（~90s）→ 下发配置 → 就绪，
     任一阶段超时转故障态并 15 秒后重试；单个动作最多持端口锁 1.5s，
@@ -74,7 +74,7 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
   Telegram / 企业微信 / Gotify / PushPlus / Server酱 / Mailgun /
   通用 POST-JSON / GET / 自定义模板 / **SMS 短信备份**），最多 10 条通道，
   **广播**或**故障转移**策略，可按通道开启失败重试；SMS 备份通道不走 HTTP——
-  网络不可用时经通信模组把消息以短信发到目标手机号（互联网全断的最后通知手段），
+  网络不可用时经模组把消息以短信发到目标手机号（互联网全断的最后通知手段），
   并对 SIM / 启动 / 在线类事件自动跳过。自定义模板支持占位符，见
   [推送模板占位符](#推送模板占位符)
 - **MQTT 上报与远程命令**（`net/MqttService`，编译期 `ENABLE_MQTT=1` 开启）
@@ -91,7 +91,7 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
     **收到短信** / **定时在线通知**（两种排程：固定间隔 N 小时 /
     每日定点时:分）/ **来电提醒**，出厂五类全开
   - 运行期插拔卡检测：遥测周期查询 `AT+CPIN?`，掉卡/插卡成对通知
-    （开机首次就绪与通信模组重启不误报）
+    （开机首次就绪与模组重启不误报）
   - 非阻塞入队 + 主循环发送：短信/SIM 回调（串口抽数任务）只做入队，
     SMTP 会话在 `App::tick` 执行，失败退避重试 3 次，认证失败不重试
   - 配置存 NVS（`appcfg` / `email`），授权码不回显；网页可发送测试邮件
@@ -202,8 +202,8 @@ SIM 插拔、设备启动等事件可同时分发到 **SMTP 邮件 / MQTT / 13 �
 
 | 功能 | 引脚 | 说明 |
 |------|------|------|
-| 模组1 TX / RX | GPIO17 / GPIO18 | 外接通信模组 |
-| 模组2 TX / RX | GPIO41 / GPIO40 | 外接通信模组 |
+| 模组1 TX / RX | GPIO17 / GPIO18 | 外接模组 |
+| 模组2 TX / RX | GPIO41 / GPIO40 | 外接模组 |
 | TFT CS / RST / DC | GPIO15 / GPIO5 / GPIO14 | ST7789 控制 |
 | TFT MOSI / SCLK | GPIO13 / GPIO12 | SPI（SPI2，40MHz） |
 | TFT BLK | GPIO8 | PWM 背光，默认 80% |
@@ -306,7 +306,7 @@ pio device monitor -e esp32s3
 启动时按 `list` 顺序依次尝试，每组等待 8 秒，全部失败 3 轮后进入 AP 配网模式。
 Web 界面可随时添加（同 SSID 覆盖密码）、删除、上移/下移调整顺序，上限 5 组。
 
-其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（通信模组启用/别名、
+其余 NVS 键（同命名空间 `appcfg`）：`appass`（AP 热点密码）、`sms`（模组启用/别名、
 管理员号码）、`apitoken`（API 访问令牌）、`email`、`mqtt`、`push`、`blacklist`、
 `disp`（屏幕设置）、`sched`（定时重启）、`lastts`（最后已知时间）、
 `tz`（时区偏移，分钟整数，默认 `480` = UTC+8，首次启动自动写入）、
@@ -410,7 +410,7 @@ build_flags =
 |------|------|
 | 短信 | 最近 8 条预览，OK 进入可滚动详情 |
 | SOC 信息 | 芯片 / 固件版本 / 内存 / PSRAM / CPU / 温度 |
-| 通信模组 1 / 2 | 型号 / 固件 / 号码 / 运营商 / 注册 / IMEI / 信号 |
+| 模组 1 / 2 | 型号 / 固件 / 号码 / 运营商 / 注册 / IMEI / 信号 |
 | WiFi | 当前连接与 IP |
 | 邮件 / MQTT / 推送 | 各通道配置与连接状态 |
 | RGB 灯 | 预设切换与亮度 |
@@ -654,16 +654,16 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 | `POST /api/sms/poll` | `{"enabled":bool,"mode":n,"intervalH":n,"hour":n,"minute":n,"safetySec":n}` | 保存定时主动查询配置并落盘，返回同 GET 的最新配置；保存失败 500。到点由 `tick()` 置待查标记，查询任务异步执行，不在主循环做阻塞 AT |
 | `GET /api/sms/store` | - | 短信接收模式：`{"ok":true,"store":bool}`。`true`=存储模式（`CNMI=2,1`，`+CMTI` + 主动 `AT+CMGR`），`false`=直投模式（`CNMI=2,2`，`+CMT`） |
 | `POST /api/sms/store` | `{"store":bool}` | 切换短信接收模式并落盘，查询任务会给已就绪模组热下发新的 `CNMI`；字段非 bool 返回 400，保存失败 500，成功回显 `{"ok":true,"store":bool}` |
-| `GET /api/sms/ports` | - | 通信模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..","csq":n,"oper":"..","num":"..","imei":"..","iccid":"..",...}]}`；ICCID 需模组就绪且完成 `AT+CCID` 采集 |
+| `GET /api/sms/ports` | - | 模组列表：`{"ok":true,"modems":[{"port":1,"enabled":true,"alias":"..","csq":n,"oper":"..","num":"..","imei":"..","iccid":"..",...}]}`；ICCID 需模组就绪且完成 `AT+CCID` 采集 |
 | `POST /api/sms/ports` | `{"port":1,"enabled":bool?,"alias":".."?}` | 启用/禁用与设别名（可只传其一），返回最新列表 |
-| `POST /api/sms/reinit` | `{"port":1}` | 热重初始化通信模组（仅启用态有效） |
-| `POST /api/sms/clear` | `{"port":1}` | 清空该通信模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
+| `POST /api/sms/reinit` | `{"port":1}` | 热重初始化模组（仅启用态有效） |
+| `POST /api/sms/clear` | `{"port":1}` | 清空该模组 SIM 上的全部短信（含未读、未转发，不可恢复）；异步执行，返回 `{"ok":true,"started":true}`，模组未就绪或已有清空任务返回 400 |
 | `GET /api/sms/clear` | - | 清空状态：与 `GET /api/sms/query` 同结构，各端口含 `clearBusy` / `clearLastOk` / `clearLastDeleted` / `clearLastMs` / `clearLastErr` |
 | `POST /api/sms/send` | `{"port":1,"phone":"..","content":".."}` | **先登记持久化发件箱**（`kind=1`，单通道 `sms:<port>`）再启动发送，立即返回 `{"ok":true,"started":true}`；发件箱不可用时回退原有直投队列。`port` 越界返回 400，在途返回 409，队列满返回 503 |
 | `GET /api/sms/send` | - | 轮询发送结果：`{"busy":bool,"ok":bool,"id":n,"stored":bool,"warn":"..","err":".."}`（契约不变；结果由发件箱的发送回调回写，`busy` 只表示本次 CMGS 在途，不绑定发件箱退避重试）。Web 两个发送弹窗均为「提交即返回、不轮询」，此接口保留兼容 |
 | `GET /api/sms/admin` | - | 管理员远程控制：`{"ok":true,"enabled":bool,"phones":[".."]}` |
 | `POST /api/sms/admin` | `{"enabled":bool?,"phones":[".."]}` | 保存管理员配置（上限 5 个号码；空 `phones` 视为关闭），校验失败 400 |
-| `POST /api/sms/ping` | `{"port":1,"host":"8.8.8.8"?}` | 经通信模组做连通性测试（启动） |
+| `POST /api/sms/ping` | `{"port":1,"host":"8.8.8.8"?}` | 经模组做连通性测试（启动） |
 | `GET /api/sms/ping` | - | 轮询测试结果：`{"busy":bool,"ok":bool,"report":".."}` |
 
 ### 持久化发件箱（不丢消息转发队列）
@@ -685,7 +685,7 @@ CMGF/CNMI，避免控制台命令误改短信配置。
 非短信事件（启动 / SIM / 来电 / 在线 / 测试邮件）以及 MQTT `send_sms`、管理员
 `SMS:` 命令、SMS 备份推送仍走各自原有队列，不进入发件箱。
 Web「发件箱」页可查看每条记录在各通道的投递回执、重试失败或结果未知的通道。
-「短信」页与「发件箱」页的发送弹窗为同款界面（通信模组/号码/内容、「加入发件箱」按钮、
+「短信」页与「发件箱」页的发送弹窗为同款界面（模组/号码/内容、「加入发件箱」按钮、
 结果未知提示）：提交后即关闭并提示，实际投递结果统一到发件箱页查看。
 
 | 方法与路径 | 请求体 / 参数 | 说明 |
@@ -725,7 +725,7 @@ Web「发件箱」页可查看每条记录在各通道的投递回执、重试�
 实际能否发邮件由 `enabled && configured` 共同决定。NVS 无该字段时默认开启。
 
 邮件模板：所有通知邮件共用一套卡片式 HTML（`EmailService::buildHtml`）——
-灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各通信模组
+灰底 + 白色圆角卡片 + 渐变标题栏 + 状态徽标 + 公共信息块（系统时间 / 各模组
 本机号码或设备 IP / 运行时长）+ 底部标识；短信邮件额外带验证码高亮块
 （识别「验证码 / OTP / code」等关键词附近的 4~6 位数字串，标题形如
 「验证码: 123456 来自 示例」）。HTML 超长（>6000 字符）时自动降级为纯文本。
@@ -895,7 +895,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 curl -H "Authorization: Bearer $TOKEN" \
   "http://设备IP/api/sms?page=1&pageSize=20&q=验证码"
 
-# 从通信模组 1 发短信（POST 启动 + GET 轮询结果）
+# 从模组 1 发短信（POST 启动 + GET 轮询结果）
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"port":1,"phone":"13800138000","content":"你好"}' \
@@ -988,7 +988,7 @@ src/
 │   ├── StateJson.h        状态快照 JSON 序列化（REST 与 SSE 共用）
 │   ├── EmailService.h/.cpp  SMTP 邮件通知：HTML 模板 + 通知类型 + 发送队列 + 排程
 │   └── MqttService.h/.cpp  MQTT 事件上报 + 命令订阅（esp-mqtt）
-├── sms/                  短信与通信模组
+├── sms/                  短信与模组
 │   ├── SmsService.h/.cpp  双模组收发、PDU 处理、来电检测、管理员命令、模组管理
 │   ├── SmsStore.h/.cpp    短信持久化（/data/sms/<id>.txt，FIFO 1000，分页 / 搜索 / 今日统计）
 │   ├── SmsCodec.h/.cpp    PDU 编解码（lib/pdulib）+ 长短信重组
@@ -1022,7 +1022,7 @@ data/
 │   ├── dashboard.html    仪表盘：SOC / 状态指标 / 屏幕 / RGB / 模组流量 / 最近动态 / API 令牌
 │   ├── sms.html          短信：收发记录 / 发送 / 搜索 / 详情 / 删除 / 清空
 │   ├── admin.html        管理员：授权手机号（短信远程控制总开关 + 号码）
-│   ├── modem.html        通信模组：状态 / 信号 / 运营商 / 号码 / 启用与别名 / 重初始化
+│   ├── modem.html        模组：状态 / 信号 / 运营商 / 号码 / 启用与别名 / 重初始化
 │   ├── blacklist.html    黑名单：精确 / 前缀 / 通配符，短信与来电作用域，命中动作
 │   ├── push.html         推送通道：13 种方式（含 SMS 备份），广播 / 故障转移策略
 │   ├── mqtt.html         MQTT：连接配置 / 事件类型 / 命令订阅

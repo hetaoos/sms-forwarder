@@ -4,14 +4,14 @@
 
 - **Status**: FIX-IMPLEMENTED（代码修复已落地，待设备取证后关闭）
 - **progress_status**: verifying
-- **Issue**: 通信模组已收到短信（串口可见），但未解析成功、未入库 LittleFS、未推送
+- **Issue**: 模组已收到短信（串口可见），但未解析成功、未入库 LittleFS、未推送
 - **Evidence Source**: 设备本地日志路径（LogStore 环形缓冲，Web「运行日志」/「模组调试」）
 - **Evidence Directory**: /tmp/trae-debug-sms-forwarder/sms-store-parse-fail
 - **Log File**: （复用设备 LogStore，不落 NDJSON；设备未接 USB，证据取自 Web 日志页）
 - **Debug Server**: 未启用（设备离线采集，走本地日志出口）
 
 ## Reproduction Steps
-1. 设备刷入 CNMI=2,1 存储模式固件（短信落通信模组侧，仅上报 +CMTI 索引）
+1. 设备刷入 CNMI=2,1 存储模式固件（短信落模组侧，仅上报 +CMTI 索引）
 2. 向设备号码发送一条短信 → 串口出现 `+CMTI: "SM",<idx>`
 3. 预期：查询任务下发 AT+CMGL/AT+CMGR 读回短信 → 落盘 → 推送
 4. 实际：短信未入库、未推送（模组侧副本应仍在，说明未走到删除）
@@ -54,7 +54,7 @@
 5. **`extractPduHex()` 重写**：要求先见 `+CMGR:`/`+CMGL:` 头（拒绝串包残留的 hex 行），
    支持长 PDU 分行拼接、去行内空格与引号，遇 `OK`/`ERROR` 收口，跳过混入的 URC。
 6. **可取证性**：`queryStatusJson()` 新增 `indexes` / `cmgfChecked` / `cmgfOk` /
-   `failStreak` / `lastCmgr` / `lastError`，Web「通信模组」页在有异常时直接展示，
+   `failStreak` / `lastCmgr` / `lastError`，Web「模组」页在有异常时直接展示，
    无需接 USB 串口即可判断链路停在哪一步。
 7. **失败退避**：CMGL 全无响应与读回失败都设置 `queryRetryAfterMs`，
    避免查询任务每 250ms 刷一轮 AT 风暴。
@@ -67,16 +67,16 @@
 > 早期插桩清单的文案与当前固件已不一致，此处按修复后代码列出。完整日志序列与
 > 判读方法见 [ROADMAP.md](ROADMAP.md) §2.4 / §6；不接 USB 时优先看
 > `/api/sms/query` 的 `indexes` / `cmgfOk` / `failStreak` / `lastCmgr` / `lastError`
-> 与 Web「通信模组」页诊断区。
+> 与 Web「模组」页诊断区。
 
 - `sms`「主动查询任务已启动」/「主动查询任务创建失败」→ 查询任务是否存活
 - `sms`「就绪（PDU 模式 + 短信存储已配置）」→ 初始化是否确认了 CMGF/CNMI
-- `sms`「通信模组 %u 收到 +CMTI 索引通知（索引 %d，待查 %u 个），已置待查标记」→ URC 通路与索引解析
-- `sms`「通信模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）」→ 索引来源
-- `sms`「通信模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：…/…）」→ 模组原始响应（5 分钟节流）
-- `sms` WARN「通信模组 %u AT+CMGR=%d 未取到 PDU：…」→ 读回响应格式异常
-- `sms` WARN「通信模组 %u 索引 %d 的 PDU 解码失败：…」→ pdulib 兼容性
-- `sms`「通信模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条，读回失败 %u 条」
+- `sms`「模组 %u 收到 +CMTI 索引通知（索引 %d，待查 %u 个），已置待查标记」→ URC 通路与索引解析
+- `sms`「模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）」→ 索引来源
+- `sms`「模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：…/…）」→ 模组原始响应（5 分钟节流）
+- `sms` WARN「模组 %u AT+CMGR=%d 未取到 PDU：…」→ 读回响应格式异常
+- `sms` WARN「模组 %u 索引 %d 的 PDU 解码失败：…」→ pdulib 兼容性
+- `sms`「模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条，读回失败 %u 条」
 
 ### 已实施的加固（绕开 CMGL 依赖）
 - `+CMTI` 行末数字解析为索引，存入 `ModemState::queryIndexes[]`（8 槽、去重，无单值
@@ -91,7 +91,7 @@
 
 ## 设备验证清单（取证后据此关闭本 issue）
 
-1. 刷入修复固件，确认 Web「通信模组」页无异常诊断（`PDU 模式 正常`、
+1. 刷入修复固件，确认 Web「模组」页无异常诊断（`PDU 模式 正常`、
    `待重试索引 0`、无「最近错误」）。
 2. 向设备号码发一条普通短信，日志应依次出现：
    - 「收到 +CMTI 索引通知（索引 N，待查 1 个），已置待查标记」
@@ -113,7 +113,7 @@
 
 ## Final Evidence Gate
 - **Evidence Sources**: 设备 Web 日志页 /api/logs、AT 历史 /api/at/hist、
-  查询诊断 /api/sms/query（新增字段）、Web「通信模组」页诊断区
+  查询诊断 /api/sms/query（新增字段）、Web「模组」页诊断区
 - **progress_status**: verifying
 - **Hypothesis Conclusions**: 待设备取证后逐条填写（A~E）
 - **关闭条件**: 上述验证清单 1-4 全部通过，且 24 小时内无「读回失败」日志

@@ -10,12 +10,12 @@
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace
 
-// wifi/bridge/led/display/ui/sms/time：各通信模组引用，保存供 tick 采集使用
+// wifi/bridge/led/display/ui/sms/time：各模组引用，保存供 tick 采集使用
 StatusBus::StatusBus(WifiManager &wifi, SerialBridge &bridge, RgbLed &led,
                      Display &display, UIMenu &ui, SmsService &sms,
                      TimeSync &time, LogStore &log, Outbox &outbox)
@@ -116,12 +116,12 @@ void StatusBus::tick() {
     publish("call", _sms.lastCallJson());
   }
 
-  // ---- 通信模组配置：变化才推 ----
+  // ---- 模组配置：变化才推 ----
   String ports = _sms.modemsJson();
   if (!_baseline || ports != _lastSmsPorts) {
     JsonDocument doc;
     doc["ok"] = true;
-    doc["modems"] = serialized(ports);  // 复用已序列化的通信模组数组（raw JSON）
+    doc["modems"] = serialized(ports);  // 复用已序列化的模组数组（raw JSON）
     String out;
     serializeJson(doc, out);
     publish("smsports", out);

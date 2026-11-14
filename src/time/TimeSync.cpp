@@ -12,7 +12,7 @@
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace
@@ -127,10 +127,10 @@ void TimeSync::begin(SerialBridge &bridge, SmsService &sms) {
 
   _lastPersistMs = millis();
   // 先给 WiFi/NTP 一个优先窗口（kSimTimeRetryMs），期间若 NTP 成功则不碰
-  // 系统时钟；窗口内通信模组就绪事件仍可即时触发一次 SIM 同步
+  // 系统时钟；窗口内模组就绪事件仍可即时触发一次 SIM 同步
   _simRetryNext = millis() + cfg::kSimTimeRetryMs;
   String t = timezoneText();
-  _log.addf(LogLevel::kInfo, "time", "时间通信模组已初始化（NTP 为主，SIM NITZ 兜底，%s）",
+  _log.addf(LogLevel::kInfo, "time", "时间模组已初始化（NTP 为主，SIM NITZ 兜底，%s）",
             t.c_str());
 }
 
@@ -184,7 +184,7 @@ void TimeSync::tick() {
     _log.addf(LogLevel::kWarn, "time", "NTP 同步超时，转 SIM NITZ 兜底");
   }
 
-  // 通信模组就绪事件的即时请求（NTP 未成功时执行一次）
+  // 模组就绪事件的即时请求（NTP 未成功时执行一次）
   if (_simReqPort) {
     uint8_t port = _simReqPort;
     _simReqPort = 0;
@@ -192,7 +192,7 @@ void TimeSync::tick() {
   }
 
   // SIM NITZ 周期重试：NTP 未成功且不在等待中时，每 kSimTimeRetryMs 挑一个
-  // 就绪通信模组试一次（NTP 成功后由 _ntpOk 终结重试；WiFi 重连会重启 NTP）
+  // 就绪模组试一次（NTP 成功后由 _ntpOk 终结重试；WiFi 重连会重启 NTP）
   if (!_ntpOk && !_ntpPending && now >= _simRetryNext) {
     _simRetryNext = now + cfg::kSimTimeRetryMs;
     uint8_t port = pickReadyModem();
@@ -233,7 +233,7 @@ void TimeSync::syncFromSIM(uint8_t port) {
 
   int cclkIdx = r.resp.indexOf("+CCLK:");
   if (cclkIdx < 0) {
-    _log.addf(LogLevel::kWarn, "time", "通信模组 %u 的 AT+CCLK? 无响应", (unsigned)port);
+    _log.addf(LogLevel::kWarn, "time", "模组 %u 的 AT+CCLK? 无响应", (unsigned)port);
     return;
   }
   int q1 = r.resp.indexOf('"', cclkIdx);
@@ -258,7 +258,7 @@ void TimeSync::syncFromSIM(uint8_t port) {
   }
   if (tz < -56 || tz > 56) tz = 0;  // 时区字段异常按 0 处理（不参与换算）
 
-  // 本设备通信模组（SIMCOM 系列）在 +CCLK 里给出的墙钟字段其实是 UTC，tz 字段
+  // 本设备模组（SIMCOM 系列）在 +CCLK 里给出的墙钟字段其实是 UTC，tz 字段
   // （如 +32 即 UTC+8）只是本地偏移，并非「墙钟=本地时间」的 3GPP 标准形式。
   // 因此把墙钟直接当作 UTC 转成 epoch（手算，不碰全局 TZ）。
   time_t utcTime = utcWallClockToEpoch(yy, mo, dd, hh, mi, ss);
@@ -275,7 +275,7 @@ void TimeSync::syncFromSIM(uint8_t port) {
   _synced = true;
   _src = TimeSrc::kSim;
   if (first) _persistDue = true;
-  _log.addf(LogLevel::kInfo, "time", "已从通信模组 %u 的 NITZ 同步时间：%s",
+  _log.addf(LogLevel::kInfo, "time", "已从模组 %u 的 NITZ 同步时间：%s",
             (unsigned)port, ts.c_str());
 }
 

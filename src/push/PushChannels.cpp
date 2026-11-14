@@ -145,7 +145,7 @@ static void buildSmsMail(const String& sender, const String& sms, const String& 
   subject = "短信来自: " + sender;
   text = "发送者: " + sender + "\n内容: " + sms + "\n时间: " + timestamp;
   if (modemLabel.length() > 0) {
-    text += "\n通信模组: " + modemLabel;
+    text += "\n模组: " + modemLabel;
   }
   // 简易 HTML 卡片（与 EmailService 视觉风格一致）
   String safeSender = sender, safeSms = sms, safeTs = timestamp;
@@ -167,7 +167,7 @@ static void buildSmsMail(const String& sender, const String& sms, const String& 
          "<tr><td style='padding:6px 0;color:#666'>发送者</td><td style='padding:6px 0'>" + safeSender + "</td></tr>"
          "<tr><td style='padding:6px 0;color:#666'>时间</td><td style='padding:6px 0'>" + safeTs + "</td></tr>";
   if (modemLabel.length() > 0) {
-    html += "<tr><td style='padding:6px 0;color:#666'>通信模组</td><td style='padding:6px 0'>" + esc(modemLabel) + "</td></tr>";
+    html += "<tr><td style='padding:6px 0;color:#666'>模组</td><td style='padding:6px 0'>" + esc(modemLabel) + "</td></tr>";
   }
   html += "</table><div style='margin-top:10px;padding:12px;background:#f5f7fa;border-radius:8px;white-space:pre-wrap'>"
           + safeSms + "</div></div>";
@@ -515,13 +515,13 @@ bool PushChannels::sendSmsBackup(const PushChannel& ch, const String& sender,
     }
   }
   if (port == 0) {
-    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：没有任何就绪的通信模组");
+    _log.addf(LogLevel::kWarn, "pushch", "SMS备份推送失败：没有任何就绪的模组");
     return false;
   }
 
   // 经统一发送队列异步发送（不阻塞推送任务/主循环）；结果在 done 回调里记录，
   // 因此这里只代表“是否成功入队”
-  _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送已入队（通信模组 %d）", (int)port);
+  _log.addf(LogLevel::kInfo, "pushch", "SMS备份推送已入队（模组 %d）", (int)port);
   bool queued = sms->enqueueSend((uint8_t)port, ch.url, content,
       [](uint32_t id, bool stored, const String &err) {
         if (id != 0) {

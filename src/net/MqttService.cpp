@@ -23,9 +23,9 @@
 #include "time/TimeSync.h"
 #include "utils/DeviceId.h"    // Device::id() / Device::name()：统一的设备唯一 ID
 
-// ── 通信模组级状态 ─────────────────────────────────────────────
+// ── 模组级状态 ─────────────────────────────────────────────
 // esp-mqtt 的 config 只保存指针，不会拷贝字符串，因此 URI/ID/Will/账号等
-// 必须存活到客户端销毁，这里用通信模组级 String 长期持有。
+// 必须存活到客户端销毁，这里用模组级 String 长期持有。
 
 // 待执行命令队列元素（文件作用域，供 MQTT 网络任务的事件回调直接构造并入队，
 // 无需访问类私有成员；由主循环 tick 取出并在 loop 任务执行）
@@ -269,7 +269,7 @@ void MqttService::publishEvent(MqttMsgType type, const String &sender,
     doc["port"]  = modemSlot > 0 ? modemSlot : 1;
     doc["ready"] = (message == "ready");
     if (modemLabel.length() > 0) doc["modem"] = modemLabel;
-    // SIM 事件附带与事件来源通信模组相关的 4G/SIM 字段
+    // SIM 事件附带与事件来源模组相关的 4G/SIM 字段
     JsonObject info = doc["info"].to<JsonObject>();
     buildDeviceStatus(info);
   } else {  // boot / online：附带与启动同款设备信息
@@ -307,10 +307,10 @@ static void respondHelp(const JsonDocument &req) {
     c["action"]      = action;
     c["description"] = desc;
   };
-  addCmd("send_sms", "通过指定通信模组发送短信（参数 phone/content，可选 modem）");
-  addCmd("send_at",  "向指定通信模组发送 AT 指令并返回响应（参数 cmd，可选 modem/timeout）");
+  addCmd("send_sms", "通过指定模组发送短信（参数 phone/content，可选 modem）");
+  addCmd("send_at",  "向指定模组发送 AT 指令并返回响应（参数 cmd，可选 modem/timeout）");
   addCmd("restart",  "重启设备");
-  addCmd("reinit",   "请求指定通信模组热重初始化（参数 modem）");
+  addCmd("reinit",   "请求指定模组热重初始化（参数 modem）");
   addCmd("info",     "返回设备信息（与启动通知同款）");
   addCmd("help",     "返回本帮助");
   String payload;
@@ -381,8 +381,8 @@ void MqttService::handleCommand(const String &json) {
     int8_t port = doc["modem"] | 0;
     if (port < 1 || port > cfg::kSmsMaxModems) { respond(doc, false, "modem 越界"); return; }
     if (!_sms) { respond(doc, false, "短信服务不可用"); return; }
-    if (!_sms->reinitPort((uint8_t)port)) { respond(doc, false, "通信模组未启用或不存在"); return; }
-    respond(doc, true, "已请求通信模组" + String(port) + "热重初始化");
+    if (!_sms->reinitPort((uint8_t)port)) { respond(doc, false, "模组未启用或不存在"); return; }
+    respond(doc, true, "已请求模组" + String(port) + "热重初始化");
 
   } else if (strcmp(action, "help") == 0) {
     respondHelp(doc);
@@ -859,7 +859,7 @@ void MqttService::notifySms(const String &sender, const String &message, uint32_
   if (!_enabled || !isConfigured()) return;
   if (!(_notifyTypes & cfg::kMqttNotifySms)) return;
   String label = (modem >= 1 && modem <= cfg::kSmsMaxModems)
-                     ? ("通信模组" + String(modem)) : String("");
+                     ? ("模组" + String(modem)) : String("");
   publishEvent(MqttMsgType::kSms, sender, message, ts, "", label, modem);
 }
 
@@ -867,14 +867,14 @@ void MqttService::notifySim(uint8_t port, bool ready) {
   if (!_enabled || !isConfigured()) return;
   if (!(_notifyTypes & cfg::kMqttNotifySim)) return;
   publishEvent(MqttMsgType::kSim, "设备", ready ? "ready" : "removed",
-               0, "", ("通信模组" + String(port)), (int8_t)port);
+               0, "", ("模组" + String(port)), (int8_t)port);
 }
 
 void MqttService::notifyCall(const String &number, uint32_t ts, int8_t modem) {
   if (!_enabled || !isConfigured()) return;
   if (!(_notifyTypes & cfg::kMqttNotifyCall)) return;
   String label = (modem >= 1 && modem <= cfg::kSmsMaxModems)
-                     ? ("通信模组" + String(modem)) : String("");
+                     ? ("模组" + String(modem)) : String("");
   publishEvent(MqttMsgType::kCall, number, "来电", ts, "", label, modem);
 }
 

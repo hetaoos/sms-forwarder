@@ -17,7 +17,7 @@ class LogStore;
 // MQTT 服务：连接标准 MQTT Broker（基于 esp-idf 内置 esp-mqtt 组件，无需额外库），
 // 事件以 JSON 报文发布，并支持订阅命令主题做远程控制。
 //
-// 设计要点（移植自 esp32-sms-forwarding 的 mqtt 通信模组，并适配本项目架构）：
+// 设计要点（移植自 esp32-sms-forwarding 的 mqtt 模组，并适配本项目架构）：
 //  - esp-mqtt 自带网络任务与自动重连，主循环无需调用 client.loop()；
 //  - 发布：esp_mqtt_client_enqueue 内部有队列，从任意任务调用均安全，
 //    日志采用「LogStore sink 入队 + MqttService::tick() 主循环批量发布」以避免阻塞；
@@ -43,7 +43,7 @@ enum class MqttMsgType : uint8_t {
 class MqttService {
  public:
   // 注入依赖（引用，生命周期由 App 保证）并从 NVS 载入配置；注册日志 sink。
-  // wifi：WiFi 管理器（连接状态/IP）；sms：短信服务（通信模组/SIM状态/收发）；
+  // wifi：WiFi 管理器（连接状态/IP）；sms：短信服务（模组/SIM状态/收发）；
   // time：时间同步（系统时间）；log：设备日志环形存储（提供 sink 入口）。
   void begin(WifiManager &wifi, SmsService &sms, TimeSync &time, LogStore &log);
 
@@ -105,7 +105,7 @@ class MqttService {
   static bool persistConfig();
 
   // ---------------- 事件上报（非阻塞，调用上下文安全）----------------
-  // 收到短信（sender：发件人；message：正文；ts：纪元秒或开机秒数；modem：接收通信模组串口号）
+  // 收到短信（sender：发件人；message：正文；ts：纪元秒或开机秒数；modem：接收模组串口号）
   void notifySms(const String &sender, const String &message, uint32_t ts,
                  int8_t modem);
 
@@ -138,7 +138,7 @@ class MqttService {
 
  public:
   // 以下为内部实现辅助（声明为 public 以便文件作用域的 esp-mqtt 事件回调 /
-  // 命令响应等自由函数直接访问通信模组级状态；外部仍只应使用上方公开 API）
+  // 命令响应等自由函数直接访问模组级状态；外部仍只应使用上方公开 API）
   // LogStore sink 回调（任意任务上下文，须轻量）：结构化字段 -> MQTT 日志发布
   static void onLog(uint8_t level, const char *tag, const char *msg, uint32_t ts);
   // 待执行命令处理（在主循环线程执行）
@@ -158,9 +158,9 @@ class MqttService {
   // 发布设备状态（online/offline，后者由 LWT 遗嘱发出）
   static void publishStatus(const String &status);
 
-  // ---- 通信模组级状态 ----
+  // ---- 模组级状态 ----
   static WifiManager *_wifi;   // WiFi 管理器（连接状态 / IP）
-  static SmsService *_sms;     // 短信服务（通信模组与 SIM 状态）
+  static SmsService *_sms;     // 短信服务（模组与 SIM 状态）
   static TimeSync *_time;      // 时间同步（系统时间展示）
   static LogStore *_log;       // 设备日志（sink 入口，仅用于日志标签）
 

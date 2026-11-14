@@ -21,7 +21,7 @@ enum class LogLevel : uint8_t {
 
 // 设备日志环形存储：条目缓冲区一次性分配在 PSRAM 的定长记录环，
 // 供 Web 控制台分页查看（GET /api/logs）；同时每条记录同步镜像一行到串口，
-// 因此全工程只需要这一个日志出口（各通信模组不再直接 Serial.printX）。设计要点：
+// 因此全工程只需要这一个日志出口（各模组不再直接 Serial.printX）。设计要点：
 //   0. 串口镜像：add()/addf() 在入环之外固定向 Serial 输出一行
 //      （[id][级别][标签] 正文）；环形缓冲未就绪（begin 之前）或分配失败
 //      降级时仍然输出，保证启动期与降级期的日志不会凭空消失；
@@ -41,7 +41,7 @@ class LogStore {
     uint32_t id = 0;   // 自增 ID（从 1 起，不回绕）
     uint32_t ts = 0;   // 时间戳：纪元秒（时钟已同步）或开机秒数
     uint8_t level = 0;  // LogLevel
-    char tag[cfg::kLogTagMax] = {0};  // 通信模组标签（"app"/"wifi"/"sms"/"sim"...）
+    char tag[cfg::kLogTagMax] = {0};  // 模组标签（"app"/"wifi"/"sms"/"sim"...）
     char msg[cfg::kLogMsgMax] = {0};  // 日志正文（超长截断）
   };
 
@@ -55,7 +55,7 @@ class LogStore {
   // 收紧条数；两者都分配失败则不入环（仍逐条输出到串口）
   void begin(uint16_t max);
 
-  // 追加一条日志（level：级别；tag：通信模组标签；msg：正文；均超长自动截断）
+  // 追加一条日志（level：级别；tag：模组标签；msg：正文；均超长自动截断）
   // 除入环外还向串口镜像一行；环形缓冲不可用时仅输出串口
   void add(LogLevel level, const char *tag, const char *msg);
 
@@ -65,7 +65,7 @@ class LogStore {
   }
 
   // printf 风格追加一条日志（自动截断到 kLogMsgMax-1）
-  // level：级别；tag：通信模组标签；fmt：格式串
+  // level：级别；tag：模组标签；fmt：格式串
   void addf(LogLevel level, const char *tag, const char *fmt, ...)
       __attribute__((format(printf, 4, 5)));
 
@@ -126,10 +126,10 @@ class LogStore {
 using LogSinkFn = void (*)(uint8_t level, const char *tag, const char *msg, uint32_t ts);
 void setLogSink(LogSinkFn fn);
 
-// 全局日志实例访问器：全工程唯一的日志出口，各通信模组与 App 取到的是同一份。
+// 全局日志实例访问器：全工程唯一的日志出口，各模组与 App 取到的是同一份。
 // 用于不便显式注入依赖的上下文（串口抽数任务回调、命名空间级函数、静态辅助
 // 等）；由 App::begin() 里的 _log.begin() 完成初始化，此前调用只输出到串口。
-// 各通信模组惯例：在 .cpp 的匿名命名空间里取一个引用别名
+// 各模组惯例：在 .cpp 的匿名命名空间里取一个引用别名
 //   namespace { LogStore &_log = devLog(); }
 // 之后统一用 _log.addf(LogLevel::kXxx, "tag", "...") 记日志。
 LogStore &devLog();

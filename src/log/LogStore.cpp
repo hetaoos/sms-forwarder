@@ -57,7 +57,7 @@ bool containsCI(const char *hay, const char *needle) {
 }  // namespace
 
 // 全局唯一实例：函数内静态对象，首次访问时构造，
-// 规避跨编译单元的静态初始化顺序问题（各通信模组的 _log 别名可能在 App 之前初始化）
+// 规避跨编译单元的静态初始化顺序问题（各模组的 _log 别名可能在 App 之前初始化）
 LogStore &devLog() {
   static LogStore inst;
   return inst;
@@ -102,7 +102,7 @@ void LogStore::begin(uint16_t max) {
   }
 }
 
-// level：级别；tag：通信模组标签；msg：正文（均可超长截断）
+// level：级别；tag：模组标签；msg：正文（均可超长截断）
 void LogStore::add(LogLevel level, const char *tag, const char *msg) {
   uint32_t id = 0;
   lock();
@@ -127,7 +127,7 @@ void LogStore::add(LogLevel level, const char *tag, const char *msg) {
                            _timeFn ? _timeFn() : (uint32_t)(millis() / 1000));
 }
 
-// level：级别；tag：通信模组标签；fmt：格式串（自动截断到 kLogMsgMax-1）
+// level：级别；tag：模组标签；fmt：格式串（自动截断到 kLogMsgMax-1）
 void LogStore::addf(LogLevel level, const char *tag, const char *fmt, ...) {
   if (!fmt) return;
   char msg[cfg::kLogMsgMax];

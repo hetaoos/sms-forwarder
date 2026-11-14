@@ -242,7 +242,7 @@ void Outbox::snapshotChannels(Rec &r) const {
   if (r.kind == kSend) {
     Channel sms;
     sms.key = String("sms:") + String(r.port);
-    sms.label = String("通信模组 ") + String(r.port) + " · 短信发送";
+    sms.label = String("模组 ") + String(r.port) + " · 短信发送";
     r.ch.push_back(sms);
     r.failover = false;
     return;
@@ -386,7 +386,7 @@ void Outbox::tick() {
   if (ch.key.startsWith("push:")) {
     needsNet = _push->channelNeedsNet(ch.key.substring(5).toInt());
   } else if (ch.key.startsWith("sms:")) {
-    needsNet = false;  // 经通信模组发短信不依赖 WiFi
+    needsNet = false;  // 经模组发短信不依赖 WiFi
   }
   if (needsNet && !_wifi->connected()) {
     applyResult(job.id, ch.key, false, false, false, true, "网络未就绪", 0);

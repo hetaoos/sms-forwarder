@@ -5,7 +5,7 @@
       <p class="page-desc">收发记录与发送 · 新短信自动刷新</p>
     </div>
     <button class="btn" @click="openSend()" :disabled="!enabledPorts().length"
-            x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用通信模组）'"></button>
+            x-text="enabledPorts().length ? '发送短信' : '发送短信（无可用模组）'"></button>
   </div>
 
   <!-- 存储不可用提示（userdata 分区异常时常驻） -->
@@ -15,7 +15,7 @@
   <div class="card">
     <div class="bar" style="margin-bottom:12px">
       <select class="inp sm" x-model.number="portFilter">
-        <option value="-1">全部通信模组</option>
+        <option value="-1">全部模组</option>
         <template x-for="m in modems" :key="m.port">
           <option :value="m.port" x-text="modemLabel(m)"></option>
         </template>
@@ -87,11 +87,11 @@
       </div>
 
       <div class="field">
-        <label>通信模组</label>
+        <label>模组</label>
         <select class="inp" x-model.number="sendPort">
-          <option value="0" x-show="!enabledPorts().length">无可用通信模组</option>
+          <option value="0" x-show="!enabledPorts().length">无可用模组</option>
           <template x-for="m in enabledPorts()" :key="m.port">
-            <option :value="m.port" x-text="'通信模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
+            <option :value="m.port" x-text="'模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
           </template>
         </select>
       </div>
@@ -117,7 +117,7 @@
         <button class="btn ghost" @click="closeSend()">取消</button>
       </div>
       <div class="hint" style="margin-top:8px">
-        提交后即登记到发件箱，实际发送由通信模组队列执行；投递结果可在「发件箱」页查看。
+        提交后即登记到发件箱，实际发送由模组队列执行；投递结果可在「发件箱」页查看。
         「结果未知」的记录手动重试前请确认对方是否已收到，避免重复发送。
       </div>
     </div>
@@ -130,7 +130,7 @@
       <template x-if="detail">
         <div class="form">
           <div class="row"><span class="k">时间</span><span class="v" x-text="fmtTs(detail.ts)"></span></div>
-          <div class="row"><span class="k">通信模组</span><span class="v" x-text="modemLabelOf(detail.modem)"></span></div>
+          <div class="row"><span class="k">模组</span><span class="v" x-text="modemLabelOf(detail.modem)"></span></div>
           <div class="row"><span class="k">方向</span><span class="v" x-text="detail.dir === 'in' ? '收到' : '发送'"></span></div>
           <div class="row"><span class="k">号码</span><span class="v" x-text="detail.phone"></span></div>
           <div class="row"><span class="k">内容</span><span class="v" style="white-space:pre-wrap;text-align:left" x-html="renderSms(detail.content, detail.code)"></span></div>

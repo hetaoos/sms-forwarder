@@ -9,7 +9,7 @@
 #include <Arduino.h>
 
 #include "app/KeyInject.h"   // 远程按键注入队列（Web 驱动设备 UI）
-#include "app/ModemHw.h"     // 通信模组硬件引脚（运行期配置，Web 读写/套用）
+#include "app/ModemHw.h"     // 模组硬件引脚（运行期配置，Web 读写/套用）
 #include "app/Coredump.h"    // 崩溃转储（coredump）分区查询
 #include "app/SystemService.h"  // 定时重启（单例）
 #include "app/TaskWatchdog.h"   // 看门狗故障注入自检（POST /api/wdt/selftest）
@@ -234,7 +234,7 @@ bool jsonBool(const JsonVariant &v, bool &out) {
 
 }  // namespace
 
-// bridge/led/wifi/display/ui/auth/events/sms/time/email/blacklist/log/mqtt/push：各通信模组引用
+// bridge/led/wifi/display/ui/auth/events/sms/time/email/blacklist/log/mqtt/push：各模组引用
 WebPanel::WebPanel(SerialBridge &bridge, RgbLed &led, WifiManager &wifi,
                    Display &display, UIMenu &ui, AdminStore &auth,
                    StatusBus &events, SmsService &sms, TimeSync &time,
@@ -602,7 +602,7 @@ void WebPanel::setupRoutes() {
 
   // ---- 模组调试（AT 命令） ----
   // 发送 AT 命令：?port=1|2&baud=115200&eol=0..3&cmd=...&t=超时ms
-  // 经短信通信模组发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
+  // 经短信模组发送（与短信收发共用端口锁、自动还原 CMGF/CNMI），避免与短信冲突
   _server.on("/api/at/send", HTTP_GET, [this](AsyncWebServerRequest *req) { handleAtSend(req); });
 
   // 增量拉取历史：?after=上一页最后ID&n=条数
@@ -753,14 +753,14 @@ void WebPanel::setupRoutes() {
   // 最新一条短信摘要（仪表盘用；与 SSE sms 事件同格式），无记录返回 {}
   _server.on("/api/sms/latest", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsLatest(req); });
 
-  // 通信模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
+  // 模组列表：{"ok":true,"modems":[{"port":1,"enabled":true},...]}
   _server.on("/api/sms/ports", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPortsGet(req); });
 
-  // 配置通信模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
+  // 配置模组：JSON {"port":1,"enabled":true,"alias":"客厅卡槽"}（enabled/alias 可缺省其一）
   _server.on("/api/sms/ports", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPortsPost(req, json); });
 
-  // 重新初始化通信模组：JSON {"port":1}（仅启用态有效；置位 needReinit 由抽数任务重跑）
+  // 重新初始化模组：JSON {"port":1}（仅启用态有效；置位 needReinit 由抽数任务重跑）
   _server.on("/api/sms/reinit", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsReinit(req, json); });
 
@@ -780,12 +780,12 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/admin", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsAdminPost(req, json); });
 
-  // 经通信模组 PING：POST 启动（{"port":1,"host"?:"8.8.8.8}），GET 轮询结果（{busy,ok,report}）
+  // 经模组 PING：POST 启动（{"port":1,"host"?:"8.8.8.8}），GET 轮询结果（{busy,ok,report}）
   _server.on("/api/sms/ping", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsPingPost(req, json); });
   _server.on("/api/sms/ping", HTTP_GET, [this](AsyncWebServerRequest *req) { handleSmsPingGet(req); });
 
-  // 主动查询通信模组存储中的短信（存储模式兜底）：POST {"port":n?} 触发
+  // 主动查询模组存储中的短信（存储模式兜底）：POST {"port":n?} 触发
   // （缺省 = 全部启用模组），异步执行；GET 返回查询状态
   _server.on("/api/sms/query", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsQueryPost(req, json); });
@@ -803,7 +803,7 @@ void WebPanel::setupRoutes() {
   _server.on("/api/outbox", HTTP_GET,
              [this](AsyncWebServerRequest *req) { handleOutboxGet(req); });
 
-  // 清空指定通信模组 SIM 上的全部短信：POST {"port":n} 异步触发（查询任务执行），
+  // 清空指定模组 SIM 上的全部短信：POST {"port":n} 异步触发（查询任务执行），
   // GET 返回清空状态（复用查询状态 JSON：各端口 clearBusy / 上次结果）。
   _server.on("/api/sms/clear", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsClearPost(req, json); });
@@ -821,7 +821,7 @@ void WebPanel::setupRoutes() {
   _server.on("/api/sms/store", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleSmsStorePost(req, json); });
 
-  // ---- 通信模组硬件引脚：GET 读 / POST 保存并即时套用 ----
+  // ---- 模组硬件引脚：GET 读 / POST 保存并即时套用 ----
   _server.on("/api/modemhw", HTTP_GET, [this](AsyncWebServerRequest *req) { handleModemHwGet(req); });
   _server.on("/api/modemhw", HTTP_POST,
              [this](AsyncWebServerRequest *req, JsonVariant &json) { handleModemHwPost(req, json); });
@@ -1403,7 +1403,7 @@ void WebPanel::handleAtSend(AsyncWebServerRequest *req) {
   String err;
   auto result = _sms.sendAt(port, baud, cmd, (SerialBridge::Eol)eol, timeout, err);
   if (!result.ok) {
-    sendErr(req, 400, err.length() ? err.c_str() : "通信模组序号无效");
+    sendErr(req, 400, err.length() ? err.c_str() : "模组序号无效");
     return;
   }
   sendJson(req, _bridge.entryJson(result.id));  // 直接回该条记录 JSON
@@ -1428,7 +1428,7 @@ void WebPanel::handleAtStats(AsyncWebServerRequest *req) {
 void WebPanel::handleAtReset(AsyncWebServerRequest *req) {
   uint8_t port = paramInt(req, "port", 0);
   if (port < 1 || port > 2) {
-    sendErr(req, 400, "通信模组序号无效");
+    sendErr(req, 400, "模组序号无效");
     return;
   }
   _bridge.reset(port);
@@ -1918,7 +1918,7 @@ void WebPanel::handleSmsPortsPost(AsyncWebServerRequest *req, JsonVariant &json)
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "通信模组序号无效");
+    sendErr(req, 400, "模组序号无效");
     return;
   }
   bool changed = false;
@@ -1951,11 +1951,11 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "通信模组序号无效");
+    sendErr(req, 400, "模组序号无效");
     return;
   }
   if (!_sms.reinitPort((uint8_t)port)) {
-    sendErr(req, 400, "通信模组未启用或不存在");
+    sendErr(req, 400, "模组未启用或不存在");
     return;
   }
   String modems = _sms.modemsJson();   // 先落本地变量，保证 serialized() 指针在序列化时仍有效
@@ -1965,7 +1965,7 @@ void WebPanel::handleSmsReinit(AsyncWebServerRequest *req, JsonVariant &json) {
   sendJsonDoc(req, doc);
 }
 
-// 经通信模组发送短信（异步）：POST 启动。
+// 经模组发送短信（异步）：POST 启动。
 // 入队统一发送队列（SmsService::enqueueSend），由专职 worker 任务串行执行阻塞式
 // CMGS 握手，不阻塞 HTTP（async_tcp）任务——否则会饿死任务看门狗触发整机复位
 // （见崩溃分析）。完成后经 done 回调（tick 主循环上下文）写回 _sendBusy/_sendOk/...，
@@ -1981,7 +1981,7 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   String phone = json["phone"].as<String>();
   String content = json["content"].as<String>();
   if (port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "通信模组不存在");
+    sendErr(req, 400, "模组不存在");
     return;
   }
 
@@ -2010,11 +2010,11 @@ void WebPanel::handleSmsSend(AsyncWebServerRequest *req, JsonVariant &json) {
   // 任务回传，再写回这里的轮询状态。发件箱不可用时回退原有直投队列，功能不中断。
   auto done = [this, port, phone](uint32_t id, bool stored, const String &err) {
     if (id != 0) {
-      _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（通信模组 %u，记录 #%u）",
+      _log.addf(LogLevel::kInfo, "sms", "已发送至 %s（模组 %u，记录 #%u）",
                 phone.c_str(), (unsigned)port, (unsigned)id);
     } else {
       _log.addf(LogLevel::kWarn, "sms",
-          "发送失败（通信模组 %u -> %s）：%s", (unsigned)port,
+          "发送失败（模组 %u -> %s）：%s", (unsigned)port,
           phone.c_str(), err.c_str());
     }
     portENTER_CRITICAL(&_sendMux);
@@ -2124,7 +2124,7 @@ void WebPanel::handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json)
   sendJsonDoc(req, doc);
 }
 
-// 经通信模组 ICMP 连通性测试（PING）：POST 启动。
+// 经模组 ICMP 连通性测试（PING）：POST 启动。
 // 复用 SmsService::pingHost（AT+MPING），独立 FreeRTOS 任务异步执行，
 // 不阻塞 HTTP（async_tcp）任务；结果经 _pingBusy/_pingOk/_pingResult 暴露，
 // 前端轮询 GET /api/sms/ping 取回。host 缺省 8.8.8.8。
@@ -2132,7 +2132,7 @@ void WebPanel::handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json) 
   int port;
   if (!json.is<JsonObject>() || !jsonInt(json["port"], port) ||
       port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "通信模组序号无效");
+    sendErr(req, 400, "模组序号无效");
     return;
   }
   String host = json["host"].is<const char *>()
@@ -2199,7 +2199,7 @@ void WebPanel::handleSmsPingGet(AsyncWebServerRequest *req) {
   sendJsonDoc(req, doc);
 }
 
-// 主动查询通信模组存储短信：POST 触发（异步，由查询任务执行）。
+// 主动查询模组存储短信：POST 触发（异步，由查询任务执行）。
 // JSON {"port":n?}：给出端口则只查该端口，缺省则对所有启用模组各查一次。
 void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
@@ -2210,7 +2210,7 @@ void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json)
   if (json["port"].is<int>()) {
     port = json["port"].as<int>();
     if (port < 1 || port > cfg::kSmsMaxModems) {
-      sendErr(req, 400, "通信模组序号无效");
+      sendErr(req, 400, "模组序号无效");
       return;
     }
   }
@@ -2218,7 +2218,7 @@ void WebPanel::handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json)
   if (port) {
     started = _sms.requestQuery((uint8_t)port);
     if (!started) {
-      sendErr(req, 400, "通信模组未启用或不存在");
+      sendErr(req, 400, "模组未启用或不存在");
       return;
     }
   } else {
@@ -2279,7 +2279,7 @@ void WebPanel::handleOutboxDelete(AsyncWebServerRequest *req, JsonVariant &json)
   sendOkMsg(req, "已删除，该记录未送达通道不再补发");
 }
 
-// 清空通信模组 SIM 短信：POST {"port":n} 触发（异步，查询任务执行阻塞式 AT）。
+// 清空模组 SIM 短信：POST {"port":n} 触发（异步，查询任务执行阻塞式 AT）。
 void WebPanel::handleSmsClearPost(AsyncWebServerRequest *req, JsonVariant &json) {
   if (!json.is<JsonObject>()) {
     sendErr(req, 400, "请求格式错误");
@@ -2287,11 +2287,11 @@ void WebPanel::handleSmsClearPost(AsyncWebServerRequest *req, JsonVariant &json)
   }
   int port = json["port"].is<int>() ? json["port"].as<int>() : 0;
   if (port < 1 || port > cfg::kSmsMaxModems) {
-    sendErr(req, 400, "通信模组序号无效");
+    sendErr(req, 400, "模组序号无效");
     return;
   }
   if (!_sms.requestClear((uint8_t)port)) {
-    sendErr(req, 400, "通信模组未就绪或已有清空任务在执行");
+    sendErr(req, 400, "模组未就绪或已有清空任务在执行");
     return;
   }
   JsonDocument doc;
@@ -2354,7 +2354,7 @@ void WebPanel::handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json)
   sendJsonDoc(req, doc);
 }
 
-// ---- 通信模组硬件引脚 ----
+// ---- 模组硬件引脚 ----
 // GET /api/modemhw：回显当前运行期引脚配置（含 EN 模式语义文本）与可选引脚列表
 void WebPanel::handleModemHwGet(AsyncWebServerRequest *req) {
   JsonDocument doc;
@@ -2412,18 +2412,18 @@ void WebPanel::handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json) 
   for (JsonObjectConst o : ports) {
     int port = o["port"] | 0;
     if (port < 1 || port > cfg::kSmsMaxModems) {
-      sendErr(req, 400, "通信模组序号无效");
+      sendErr(req, 400, "模组序号无效");
       return;
     }
     modemhw::PortPins &p = next[port - 1];
     if (!o["rx"].is<int>() || !o["tx"].is<int>()) {
-      sendErr(req, 400, ("通信模组 " + String(port) + " 缺少 rx/tx").c_str());
+      sendErr(req, 400, ("模组 " + String(port) + " 缺少 rx/tx").c_str());
       return;
     }
     int rx = o["rx"].as<int>(), tx = o["tx"].as<int>();
     if (rx < 0 || rx > 48 || tx < 0 || tx > 48 || rx == tx) {
       sendErr(req, 400,
-              ("通信模组 " + String(port) + " 的 rx/tx 非法（须 0..48 且不相同）").c_str());
+              ("模组 " + String(port) + " 的 rx/tx 非法（须 0..48 且不相同）").c_str());
       return;
     }
     p.rx = (int8_t)rx;
@@ -2438,7 +2438,7 @@ void WebPanel::handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json) 
   }
 
   // 引脚互斥校验：任一端口的 rx/tx/en（en=-1 除外）不得与其它端口的同类引脚重复，
-  // 避免两个通信模组或 EN 复用同一 GPIO 造成硬件冲突。
+  // 避免两个模组或 EN 复用同一 GPIO 造成硬件冲突。
   for (uint8_t a = 0; a < cfg::kSmsMaxModems; a++) {
     int pa[3] = { next[a].rx, next[a].tx, next[a].en };
     for (uint8_t b = 0; b < cfg::kSmsMaxModems; b++) {
@@ -2450,7 +2450,7 @@ void WebPanel::handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json) 
           if (pb[j] < 0) continue;
           if (pa[i] == pb[j]) {
             sendErr(req, 400,
-                    ("引脚 " + String(pa[i]) + " 被多个通信模组重复占用，请检查 RX/TX/EN 配置").c_str());
+                    ("引脚 " + String(pa[i]) + " 被多个模组重复占用，请检查 RX/TX/EN 配置").c_str());
             return;
           }
         }
@@ -2871,7 +2871,7 @@ void WebPanel::handleOtaUploadFsChunk(AsyncWebServerRequest *req, String /*filen
 }
 
 // ---- 配置导入导出 ----
-// 导出：各通信模组直接把配置写入主文档的子对象（全程操作 JSON 对象，无字符串往返）。
+// 导出：各模组直接把配置写入主文档的子对象（全程操作 JSON 对象，无字符串往返）。
 void WebPanel::handleConfigExport(AsyncWebServerRequest *req) {
   JsonDocument doc;
   doc["ver"] = 1;                  // 配置格式版本，便于后续升级/兼容
@@ -2941,7 +2941,7 @@ void WebPanel::handleConfigImportChunk(AsyncWebServerRequest *req, uint8_t *data
   s->concat((char *)data, len);
 }
 
-// 导入：请求收尾后解析整份 JSON，逐节写入各通信模组并落盘，最后延迟重启生效
+// 导入：请求收尾后解析整份 JSON，逐节写入各模组并落盘，最后延迟重启生效
 void WebPanel::handleConfigImportReq(AsyncWebServerRequest *req) {
   if (!req->_tempObject) {
     sendErr(req, 400, "缺少请求内容");

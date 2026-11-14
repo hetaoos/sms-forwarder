@@ -16,7 +16,7 @@ static LogStore &_log = devLog();
 struct Guard {
   SemaphoreHandle_t m;
   explicit Guard(SemaphoreHandle_t m_) : m(m_) {
-    // 允许 NULL 句柄：通信模组 begin() 前（如开机首帧状态采集）也会读到配置，
+    // 允许 NULL 句柄：模组 begin() 前（如开机首帧状态采集）也会读到配置，
     // 直接 xSemaphoreTakeRecursive(NULL) 会触发断言并无限重启
     if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
   }
@@ -40,7 +40,7 @@ static String sanitizeText(const String& s) {
   return out;
 }
 
-// HTTP 类通道依赖 WiFi 上网；PUSH_TYPE_SMS（短信备份）走通信模组，正是为
+// HTTP 类通道依赖 WiFi 上网；PUSH_TYPE_SMS（短信备份）走模组，正是为
 // 网络不可用场景准备的兜底通道，故不受 WiFi 判定约束。
 static bool isHttpPush(PushType t) {
   return t >= PUSH_TYPE_POST_JSON && t <= PUSH_TYPE_MAILGUN && t != PUSH_TYPE_NONE &&

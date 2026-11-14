@@ -250,7 +250,7 @@ input.mono{font-family:var(--mono)}
 .msg-item.is-in .msg-ava{background:var(--success)}
 .msg-item.is-out .msg-ava{background:var(--primary)}
 .msg-body{flex:1;min-width:0}
-/* 第一行：收发标签 + 号码（左） · 通信模组 + 日期（右，margin-left:auto 推右） */
+/* 第一行：收发标签 + 号码（左） · 模组 + 日期（右，margin-left:auto 推右） */
 .msg-top{display:flex;align-items:center;gap:8px;min-width:0}
 .msg-top .badge{flex:none}
 .msg-phone{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}

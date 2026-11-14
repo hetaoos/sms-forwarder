@@ -42,8 +42,8 @@ ICONS = [
     "memory",           # 内部堆内存
     "microchip",        # PSRAM
     "lightbulb",        # RGB 指示灯
-    "tower-broadcast",  # 通信模组 / 基站
-    "sim-card",         # SIM 卡状态（状态页通信模组行）
+    "tower-broadcast",  # 模组 / 基站
+    "sim-card",         # SIM 卡状态（状态页模组行）
     "comment-sms",      # 短信
     "envelope",         # 邮件通知
     "paper-plane",      # Webhook 推送

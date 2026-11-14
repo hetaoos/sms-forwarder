@@ -22,7 +22,7 @@ class AtHistory {
   enum Type : uint8_t {
     kCmd = 0,   // 用户主动命令（Web 控制台 /api/at/send 下发）
     kBg = 1,    // 后台命令（心跳 / 初始化 / 配置还原 / 时间同步 / 来电兜底的 AT+CLCC 等）
-    kUrc = 2,   // 主动上报（通信模组自发，如 +CMT / +CMTI / +CDS / +CLIP / +CLCC / RING）
+    kUrc = 2,   // 主动上报（模组自发，如 +CMT / +CMTI / +CDS / +CLIP / +CLCC / RING）
   };
 
   // 一条 AT 交互/上报记录（定长结构，按槽位原地写入）

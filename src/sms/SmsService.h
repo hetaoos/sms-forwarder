@@ -16,22 +16,22 @@
 #include "sms/SmsRecord.h"
 #include "sms/SmsStore.h"
 
-// 短信服务：双通信模组的短信收发、存储与通信模组管理。
+// 短信服务：双模组的短信收发、存储与模组管理。
 //
-// 接收：SerialBridge 抽数任务把 +CMT: <len>\r\n<pdu> 段的通信模组自发数据
+// 接收：SerialBridge 抽数任务把 +CMT: <len>\r\n<pdu> 段的模组自发数据
 //   经 onUnsolicited 交给本类（返回 true = 已消费；无论是否消费，该段都会以
 //   kUrc 类型记入 AT 历史，保证主动上报在控制台可见），
 //   PDU 解码 + 长短信重组 + 落盘都在该上下文快速完成（不回调串口类，
 //   避免与抽数任务持有的锁死锁）。
 // 发送：经 SerialBridge::sendSmsPdu() 两段式完成 CMGS 握手（互斥锁保证
 //   抽数任务不会抢走响应字节）；握手过程以 kBg 类型记入 AT 历史。
-// 通信模组配置（启用/禁用）持久化到 NVS：appcfg / sms，
+// 模组配置（启用/禁用）持久化到 NVS：appcfg / sms，
 //   {"ver":1,"max":200,"modems":[{"port":1,"enabled":true},...]}
 class SmsService {
  public:
   explicit SmsService(SerialBridge &bridge);
 
-  // 载入配置、准备存储、对启用通信模组下发 CMGF/CNMI
+  // 载入配置、准备存储、对启用模组下发 CMGF/CNMI
   void begin();
 
   // 周期调用（App::tick）：长短信重组超时清理
@@ -40,20 +40,20 @@ class SmsService {
   // 串口自发数据消费（SerialBridge 抽数任务上下文）；返回 true 表示已消费
   bool onUnsolicited(uint8_t port, const String &text);
 
-  // ---------------- 通信模组管理 ----------------
+  // ---------------- 模组管理 ----------------
   bool modemEnabled(uint8_t port) const;
-  // 启用/禁用通信模组（热配置 + 持久化）；port 越界返回 false
+  // 启用/禁用模组（热配置 + 持久化）；port 越界返回 false
   bool setModemEnabled(uint8_t port, bool enabled);
-  // 设置通信模组别名（持久化）；port 越界返回 false
+  // 设置模组别名（持久化）；port 越界返回 false
   bool setModemAlias(uint8_t port, const String &alias);
-  // 触发通信模组重新初始化（仅启用态有效；置 needReinit 由抽数任务状态机重跑）
+  // 触发模组重新初始化（仅启用态有效；置 needReinit 由抽数任务状态机重跑）
   bool reinitPort(uint8_t port);
 
   // 注入黑名单过滤器（App 装配时调用）；非空时在 handleCmt 内先于落盘/转发做匹配
   void setBlackList(BlackList *bl) { _blacklist = bl; }
 
   // ---------------- 事件回调 / 时间供给 ----------------
-  // 通信模组就绪事件：初始化状态机进入 kReady 时于抽数任务上下文触发。
+  // 模组就绪事件：初始化状态机进入 kReady 时于抽数任务上下文触发。
   // 回调内只应置标记或做轻量操作，禁止阻塞式 AT（时间同步等由 App 转 loop 任务执行）。
   using ModemReadyFn = std::function<void(uint8_t port)>;
   void setOnModemReadyCb(ModemReadyFn fn) { _onReady = fn; }
@@ -66,41 +66,41 @@ class SmsService {
   void setOnSmsReceivedCb(SmsReceivedFn fn) { _onSms = fn; }
 
   // SIM 就绪状态变更事件：运行时插卡 / 拔卡（抽数任务上下文触发）。
-  // 仅运行时切换才触发——开机首次就绪与通信模组重启后的重新就绪不通知
+  // 仅运行时切换才触发——开机首次就绪与模组重启后的重新就绪不通知
   // （分别由启动邮件覆盖、且并非真实的插卡事件）。
   using SimChangeFn = std::function<void(uint8_t port, bool ready)>;
   void setOnSimChangeCb(SimChangeFn fn) { _onSim = fn; }
 
   // 来电事件（tick 主循环上下文触发，回调内只允许轻量入队）：
   // number 为主叫号码（未获取到时为「未知号码」/「号码保密」）；
-  // modem 为收到来电的通信模组串口号。命中黑名单（来电作用域）时不触发。
+  // modem 为收到来电的模组串口号。命中黑名单（来电作用域）时不触发。
   using CallReceivedFn = std::function<void(const String &number, uint32_t ts,
                                            int8_t modem)>;
   void setOnCallReceivedCb(CallReceivedFn fn) { _onCall = fn; }
 
-  // 通信模组是否已就绪（启用且初始化完成，可收发短信）；port 越界返回 false
+  // 模组是否已就绪（启用且初始化完成，可收发短信）；port 越界返回 false
   bool modemReady(uint8_t port) const;
 
-  // 所有启用通信模组的初始化是否已有结果：即不再处于「上电 / 等 AT / 等 SIM /
+  // 所有启用模组的初始化是否已有结果：即不再处于「上电 / 等 AT / 等 SIM /
   // 射频 / 等注册 / 下发配置」等中间态（终态为 kReady 就绪或 kFault 故障）。
-  // 供开机后需要等通信模组就绪再继续的流程使用（如启动邮件——邮件里要带上通信模组
-  // 状态，太早发会显示「初始化中」）。通信模组缺失/损坏会走 kFault 终态，不会
-  // 永久阻塞；无启用通信模组时返回 true。
+  // 供开机后需要等模组就绪再继续的流程使用（如启动邮件——邮件里要带上模组
+  // 状态，太早发会显示「初始化中」）。模组缺失/损坏会走 kFault 终态，不会
+  // 永久阻塞；无启用模组时返回 true。
   bool modemsSettled() const;
 
-  // ---------------- 主动查询短信（通信模组存储兜底）----------------
-  // 通信模组以 CNMI=2,1 接收时短信落在通信模组侧（本机收不到 +CMT 直投），
+  // ---------------- 主动查询短信（模组存储兜底）----------------
+  // 模组以 CNMI=2,1 接收时短信落在模组侧（本机收不到 +CMT 直投），
   // 由专职查询任务读回：AT+CMGL=0/1 列索引（未读 + 已读）-> AT+CMGR 读 PDU ->
-  // 复用收信处理链落盘 + 推送 -> 成功后 AT+CMGD 删除通信模组侧副本；
+  // 复用收信处理链落盘 + 推送 -> 成功后 AT+CMGD 删除模组侧副本；
   // 删除失败会在后续查询里随「已读」列表被重新捞回补删，避免占满 SIM。
-  // 请求异步执行（不阻塞调用方）；通信模组未就绪时请求保留，就绪后自动补跑。
+  // 请求异步执行（不阻塞调用方）；模组未就绪时请求保留，就绪后自动补跑。
   bool requestQuery(uint8_t port);
-  // 对所有启用的通信模组各发起一次查询
+  // 对所有启用的模组各发起一次查询
   void requestQueryAll();
   // 查询状态 JSON（Web 展示）：各端口待查/执行中标记 + 上次查询结果 + SIM 清空状态
   String queryStatusJson() const;
 
-  // 清空指定通信模组 SIM 上的全部短信（含未读、尚未读回转发的短信）。
+  // 清空指定模组 SIM 上的全部短信（含未读、尚未读回转发的短信）。
   // 异步执行：仅置标记，阻塞式 AT+CMGD 由查询任务完成，不阻塞 Web 任务。
   // port 越界 / 模组未启用 / 未就绪 / 已有清空任务在跑时返回 false。
   bool requestClear(uint8_t port);
@@ -119,9 +119,9 @@ class SmsService {
   uint32_t safetyPollMs() const { return _safetyPollMs; }
 
   // ---------------- 短信接收模式（CNMI）----------------
-  // true = 存储模式（CNMI=2,1，短信落通信模组侧并上报 +CMTI 索引，配合主动查询）；
+  // true = 存储模式（CNMI=2,1，短信落模组侧并上报 +CMTI 索引，配合主动查询）；
   // false = 直投模式（CNMI=2,2，新短信直接投递给设备）。
-  // 切换后落盘保存，并由查询任务把新的 CNMI 热下发给已就绪的通信模组。
+  // 切换后落盘保存，并由查询任务把新的 CNMI 热下发给已就绪的模组。
   bool storeMode() const { return _cnmiStore; }
   bool setStoreMode(bool on);
 
@@ -137,17 +137,17 @@ class SmsService {
   // 运行于 tick 主循环（pollAdminCmd），由 App 注入（可安全访问各子系统）。
   using SystemStatusFn = std::function<String()>;
   void setSystemStatusFn(SystemStatusFn fn) { _statusFn = fn; }
-  // 通信模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
+  // 模组列表 JSON：[{"port":1,"enabled":true,"ready":...,"state":"..."},...]
   String modemsJson() const;
 
-  // 单个通信模组的 LCD 简报（状态页一行用，短文本）：
+  // 单个模组的 LCD 简报（状态页一行用，短文本）：
   //   "未启用" / "等AT" / "等SIM" / "等注册" / "配置中" / "故障" /
   //   "就绪 <运营商> <CSQ>"
   // port 越界返回空串。与 modemsJson 同样不加锁：只读若干 POD 字段，
   // 抽数任务并发改写最多让读数差一拍，不存在一致性风险。
   String modemBrief(uint8_t port) const;
 
-  // 单个通信模组的完整状态快照（LCD 菜单「通信模组」页用）。
+  // 单个模组的完整状态快照（LCD 菜单「模组」页用）。
   // 与 modemBrief 同策略不加锁：只读 POD + String 字段，最多让读数差一拍。
   // port 越界返回 false（out 保持原样）。
   bool modemSnapshot(uint8_t port, ModemSnapshot &out) const;
@@ -155,24 +155,24 @@ class SmsService {
   // 运营商短代码 -> 中文名（CMCC/CUCC/CTCC/CBN）；未知返回空串
   static String operCn(const String &code);
 
-  // 导出通信模组配置（启用/别名，供备份用）到给定 JSON 对象：
+  // 导出模组配置（启用/别名，供备份用）到给定 JSON 对象：
   // o["max"]=n, o["adminPhones"]=["..",".."], o["modems"]=[{"port":1,"enabled":..,"alias":".."},...]
   void exportTo(JsonObject &o) const;
 
-  // 从给定 JSON 对象导入通信模组配置并落盘；json 同 exportTo；成功返回 true
+  // 从给定 JSON 对象导入模组配置并落盘；json 同 exportTo；成功返回 true
   bool importFrom(const JsonObject &o);
 
   // ---------------- 模组调试 ----------------
-  // 经短信通信模组发送一条 AT 命令（供 Web 模组调试）。与短信收发共用同一端口锁，
-  // 串行无锁层面冲突；发送期间令初始化/心跳轮询让行；通信模组就绪时自动还原
+  // 经短信模组发送一条 AT 命令（供 Web 模组调试）。与短信收发共用同一端口锁，
+  // 串行无锁层面冲突；发送期间令初始化/心跳轮询让行；模组就绪时自动还原
   // CMGF/CNMI，防止控制台命令误改短信配置导致收发失效。返回 AT 历史记录（含响应）。
   SerialBridge::Result sendAt(uint8_t port, uint32_t baud, const String &cmd,
                               SerialBridge::Eol eol, uint32_t timeoutMs, String &err);
 
   // ---------------- 发送 ----------------
   // 发送短信（自动拆分长短信并逐段 CMGS）。
-  // 返回值：0 = 通信模组未发出（失败，err 有原因）；入库记录 ID = 成功；
-  //   kIdSentUnstored = 通信模组已发出但记录未入库（userdata 异常）——不算失败，
+  // 返回值：0 = 模组未发出（失败，err 有原因）；入库记录 ID = 成功；
+  //   kIdSentUnstored = 模组已发出但记录未入库（userdata 异常）——不算失败，
   //   此时 stored 出参为 false，短信确实已发出，只是列表不会显示本条。
   // 参考实现同款语义：存储失败不影响发送结果。
   static constexpr uint32_t kIdSentUnstored = 0xFFFFFFFEu;
@@ -223,7 +223,7 @@ class SmsService {
   struct AdminCmd {
     enum Kind : uint8_t { kSms, kReset, kPing, kHelp };
     Kind     kind;
-    uint8_t  port;    // 收到命令的通信模组串口号
+    uint8_t  port;    // 收到命令的模组串口号
     String   from;    // 发命令的管理员号码（执行结果回复给它）
     String   phone;   // kSms：代发目标号码
     String   content; // kSms：代发内容
@@ -242,7 +242,7 @@ class SmsService {
   bool adminEnabled() const { return _adminEnabled; }
   bool setAdminEnabled(bool on);
 
-  // 经通信模组执行一次 ICMP ping（AT+MPING=<host>,<count>,<timeout>,<size>,<ttl>，
+  // 经模组执行一次 ICMP ping（AT+MPING=<host>,<count>,<timeout>,<size>,<ttl>，
   // 覆盖 SIMCOM/UNISOC 等常见 Cat.1 模组）：先尽力激活 PDP 上下文，再发 MPING；
   // 所有 AT 经 sendAt 发出，发完自动还原短信模式（CMGF/CNMI），不影响短信收发。
   // host 空时回退 8.8.8.8，默认 count=4/timeout=10000/size=32/ttl=15（见参数范围
@@ -265,9 +265,9 @@ class SmsService {
   String lastCallJson();
 
  private:
-  // 通信模组初始化状态机：从「上电」到「短信就绪」的全异步流程
+  // 模组初始化状态机：从「上电」到「短信就绪」的全异步流程
   // （适配 esp32-sms-forwarding：等 AT 就绪 -> SIM -> 射频 -> 网络注册 ->
-  //  配置逐条下发 -> 心跳探活；任一环节失败转故障态慢速重试，运行时通信模组重启自愈）
+  //  配置逐条下发 -> 心跳探活；任一环节失败转故障态慢速重试，运行时模组重启自愈）
   enum class ModemInitState : uint8_t {
     kDown = 0,    // 未启用/已禁用
     kPowerOn,     // 硬复位（EN 引脚上下电）
@@ -275,16 +275,16 @@ class SmsService {
     kWaitCpin,    // 等 SIM 就绪（CPIN READY）
     kBringRf,     // CFUN=1 射频上线
     kWaitReg,     // 等网络注册（CEREG/CREG）
-    kConfig,      // 下发通信模组配置（COPS/CEREG/CGDCONT/CNMI/CMGF...）
+    kConfig,      // 下发模组配置（COPS/CEREG/CGDCONT/CNMI/CMGF...）
     kReady,       // 完全就绪，可收发短信
     kFault,       // 故障/未连接：达最大重试，慢速重试直至恢复
   };
 
-  // 每通信模组运行时状态（下标 = 串口号 1..kSmsMaxModems）
+  // 每模组运行时状态（下标 = 串口号 1..kSmsMaxModems）
   struct ModemState {
     bool enabled = false;
-    String alias;               // 通信模组别名（用户可设，展示用；如「客厅卡槽」）
-    uint8_t csmsRef = 1;       // 长短信参考号计数器（每通信模组独立，非零）
+    String alias;               // 模组别名（用户可设，展示用；如「客厅卡槽」）
+    uint8_t csmsRef = 1;       // 长短信参考号计数器（每模组独立，非零）
     bool waitingPdu = false;   // +CMT 头之后的下一段即 PDU
     uint32_t waitingPduAtMs = 0;  // +CMT 置位时刻；超时自清，避免标志永久吞掉后续 URC
     ModemInitState initState = ModemInitState::kDown;  // 初始化状态机当前态
@@ -296,11 +296,11 @@ class SmsService {
     uint32_t nextPollMs = 0;   // 下次动作时间（节流，避免 AT 风暴）
     uint32_t lastActivityMs = 0;  // 上次模组有活动(响应/URC 上报)的时刻；心跳仅在其过期(30s)时才发 AT
     uint32_t cmdPauseUntil = 0;  // 暂停其他后台指令的绝对时刻；短信发送前标记、每收到短信延长（见使用处）
-    bool needReinit = false;   // 运行时检测到通信模组重启 -> 重新开始初始化
+    bool needReinit = false;   // 运行时检测到模组重启 -> 重新开始初始化
     bool everReady = false;    // 是否曾进入过就绪态（区分开机与运行时 SIM 事件）
     bool     simRemovedNotified = false;  // 已通知过「SIM 拔出」（重新就绪时补发「插入」）
 
-    // ---- 主动查询（通信模组存储兜底）----
+    // ---- 主动查询（模组存储兜底）----
     bool    queryPending = false;    // 有待执行的存储查询（+CMTI / 定时 / 手动触发）
     bool    queryRunning = false;    // 查询任务正在处理本端口
     uint32_t queryLastFound = 0;    // 上次查询发现的存量条数
@@ -341,7 +341,7 @@ class SmsService {
       uint32_t key = 0;    // 组指纹
       uint32_t ms = 0;     // 登记时刻（过期清理，防 SIM 索引复用后残留）
       uint16_t idx = 0;    // SIM 短信索引
-      uint8_t  port = 0;   // 通信模组端口，0 = 空闲
+      uint8_t  port = 0;   // 模组端口，0 = 空闲
     };
     static constexpr uint8_t kPartIdxSlots = 24;
     PartIdxRec partIdx[kPartIdxSlots];
@@ -369,12 +369,12 @@ class SmsService {
     uint8_t  act = 0;           // 接入技术（AT+CEREG 的 act 字段：0 GSM,2 UTRAN,4/5 E-UTRAN,7 LTE）
     String  reg;               // 网络注册状态文本（已注册/搜索中/未注册...）
     bool    simReady = false;  // SIM 卡是否就绪（AT+CPIN? READY）
-    String  imei;              // 通信模组 IMEI（就绪后查一次）
+    String  imei;              // 模组 IMEI（就绪后查一次）
     String  iccid;             // SIM 卡 ICCID（AT+CCID；部分模组不支持则为空）
     String  num;               // 本机号码（SIM 号码，AT+CNUM；部分 SIM 不含则为空）
-    String  vendor;            // 通信模组厂商（AT+CGMI，如 MLINK）
-    String  model;             // 通信模组型号（AT+CGMM，如 ML307A-DSLN）
-    String  revision;          // 通信模组版本/完整料号（AT+CGMR，常含后缀如 -MTSH1S00 或固件版本）
+    String  vendor;            // 模组厂商（AT+CGMI，如 MLINK）
+    String  model;             // 模组型号（AT+CGMM，如 ML307A-DSLN）
+    String  revision;          // 模组版本/完整料号（AT+CGMR，常含后缀如 -MTSH1S00 或固件版本）
     String  operCode;          // 运营商短代码（CMCC/CUCC/CTCC/CBN，由 AT+COPS 解析）
     // 一次性静态采集（IMEI/号码/厂商/型号/版本/运营商/ICCID）：就绪(reinit)后仅执行一次并永久缓存
     bool     identityQueried = false;  // 静态信息是否已采集并缓存
@@ -399,19 +399,19 @@ class SmsService {
   // 初始化态 -> 可读字符串（SSE/JSON 用）
   static const char *initStateName(ModemInitState s);
 
-  // 通信模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw）
+  // 模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw）
   int8_t enPin(uint8_t port) const;
   // EN 启用电平（HIGH/LOW）：硬上下电时拉到该电平即开机；无效时返回 -1
   int8_t enEnableLevel(uint8_t port) const;
 
-  // 对通信模组异步下发 PDU 模式 / 新短信直投配置（仅启动状态机，不阻塞）
+  // 对模组异步下发 PDU 模式 / 新短信直投配置（仅启动状态机，不阻塞）
   bool configureModem(uint8_t port, bool enabled);
 
   // 发送一段 PDU（CMGS 两段式握手）；失败写入 err
   bool sendPduPart(uint8_t port, const SmsPduPart &part, String &err);
 
   // 处理一条收到的 PDU（解码 + 重组 + 落盘）
-  // 返回值决定通信模组侧副本能否删除（查询链路据此决定是否发 AT+CMGD）
+  // 返回值决定模组侧副本能否删除（查询链路据此决定是否发 AT+CMGD）
   enum class CmtOutcome : uint8_t {
     kKeep,    // 保留：解码失败 / 长短信未收齐 / 落盘失败 -> 下轮查询重试
               // （已读列表会把它捞回，不会永久滞留 SIM）
@@ -429,12 +429,12 @@ class SmsService {
     return _cnmiStore ? "AT+CNMI=2,1,0,0,0" : "AT+CNMI=2,2,0,0,0";
   }
 
-  // ---------------- 主动查询任务（通信模组存储兜底）----------------
+  // ---------------- 主动查询任务（模组存储兜底）----------------
   // 专职任务：轮询各端口的待查标记 -> 阻塞 AT 读回模组存储 -> 复用收信处理链
   // -> 成功后立即删除模组侧副本（失败重试并排队补删）。查询失败不删除任何内容，下轮重试。
   static void queryTaskEntry(void *arg);
   void queryTask();
-  // 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
+  // 查询一个模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
   bool queryPort(uint8_t port);
   // 查询任务内执行：AT+CMGD=1,4 全清 -> CPMS 校验 -> 仍有残留时逐条兜底删除
   void clearPortSms(uint8_t port);
@@ -452,8 +452,8 @@ class SmsService {
   void setPollFields(JsonObjectConst o);
 
   // 设置 SIM 就绪态并检测运行时切换（插卡/拔卡通知）。
-  // 开机首次就绪（everReady=false）与通信模组重启后的重新就绪（未通知过拔出）
-  // 均不触发事件，避免每次开机/通信模组重启都误报「SIM 已插入」。
+  // 开机首次就绪（everReady=false）与模组重启后的重新就绪（未通知过拔出）
+  // 均不触发事件，避免每次开机/模组重启都误报「SIM 已插入」。
   void setSimReady(uint8_t port, bool ready);
 
   // ---- 来电检测（URC 在抽数任务上下文解析，派发在 tick 主循环）----
@@ -517,7 +517,7 @@ class SmsService {
   static void sendTaskEntry(void *arg);
   void sendTask();
 
-  // ---------------- 主动查询（通信模组存储兜底）----------------
+  // ---------------- 主动查询（模组存储兜底）----------------
   TaskHandle_t _queryTask = nullptr;    // 查询任务句柄
   SemaphoreHandle_t _codecMutex = nullptr;  // 保护 PDU 解码（pdulib 实例非线程安全）与重组槽位
   bool _cnmiStore = true;               // true = CNMI=2,1（落存储 + +CMTI 索引）；false = 2,2 直投
@@ -553,7 +553,7 @@ class SmsService {
   uint32_t _lastCallSeq = 0;                    // 最新来电派发序号（SSE diff）
   String   _lastCallJson;                       // 最近一次来电摘要 JSON（call 事件推送）
 
-  ModemReadyFn _onReady;    // 通信模组就绪回调（抽数任务上下文触发）
+  ModemReadyFn _onReady;    // 模组就绪回调（抽数任务上下文触发）
   SmsReceivedFn _onSms;     // 短信接收回调（抽数任务上下文触发）
   SimChangeFn _onSim;       // SIM 就绪状态变更回调（抽数任务上下文触发）
   CallReceivedFn _onCall;   // 来电视题回调（tick 主循环上下文触发）

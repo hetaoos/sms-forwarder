@@ -10,7 +10,7 @@ static void attachVerifyCode(SmsMessage &m) {
 }
 
 #include "app/TaskWatchdog.h"  // 发送 / 查询常驻任务注册 TWDT 并喂狗
-#include "app/ModemHw.h"        // 通信模组硬件引脚（EN 复位脚 / 有效电平）运行期配置
+#include "app/ModemHw.h"        // 模组硬件引脚（EN 复位脚 / 有效电平）运行期配置
 #include "log/LogStore.h"
 
 #include <ArduinoJson.h>
@@ -26,7 +26,7 @@ static void attachVerifyCode(SmsMessage &m) {
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 // 把 String 拷进定长 char 缓冲（超长由 snprintf 截断）。
@@ -254,7 +254,7 @@ static String operCode(const String &raw) {
 // bridge：AT 串口桥引用
 SmsService::SmsService(SerialBridge &bridge) : _bridge(bridge) {}
 
-// 载入配置、准备存储、对启用通信模组启动异步初始化（状态机由抽数任务轮询驱动）
+// 载入配置、准备存储、对启用模组启动异步初始化（状态机由抽数任务轮询驱动）
 void SmsService::begin() {
   _mutex = xSemaphoreCreateMutex();
   _codecMutex = xSemaphoreCreateMutex();
@@ -262,12 +262,12 @@ void SmsService::begin() {
   bool hadRecord = loadConfig();
   if (!hadRecord) saveConfig();  // 首次启动落一份默认配置
 
-  // 注册抽数任务轮询回调：每个端口处理完后由泵任务调用，驱动通信模组初始化/心跳。
+  // 注册抽数任务轮询回调：每个端口处理完后由泵任务调用，驱动模组初始化/心跳。
   // 回调运行于抽数任务上下文、不持桥锁，内部只用 trySend（非阻塞），因此绝不阻塞
-  // 抽数任务、主循环或 Web；故障/未连接通信模组只会在自身端口上空转重试。
+  // 抽数任务、主循环或 Web；故障/未连接模组只会在自身端口上空转重试。
   _bridge.setPollHandler([this](uint8_t port) { this->pollInit(port); });
 
-  // 对启用通信模组启动初始化（异步：仅置初始态，真正 AT 交互交由 pollInit）
+  // 对启用模组启动初始化（异步：仅置初始态，真正 AT 交互交由 pollInit）
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     if (_modems[p].enabled) configureModem(p, true);
   }
@@ -290,7 +290,7 @@ void SmsService::begin() {
   _pollBaseMs = millis();  // 间隔模式以「开机」为基准
   _safetyLastMs = millis();  // 兜底轮询以「开机」为基准（首个周期后才触发）
 
-  // 主动查询任务（通信模组存储兜底）：独立任务执行阻塞式 AT 查询，
+  // 主动查询任务（模组存储兜底）：独立任务执行阻塞式 AT 查询，
   // 不占用抽数任务（URC 解析）与主循环的时间片；优先级低于发送任务。
   if (_codecMutex) {
     if (xTaskCreate(&SmsService::queryTaskEntry, "sms_query", 5120, this, 3, &_queryTask) != pdPASS) {
@@ -309,7 +309,7 @@ void SmsService::begin() {
 }
 
 // 周期调用（主循环）：长短信重组超时清理 + 来电检测派发；
-// 通信模组初始化由抽数任务轮询驱动。先消费发送完成事件（在 loop 上下文触发
+// 模组初始化由抽数任务轮询驱动。先消费发送完成事件（在 loop 上下文触发
 // done 回调，保证可安全访问 Web/MQTT 等共享资源），再跑常规 tick 逻辑。
 void SmsService::tick() {
   if (_doneQ) {
@@ -423,12 +423,12 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
       } else {
         m.waitingPdu = false;
         _log.addf(LogLevel::kWarn, "sms",
-                  "通信模组 %u 的 +CMT 后未收到 PDU，按普通上报继续处理：%s",
+                  "模组 %u 的 +CMT 后未收到 PDU，按普通上报继续处理：%s",
                   (unsigned)port, line.c_str());
       }
     }
 
-    // 运行时通信模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化。
+    // 运行时模组重启检测：仅在已就绪态下识别开机类 URC，置位让 tick 重新初始化。
     // 注意：+CPIN: READY 已移出此处——SIM 插拔由下方 +CPIN: URC 处理，避免误判重启。
     if (m.initState == ModemInitState::kReady) {
       if (line == "RDY" || line.startsWith("^STARTUP") || line.startsWith("+PBREADY")) {
@@ -465,7 +465,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
         setSimReady(port, false);
         if (!m.needReinit) {
           m.needReinit = true;
-          _log.addf(LogLevel::kWarn, "sms", "通信模组 %u SIM 卡疑似拔出，重新初始化",
+          _log.addf(LogLevel::kWarn, "sms", "模组 %u SIM 卡疑似拔出，重新初始化",
                     (unsigned)port);
         }
       }
@@ -481,7 +481,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
       consumed = true;
       continue;
     }
-    // +CMTI:（CNMI=2,1 存储模式）：通信模组已把新短信写进自身存储并给出索引。
+    // +CMTI:（CNMI=2,1 存储模式）：模组已把新短信写进自身存储并给出索引。
     // 本机收不到 +CMT 直投，只能靠主动查询把它读回——置待查标记，由查询任务处理。
     // 查询进行中同样置位：查询期间到达的新短信本轮未必读到，留给下一轮。
     if (line.startsWith("+CMTI:")) {
@@ -517,18 +517,18 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
         }
       }
       _log.addf(LogLevel::kInfo, "sms",
-                "通信模组 %u 收到 +CMTI 索引通知（索引 %d，待查 %u 个），已置待查标记",
+                "模组 %u 收到 +CMTI 索引通知（索引 %d，待查 %u 个），已置待查标记",
                 (unsigned)port, cidx, (unsigned)m.queryIndexCount);
       consumed = true;
       continue;
     }
-    // +CDS:（状态报告）：消费但不处理，避免通信模组索引类流量冲刷 AT 历史
+    // +CDS:（状态报告）：消费但不处理，避免模组索引类流量冲刷 AT 历史
     if (line.startsWith("+CDS:")) {
       consumed = true;
       continue;
     }
     // 来电相关 URC（AT+CLIP=1 已下发）：RING/+CRING 起一轮，+CLIP/+CLCC 带号码，
-    // NO CARRIER 等收口。仅处理启用中的通信模组；解析只置状态，派发在 tick。
+    // NO CARRIER 等收口。仅处理启用中的模组；解析只置状态，派发在 tick。
     if (m.enabled) {
       if (line == "RING" || line.startsWith("+CRING:")) {
         handleCallRing(port);
@@ -556,7 +556,7 @@ bool SmsService::onUnsolicited(uint8_t port, const String &text) {
   return consumed;
 }
 
-// ---------------- 通信模组管理 ----------------
+// ---------------- 模组管理 ----------------
 bool SmsService::modemEnabled(uint8_t port) const {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   return _modems[port].enabled;
@@ -570,7 +570,7 @@ bool SmsService::setModemEnabled(uint8_t port, bool enabled) {
 
 bool SmsService::setModemAlias(uint8_t port, const String &alias) {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
-  _modems[port].alias = alias;   // 仅展示用，不触发通信模组状态机
+  _modems[port].alias = alias;   // 仅展示用，不触发模组状态机
   return saveConfig();
 }
 
@@ -604,7 +604,7 @@ String SmsService::modemsJson() const {
   return out;
 }
 
-// 单个通信模组的 LCD 简报：状态机阶段给中文短词，就绪态补上运营商与信号强度
+// 单个模组的 LCD 简报：状态机阶段给中文短词，就绪态补上运营商与信号强度
 String SmsService::modemBrief(uint8_t port) const {
   if (port == 0 || port > cfg::kSmsMaxModems) return String();
   const ModemState &m = _modems[port];
@@ -642,7 +642,7 @@ String SmsService::operCn(const String &code) {
   return "";
 }
 
-// 单个通信模组的完整状态快照（LCD 菜单「通信模组」页用），不加锁，只读字段
+// 单个模组的完整状态快照（LCD 菜单「模组」页用），不加锁，只读字段
 bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
   if (port == 0 || port > cfg::kSmsMaxModems) return false;
   const ModemState &m = _modems[port];
@@ -680,7 +680,7 @@ bool SmsService::modemSnapshot(uint8_t port, ModemSnapshot &out) const {
   return true;
 }
 
-// 导出通信模组配置（启用/别名，供备份用）到给定 JSON 对象
+// 导出模组配置（启用/别名，供备份用）到给定 JSON 对象
 void SmsService::exportTo(JsonObject &o) const {
   o["max"] = _max;
   o["adminEnabled"] = _adminEnabled;
@@ -708,17 +708,17 @@ void SmsService::exportTo(JsonObject &o) const {
 uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
                           String &err, bool *storedPtr) {
   if (port < 1 || port > cfg::kSmsMaxModems) {
-    err = "通信模组不存在";
+    err = "模组不存在";
     return 0;
   }
   ModemState &m = _modems[port];
   if (!m.enabled) {
-    err = "通信模组未启用或不存在";
+    err = "模组未启用或不存在";
     return 0;
   }
-  // 通信模组未就绪（初始化中/故障/未连接）时直接拒绝，避免无谓等待与持锁
+  // 模组未就绪（初始化中/故障/未连接）时直接拒绝，避免无谓等待与持锁
   if (m.initState != ModemInitState::kReady) {
-    err = "通信模组尚未就绪（初始化中或故障）";
+    err = "模组尚未就绪（初始化中或故障）";
     return 0;
   }
   // 号码清洗：去分隔符，仅保留数字与前导 +
@@ -748,7 +748,7 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
     return 0;
   }
 
-  // 编码（长短信自动拆分）；参考号取本通信模组计数器（单条时忽略）
+  // 编码（长短信自动拆分）；参考号取本模组计数器（单条时忽略）
   SmsPduPart parts[cfg::kSmsConcatMaxParts];
   int n = _codec.encodeSend(num, text, m.csmsRef, parts,
                             cfg::kSmsConcatMaxParts);
@@ -781,13 +781,13 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
     _lastSmsId = id;
     unlock();
     storedOk = true;
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已发送 #%u 至 %s（%d 段）",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 已发送 #%u 至 %s（%d 段）",
               (unsigned)port, (unsigned)id, num.c_str(), n);
   } else {
-    // 通信模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）。
+    // 模组侧已成功发出，但记录未入库（userdata 未挂载/写失败）。
     // 不判失败——短信确实已发出；通过 stored 出参告知调用方（参考实现同款语义：
     // 存储失败不影响发送结果），避免「界面报失败但其实已发送成功」的误判。
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 已发至 %s，但记录入库失败",
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 已发至 %s，但记录入库失败",
               (unsigned)port, num.c_str());
   }
   if (storedPtr) *storedPtr = storedOk;
@@ -795,17 +795,17 @@ uint32_t SmsService::send(uint8_t port, const String &phone, const String &text,
 }
 
 // ---------------- 模组调试 ----------------
-// 经短信通信模组发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
+// 经短信模组发送 AT 命令：与短信收发共用同一端口锁（bridge.send 内部阻塞取锁），
 // 因此控制台命令与 CMGS 发送**串行**，不会出现命令/PDU 交织破坏短信；发送窗口内
-// 发送前延长 cmdPauseUntil 令 pollInit 让行，避免与后台查询 AT 互相干扰。通信模组就绪后自动还原
+// 发送前延长 cmdPauseUntil 令 pollInit 让行，避免与后台查询 AT 互相干扰。模组就绪后自动还原
 // CMGF=0 / CNMI（存储或直投模式），使控制台任意 AT（如切到文本模式、关直投、关射频）都不会
-// 让短信收发永久失效——这是与原"直接 _bridge.send 绕过短信通信模组"最关键的区别。
+// 让短信收发永久失效——这是与原"直接 _bridge.send 绕过短信模组"最关键的区别。
 SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
                                         const String &cmd, SerialBridge::Eol eol,
                                         uint32_t timeoutMs, String &err) {
   SerialBridge::Result empty{false, (uint32_t)-1, String()};
   if (port < 1 || port > cfg::kSmsMaxModems) {
-    err = "通信模组不存在";
+    err = "模组不存在";
     return empty;
   }
   ModemState &m = _modems[port];
@@ -814,10 +814,10 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
   SerialBridge::Result r = _bridge.send(port, baud, cmd, eol, timeoutMs,
                                         AtHistory::Type::kCmd);
   if (!r.ok) {
-    err = "通信模组序号无效";
+    err = "模组序号无效";
     return r;
   }
-  // 还原短信关键配置（仅通信模组就绪时）；初始化进行中由状态机负责下发，无需此处干预。
+  // 还原短信关键配置（仅模组就绪时）；初始化进行中由状态机负责下发，无需此处干预。
   // 必须确认 OK：用户刚发过 AT+CMGF=1 / AT+CNMI=... 时若还原失败，模组会停在
   // TEXT 模式或未开 +CMTI 上报，存储模式的 AT+CMGR 就读不到 PDU。
   if (m.initState == ModemInitState::kReady) {
@@ -830,7 +830,7 @@ SerialBridge::Result SmsService::sendAt(uint8_t port, uint32_t baud,
         if (i == 0) { m.cmgfChecked = false; m.cmgfOk = false; }  // 查询任务再复核一次
       } else {
         _log.addf(LogLevel::kWarn, "sms",
-                  "通信模组 %u 还原 %s 未确认（响应：%s），短信收发可能异常",
+                  "模组 %u 还原 %s 未确认（响应：%s），短信收发可能异常",
                   (unsigned)port, restore[i], briefResp(rr.resp).c_str());
       }
     }
@@ -845,25 +845,25 @@ bool SmsService::configureModem(uint8_t port, bool enabled) {
   return true;
 }
 
-// 触发通信模组重新初始化：仅启用态有效，置 needReinit 由抽数任务状态机重跑（不清空已发记录）
+// 触发模组重新初始化：仅启用态有效，置 needReinit 由抽数任务状态机重跑（不清空已发记录）
 bool SmsService::reinitPort(uint8_t port) {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   if (!_modems[port].enabled) return false;
   _modems[port].needReinit = true;
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 请求重新初始化（等待抽数任务重跑）",
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 请求重新初始化（等待抽数任务重跑）",
             (unsigned)port);
   return true;
 }
 
-// 通信模组是否已就绪（启用且初始化状态机到达 kReady）
+// 模组是否已就绪（启用且初始化状态机到达 kReady）
 bool SmsService::modemReady(uint8_t port) const {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   return _modems[port].initState == ModemInitState::kReady;
 }
 
-// 启用通信模组的初始化是否都已出结果（终态 kReady / kFault，不含中间态）。
+// 启用模组的初始化是否都已出结果（终态 kReady / kFault，不含中间态）。
 // 只读枚举值（单字节读，与其他 const 访问器一致，不加锁），调用方据此
-// 决定是否可以继续依赖通信模组状态的动作（如发送启动邮件）
+// 决定是否可以继续依赖模组状态的动作（如发送启动邮件）
 bool SmsService::modemsSettled() const {
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     if (!_modems[p].enabled) continue;
@@ -882,9 +882,9 @@ bool SmsService::modemsSettled() const {
 }
 
 // 设置 SIM 就绪态并检测运行时切换（插卡/拔卡事件）。
-// 两类「假切换」必须排除，否则每次开机/通信模组重启都会误报：
-//   1. 开机首次就绪：everReady=false（通信模组从未就绪过），属启动流程；
-//   2. 通信模组重启后的重新就绪：未通知过拔出（simRemovedNotified=false）。
+// 两类「假切换」必须排除，否则每次开机/模组重启都会误报：
+//   1. 开机首次就绪：everReady=false（模组从未就绪过），属启动流程；
+//   2. 模组重启后的重新就绪：未通知过拔出（simRemovedNotified=false）。
 // 只有「就绪 -> 拔出 -> 重新就绪」这条真实路径会成对发出两个事件。
 void SmsService::setSimReady(uint8_t port, bool ready) {
   if (port < 1 || port > cfg::kSmsMaxModems) return;
@@ -893,17 +893,17 @@ void SmsService::setSimReady(uint8_t port, bool ready) {
   m.simReady = ready;
 
   if (!ready) {
-    // 运行时掉卡：仅当通信模组曾就绪（排除开机初始化过程）才通知
+    // 运行时掉卡：仅当模组曾就绪（排除开机初始化过程）才通知
     if (m.everReady && !m.simRemovedNotified) {
       m.simRemovedNotified = true;
-      _log.addf(LogLevel::kInfo, "sim", "通信模组 %u SIM 卡已拔出", (unsigned)port);
+      _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM 卡已拔出", (unsigned)port);
       if (_onSim) _onSim(port, false);
     }
   } else {
     // 重新插卡：仅当之前通知过拔出才通知
     if (m.simRemovedNotified) {
       m.simRemovedNotified = false;
-      _log.addf(LogLevel::kInfo, "sim", "通信模组 %u SIM 卡已插入", (unsigned)port);
+      _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM 卡已插入", (unsigned)port);
       if (_onSim) _onSim(port, true);
     }
   }
@@ -934,7 +934,7 @@ void SmsService::handleCallRing(uint8_t port) {
   m.callClipWaitUntilMs = now + kCallClipWaitMs;
   m.callClccTried = false;
   m.callClccDueMs = now + kCallClccDelayMs;
-  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 检测到来电（RING），等待主叫号码",
+  _log.addf(LogLevel::kInfo, "call", "模组 %u 检测到来电（RING），等待主叫号码",
             (unsigned)port);
 }
 
@@ -958,7 +958,7 @@ void SmsService::handleCallClip(uint8_t port, const String &line) {
     if (inCallDedupWindow(m.callLastNotifyMs, now)) return;
     m.callNumber = num.length() > 0 ? num : String("号码保密");
     m.callDispatch = true;
-    _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的 +CLIP，按来电处理：%s",
+    _log.addf(LogLevel::kInfo, "call", "模组 %u 无先导 RING 的 +CLIP，按来电处理：%s",
               (unsigned)port, m.callNumber.c_str());
     return;
   }
@@ -980,14 +980,14 @@ void SmsService::handleCallClcc(uint8_t port, const String &line) {
     if (inCallDedupWindow(m.callLastNotifyMs, now)) return;
     m.callNumber = num;
     m.callDispatch = true;
-    _log.addf(LogLevel::kInfo, "call", "通信模组 %u 无先导 RING 的主动 +CLCC，按来电处理：%s",
+    _log.addf(LogLevel::kInfo, "call", "模组 %u 无先导 RING 的主动 +CLCC，按来电处理：%s",
               (unsigned)port, num.c_str());
     return;
   }
   m.callNumber = num;
   m.callPending = false;
   m.callDispatch = true;
-  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 从主动 +CLCC 获取到来电号码：%s",
+  _log.addf(LogLevel::kInfo, "call", "模组 %u 从主动 +CLCC 获取到来电号码：%s",
             (unsigned)port, num.c_str());
 }
 
@@ -998,7 +998,7 @@ void SmsService::handleCallEnd(uint8_t port, const String &line) {
   if (!m.callPending) return;
   m.callPending = false;
   m.callDispatch = true;
-  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 通话结束（%s），以已知号码派发：%s",
+  _log.addf(LogLevel::kInfo, "call", "模组 %u 通话结束（%s），以已知号码派发：%s",
             (unsigned)port, line.c_str(),
             m.callNumber.length() ? m.callNumber.c_str() : "未知号码");
 }
@@ -1018,7 +1018,7 @@ void SmsService::pollCall(uint8_t port) {
   uint32_t now = millis();
 
   // 主动 AT+CLCC 兜底：等 kCallClccDelayMs 仍无 +CLIP/+CLCC 时查一次。
-  // 只能发给产生这通来电的那个通信模组——换一个模组查不到对方号码。
+  // 只能发给产生这通来电的那个模组——换一个模组查不到对方号码。
   // trySend 非阻塞取端口锁：端口忙（如在发短信）本轮跳过，下轮 tick 再试。
   if (!m.callClccTried && (int32_t)(now - m.callClccDueMs) >= 0) {
     SerialBridge::Result r;
@@ -1027,7 +1027,7 @@ void SmsService::pollCall(uint8_t port) {
       m.callClccTried = true;
       String num = parseClccNumber(r.resp);
       if (num.length() > 0) {
-        _log.addf(LogLevel::kInfo, "call", "通信模组 %u AT+CLCC 获取到来电号码：%s",
+        _log.addf(LogLevel::kInfo, "call", "模组 %u AT+CLCC 获取到来电号码：%s",
                   (unsigned)port, num.c_str());
         m.callNumber = num;
         m.callPending = false;
@@ -1035,7 +1035,7 @@ void SmsService::pollCall(uint8_t port) {
         return;
       }
       _log.addf(LogLevel::kInfo, "call",
-                "通信模组 %u AT+CLCC 未获取到号码（可能已挂断），继续等待",
+                "模组 %u AT+CLCC 未获取到号码（可能已挂断），继续等待",
                 (unsigned)port);
     } else {
       // 端口忙（如在发短信）：500ms 后重试，避免每轮 tick 空转
@@ -1069,7 +1069,7 @@ void SmsService::dispatchCall(uint8_t port) {
     return;
   }
 
-  _log.addf(LogLevel::kInfo, "call", "通信模组 %u 来电通知：%s", (unsigned)port,
+  _log.addf(LogLevel::kInfo, "call", "模组 %u 来电通知：%s", (unsigned)port,
             num.c_str());
 
   // SSE call 事件：记录最新来电摘要（与 sms 事件对称），下次 tick diff 推送
@@ -1139,7 +1139,7 @@ static String adminHelpText() {
   s += "管理员命令清单：\n";
   s += "SMS:<号码>:<内容>  从本卡代发短信（内容可含任意字符，含冒号）\n";
   s += "RESET  设备重启（先回复确认，2秒后执行）\n";
-  s += "PING [主机]  经通信模组做网络连通性测试（默认 8.8.8.8），并回附系统状态\n";
+  s += "PING [主机]  经模组做网络连通性测试（默认 8.8.8.8），并回附系统状态\n";
   s += "HELP  显示本帮助\n";
   s += "注：命令在收到它的卡上执行并回复；号码匹配忽略+86；黑名单优先。";
   return s;
@@ -1236,17 +1236,17 @@ struct PingTaskCtx {
   String     status;  // 主循环上下文预先抓好的系统状态（避免任务内再调 collectStatus 与主循环竞争）
 };
 
-// 经通信模组执行一次 ICMP ping（AT+CGPING，覆盖 SIMCOM/UNISOC 等常见 Cat.1 模组）。
+// 经模组执行一次 ICMP ping（AT+CGPING，覆盖 SIMCOM/UNISOC 等常见 Cat.1 模组）。
 // 先尽力激活 PDP 上下文（AT+CGACT=1,1），再发 AT+CGPING；所有 AT 经 sendAt 发出，
 // 发完自动还原短信模式（CMGF/CNMI），不影响短信收发。host 空时回退 8.8.8.8。
 bool SmsService::pingHost(uint8_t port, const String &hostIn, String &report) {
   if (port < 1 || port > cfg::kSmsMaxModems) {
-    report = "PING 失败：通信模组不存在";
+    report = "PING 失败：模组不存在";
     return false;
   }
   ModemState &m = _modems[port];
   if (m.initState != ModemInitState::kReady) {
-    report = "PING 失败：通信模组未就绪（" + String(initStateName(m.initState)) + "）";
+    report = "PING 失败：模组未就绪（" + String(initStateName(m.initState)) + "）";
     return false;
   }
   String host = hostIn;
@@ -1377,7 +1377,7 @@ bool SmsService::enqueueAdminCmd(uint8_t port, const String &sender,
     if (sc <= fc + 1) {
       // 格式错误：不当命令消费，由调用方按普通短信处理（入库 + 转发），
       // 便于管理员在记录里发现自己笔误
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员 SMS 命令格式错误，按普通短信处理：%s",
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u 管理员 SMS 命令格式错误，按普通短信处理：%s",
                 (unsigned)port, cmd.c_str());
       return false;
     }
@@ -1413,7 +1413,7 @@ bool SmsService::enqueueAdminCmd(uint8_t port, const String &sender,
   }
   unlock();
   if (!ok) {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员命令被丢弃（上一条尚未执行）",
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 管理员命令被丢弃（上一条尚未执行）",
               (unsigned)port);
   }
   return true;
@@ -1434,7 +1434,7 @@ void SmsService::pollAdminCmd() {
   }
 
   if (job.kind == AdminCmd::kReset) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：设备重启",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 执行管理员命令（来自 %s）：设备重启",
               (unsigned)job.port, job.from.c_str());
     replyToAdmin(job.port, job.from, "远程命令完成：设备正在重启");
     // 与 Web 重启同款：起低优先级任务延时 2 秒重启，留时间把回复发出去
@@ -1449,14 +1449,14 @@ void SmsService::pollAdminCmd() {
   }
 
   if (job.kind == AdminCmd::kHelp) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：HELP",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 执行管理员命令（来自 %s）：HELP",
               (unsigned)job.port, job.from.c_str());
     replyToAdmin(job.port, job.from, adminHelpText());
     return;
   }
 
   if (job.kind == AdminCmd::kPing) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 执行管理员命令（来自 %s）：PING %s",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 执行管理员命令（来自 %s）：PING %s",
               (unsigned)job.port, job.from.c_str(),
               job.content.length() ? job.content.c_str() : "8.8.8.8");
     // ping 可能阻塞较久（CGACT + CGPING 各数十秒），放独立任务跑，避免阻塞主循环/
@@ -1493,11 +1493,11 @@ void SmsService::pollAdminCmd() {
       [this, aport, afrom, aphone](uint32_t id, bool stored, const String &err) {
         if (id != 0) {
           _log.addf(LogLevel::kInfo, "sms",
-              "通信模组 %u 管理员代发成功：%s -> %s（#%u）", (unsigned)aport,
+              "模组 %u 管理员代发成功：%s -> %s（#%u）", (unsigned)aport,
               afrom.c_str(), aphone.c_str(), (unsigned)id);
           replyToAdmin(aport, afrom, "远程命令完成：已向 " + aphone + " 发出短信");
         } else {
-          _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 管理员代发失败：%s -> %s：%s",
+          _log.addf(LogLevel::kWarn, "sms", "模组 %u 管理员代发失败：%s -> %s：%s",
               (unsigned)aport, afrom.c_str(), aphone.c_str(), err.c_str());
           replyToAdmin(aport, afrom, "远程命令失败：" + err);
         }
@@ -1570,7 +1570,7 @@ void SmsService::startInit(uint8_t port) {
   // 若配置了 EN 复位引脚，先走硬上下电；否则直接等 AT 就绪
   m.initState = (enPin(port) >= 0) ? ModemInitState::kPowerOn : ModemInitState::kWaitAt;
   m.nextPollMs = millis();  // 下一轮泵立即开始
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已启用，启动异步初始化", (unsigned)port);
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 已启用，启动异步初始化", (unsigned)port);
 }
 
 // 停止初始化：禁用后停留在 kDown，pollInit 不再动作
@@ -1581,10 +1581,10 @@ void SmsService::stopInit(uint8_t port) {
   m.needReinit = false;
   m.callPending = false; m.callDispatch = false; m.callNumber = "";
   m.initState = ModemInitState::kDown;
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已禁用", (unsigned)port);
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 已禁用", (unsigned)port);
 }
 
-// 通信模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw；-1 / 无效表示不控制）
+// 模组对应 EN 复位引脚 / 有效电平（来自运行期配置 modemhw；-1 / 无效表示不控制）
 int8_t SmsService::enPin(uint8_t port) const {
   return modemhw::enPin(port);
 }
@@ -1609,9 +1609,9 @@ const char *SmsService::initStateName(ModemInitState s) {
   return "unknown";
 }
 
-// 通信模组初始化状态机：由 SerialBridge 抽数任务每端口轮询调用（抽数任务上下文）。
+// 模组初始化状态机：由 SerialBridge 抽数任务每端口轮询调用（抽数任务上下文）。
 // 全程非阻塞——用 trySend，端口忙（正在发短信）立即跳过；受 nextPollMs 节流，
-// 单步 AT 最多持端口锁 ~1.5s。故障/未连接通信模组只在自身端口空转，不波及另一通信模组、
+// 单步 AT 最多持端口锁 ~1.5s。故障/未连接模组只在自身端口空转，不波及另一模组、
 // 主循环或 Web。就绪后周期性心跳探活；检测到运行时重启则回到初始化重新配置。
 void SmsService::pollInit(uint8_t port) {
   if (port < 1 || port > cfg::kSmsMaxModems) return;
@@ -1653,7 +1653,7 @@ void SmsService::pollInit(uint8_t port) {
     m.configStep = 0;
     m.failCount = 0;
     m.nextPollMs = now;
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 检测到重启，重新开始初始化",
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 检测到重启，重新开始初始化",
               (unsigned)port);
   }
 
@@ -1803,7 +1803,7 @@ void SmsService::pollInit(uint8_t port) {
           "AT+CLIP=1", "AT+CUSD=1", "AT+CREG=1"};
       if (m.configStep == 0) m.configFailCount = 0;
       if (m.configStep == 1) {
-        // CEREG=3 失败降级到 =2（部分 2G 通信模组不支持带原因的注册上报）
+        // CEREG=3 失败降级到 =2（部分 2G 模组不支持带原因的注册上报）
         if (at("AT+CEREG=3", cfg::kSmsCmdTimeoutMs)) {
           if (resp.indexOf("OK") < 0) at("AT+CEREG=2", cfg::kSmsCmdTimeoutMs);
         } else {
@@ -1818,14 +1818,14 @@ void SmsService::pollInit(uint8_t port) {
         if (resp.indexOf("OK") < 0 || resp.indexOf("ERROR") >= 0) {
           if (++m.configFailCount <= 3) {
             _log.addf(LogLevel::kWarn, "sms",
-                      "通信模组 %u 配置 %s 未确认（第 %u 次，响应：%s）",
+                      "模组 %u 配置 %s 未确认（第 %u 次，响应：%s）",
                       (unsigned)port, keyCmd, (unsigned)m.configFailCount,
                       briefResp(resp).c_str());
             m.nextPollMs = now + cfg::kModemConfigStepMs;
             return;  // 停在本步重试，不推进状态机
           }
           _log.addf(LogLevel::kError, "sms",
-                    "通信模组 %u 配置 %s 连续失败，跳过该步（短信收发可能异常）",
+                    "模组 %u 配置 %s 连续失败，跳过该步（短信收发可能异常）",
                     (unsigned)port, keyCmd);
           m.configFailCount = 0;
         } else {
@@ -1852,7 +1852,7 @@ void SmsService::pollInit(uint8_t port) {
         m.nextOpsMs = now + 6000;     // 运营商慢刷兜底（注册跃迁 URC 也会触发）
         // 注册状态初值不在此硬置；就绪后由一次性 AT+CEREG? 同步（见下方遥测），避免误判
         m.operRefreshPending = false;
-        _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 就绪（PDU 模式 + 短信%s已配置）",
+        _log.addf(LogLevel::kInfo, "sms", "模组 %u 就绪（PDU 模式 + 短信%s已配置）",
                   (unsigned)port, _cnmiStore ? "存储" : "直投");
         // 通知上层（如时间同步立即尝试 SIM NITZ）。回调运行于抽数任务上下文，
         // 仅允许置标记等轻量操作
@@ -1872,7 +1872,7 @@ void SmsService::pollInit(uint8_t port) {
 
       // 心跳探活：仅当 kModemLivenessMs 内无任何「模组响应 / URC 上报」(lastActivityMs 过期)才发 AT；
       // 平时 CSQ 轮询(15s)/注册·CPIN URC/任意命令响应都会刷新 lastActivityMs，心跳 AT 几乎不发。
-      // 连续失败判定通信模组掉线/重启，回到初始化重新配置。
+      // 连续失败判定模组掉线/重启，回到初始化重新配置。
       if (now - m.lastActivityMs >= cfg::kModemLivenessMs) {
         if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;  // 忙（如正在发送短信）跳过
         if (resp.indexOf("OK") >= 0) {
@@ -1882,7 +1882,7 @@ void SmsService::pollInit(uint8_t port) {
         } else {
           if (++m.failCount >= cfg::kModemLivenessMaxFail) {
             _log.addf(LogLevel::kWarn, "sms",
-                      "通信模组 %u 心跳失败，可能掉线/重启，重新初始化", (unsigned)port);
+                      "模组 %u 心跳失败，可能掉线/重启，重新初始化", (unsigned)port);
             m.initState = ModemInitState::kWaitAt;
             m.initAttempts = 0;
             m.regAttempts = 0;
@@ -1903,7 +1903,7 @@ void SmsService::pollInit(uint8_t port) {
         if (now >= m.nextIdMs) {
           m.nextIdMs = now + cfg::kModemIdStepMs;
           switch (m.idStep) {
-            case 0: {  // 通信模组 IMEI AT+CGSN
+            case 0: {  // 模组 IMEI AT+CGSN
               if (at("AT+CGSN", cfg::kSmsCmdTimeoutMs)) {
                 String s = resp; s.replace("\r", ""); s.replace("\n", "");
                 int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
@@ -1925,7 +1925,7 @@ void SmsService::pollInit(uint8_t port) {
               }
               break;
             }
-            case 2: {  // 通信模组厂商 AT+CGMI
+            case 2: {  // 模组厂商 AT+CGMI
               if (at("AT+CGMI", cfg::kSmsCmdTimeoutMs)) {
                 String s = resp; s.replace("\r", ""); s.replace("\n", "");
                 int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
@@ -1933,7 +1933,7 @@ void SmsService::pollInit(uint8_t port) {
               }
               break;
             }
-            case 3: {  // 通信模组型号 AT+CGMM（如 ML307A-DSLN）
+            case 3: {  // 模组型号 AT+CGMM（如 ML307A-DSLN）
               if (at("AT+CGMM", cfg::kSmsCmdTimeoutMs)) {
                 String s = resp; s.replace("\r", ""); s.replace("\n", "");
                 int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
@@ -1941,7 +1941,7 @@ void SmsService::pollInit(uint8_t port) {
               }
               break;
             }
-            case 4: {  // 通信模组版本/完整料号 AT+CGMR（常含后缀如 -MTSH1S00 或固件版本）
+            case 4: {  // 模组版本/完整料号 AT+CGMR（常含后缀如 -MTSH1S00 或固件版本）
               if (at("AT+CGMR", cfg::kSmsCmdTimeoutMs)) {
                 String s = resp; s.replace("\r", ""); s.replace("\n", "");
                 int ok = s.indexOf("OK"); if (ok >= 0) s = s.substring(0, ok);
@@ -2054,7 +2054,7 @@ void SmsService::pollInit(uint8_t port) {
     }
 
     case ModemInitState::kFault: {
-      // 慢速重试：探活看是否恢复（故障/未连接通信模组只在自身端口空转）
+      // 慢速重试：探活看是否恢复（故障/未连接模组只在自身端口空转）
       if (!at("AT", cfg::kSmsCmdTimeoutMs)) return;
       if (resp.indexOf("OK") >= 0) {
         m.initState = ModemInitState::kWaitAt;
@@ -2072,7 +2072,7 @@ void SmsService::pollInit(uint8_t port) {
 
 // 发送一段 PDU：AT+CMGS=<len> -> 等 '>' -> 发 PDU(内嵌 0x1A) -> 等 +CMGS/OK。
 // 握手细节（等 > 5s / 响应 30s / +CMGS 确认即成功）在 SerialBridge::sendSmsPdu，
-// 流程与 esp32-sms-forwarding 一致：通信模组回包慢或只回 +CMGS 时不会误报失败。
+// 流程与 esp32-sms-forwarding 一致：模组回包慢或只回 +CMGS 时不会误报失败。
 bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) {
   if (part.tpduLen <= 0) {
     err = "PDU 长度异常";
@@ -2080,14 +2080,14 @@ bool SmsService::sendPduPart(uint8_t port, const SmsPduPart &part, String &err) 
   }
   auto r = _bridge.sendSmsPdu(port, cfg::kUartBaud, part.tpduLen, part.hex, err);
   if (!r.ok) {
-    if (!err.length()) err = "通信模组序号无效";
+    if (!err.length()) err = "模组序号无效";
     return false;
   }
-  return err.length() == 0;  // sendSmsPdu 用 err 表达失败原因（含通信模组响应）
+  return err.length() == 0;  // sendSmsPdu 用 err 表达失败原因（含模组响应）
 }
 
 // 处理一条收到的 PDU（解码 + 重组 + 落盘）
-// 线程模型：+CMT 直投走抽数任务上下文，通信模组存储查询走查询任务上下文——两者
+// 线程模型：+CMT 直投走抽数任务上下文，模组存储查询走查询任务上下文——两者
 // 都调用本函数。pdulib 解码实例与长短信重组槽位都是共享状态，故用 _codecMutex
 // 串行化（跨任务安全）。
 SmsService::CmtOutcome SmsService::handleCmt(uint8_t port, const String &pduHex) {
@@ -2100,7 +2100,7 @@ SmsService::CmtOutcome SmsService::handleCmt(uint8_t port, const String &pduHex)
                       : CmtOutcome::kKeep;
   xSemaphoreGive(_codecMutex);
   if (!ok) {
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 的 PDU 解码失败（%u 字符）",
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 的 PDU 解码失败（%u 字符）",
               (unsigned)port, (unsigned)pduHex.length());
   }
   return out;
@@ -2128,7 +2128,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
     fullText = full;
     fullTs = fts;
     epoch = SmsCodec::sctsToEpoch(fts);
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 长短信已拼接（%u 段）",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 长短信已拼接（%u 段）",
               (unsigned)port, (unsigned)concat[2]);
   }
 
@@ -2137,7 +2137,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
   String dkey = sender + "|" + fullTs + "|" + (unsigned)fullText.length() + "|" +
                 (unsigned)textHash(fullText);
   if (dedupHit(dkey)) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 的短信重复（已处理过），跳过落盘：来自 %s",
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 的短信重复（已处理过），跳过落盘：来自 %s",
               (unsigned)port, sender.c_str());
     return CmtOutcome::kDelete;
   }
@@ -2168,7 +2168,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
     String key = cmd;
     key.toUpperCase();
     if (key.startsWith("SMS:") || key == "RESET" || key == "PING" || key == "HELP") {
-      _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 收到管理员命令（来自 %s）：%s",
+      _log.addf(LogLevel::kInfo, "sms", "模组 %u 收到管理员命令（来自 %s）：%s",
                 (unsigned)port, sender.c_str(), cmd.c_str());
       // 有效命令（含队列忙被丢弃）一律消费，不再入库/转发；
       // 仅 SMS: 格式错误时返回 false，按普通短信继续处理（便于发现笔误）
@@ -2189,7 +2189,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
   uint32_t id = _store.add(msg);
   if (!id) {
     // 解码成功但未入库：留痕便于区分「没收到」与「收到没存上」
-    _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 收到来自 %s 的短信，但入库失败",
+    _log.addf(LogLevel::kWarn, "sms", "模组 %u 收到来自 %s 的短信，但入库失败",
               (unsigned)port, sender.c_str());
     return CmtOutcome::kKeep;  // 落盘失败：保留模组侧副本，下轮查询重试
   }
@@ -2197,7 +2197,7 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
   _lastSmsId = id;
   unlock();
   dedupAdd(dkey);
-  _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 收到短信 #%u，来自 %s（%u 字节）",
+  _log.addf(LogLevel::kInfo, "sms", "模组 %u 收到短信 #%u，来自 %s（%u 字节）",
             (unsigned)port, (unsigned)id, sender.c_str(),
             (unsigned)fullText.length());
   // 通知上层（邮件通知等）。命中黑名单（仅记录模式）时跳过，不向任何通道转发；
@@ -2206,8 +2206,8 @@ SmsService::CmtOutcome SmsService::processDecodedLocked(uint8_t port,
   return CmtOutcome::kDelete;
 }
 
-// ---------------- 主动查询任务（通信模组存储兜底）----------------
-// 通信模组以 CNMI=2,1 接收时短信落在通信模组侧，本机收不到 +CMT 直投。
+// ---------------- 主动查询任务（模组存储兜底）----------------
+// 模组以 CNMI=2,1 接收时短信落在模组侧，本机收不到 +CMT 直投。
 // 查询任务把模组存储里的短信读回本机：列索引 -> 逐条读 PDU -> 复用收信处理链
 // （解码 / 长短信重组 / 黑名单 / 管理员命令 / 落盘 / 推送）-> 处理成功后删除
 // 模组侧副本。任何一步失败都不删除内容，下轮查询重试（配合去重表避免重复落盘）。
@@ -2230,7 +2230,7 @@ void SmsService::queryTask() {
         if (!m.enabled || m.initState != ModemInitState::kReady) continue;
         _bridge.send(p, cfg::kUartBaud, cnmiCmd(), SerialBridge::kCrlf,
                      cfg::kSmsCmdTimeoutMs, AtHistory::Type::kBg);
-        _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 已下发 %s", (unsigned)p, cnmiCmd());
+        _log.addf(LogLevel::kInfo, "sms", "模组 %u 已下发 %s", (unsigned)p, cnmiCmd());
       }
     }
     for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
@@ -2260,7 +2260,7 @@ void SmsService::queryTask() {
   }
 }
 
-// 查询一个通信模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
+// 查询一个模组的存储短信；返回 false = 查询失败（AT 无响应/协议异常）
 bool SmsService::queryPort(uint8_t port) {
   ModemState &m = _modems[port];
   // 查询期间暂停后台指令（心跳 / 遥测），避免 AT 互相交织
@@ -2279,7 +2279,7 @@ bool SmsService::queryPort(uint8_t port) {
     m.cmgfChecked = true;
     if (!m.cmgfOk) {
       _log.addf(LogLevel::kWarn, "sms",
-                "通信模组 %u 不处于 PDU 模式（AT+CMGF? = %d，响应：%s），重新下发 AT+CMGF=0",
+                "模组 %u 不处于 PDU 模式（AT+CMGF? = %d，响应：%s），重新下发 AT+CMGF=0",
                 (unsigned)port, mode, briefResp(cr.resp).c_str());
       SerialBridge::Result fix = _bridge.send(port, cfg::kUartBaud, "AT+CMGF=0",
                                               SerialBridge::kCrlf, cfg::kSmsCmdTimeoutMs,
@@ -2296,7 +2296,7 @@ bool SmsService::queryPort(uint8_t port) {
                                          SerialBridge::kCrlf, cfg::kSmsQueryTimeoutMs,
                                          AtHistory::Type::kBg);
   if (cp.ok && cp.resp.indexOf("+CPMS:") >= 0) {
-    _log.addf(LogLevel::kDebug, "sms", "通信模组 %u 短信存储占用：%s",
+    _log.addf(LogLevel::kDebug, "sms", "模组 %u 短信存储占用：%s",
               (unsigned)port, cp.resp.substring(cp.resp.indexOf("+CPMS:")).c_str());
   }
 
@@ -2314,7 +2314,7 @@ bool SmsService::queryPort(uint8_t port) {
   if (!cmtiOnly) {
     if (m.queryFailStreak >= cfg::kSmsQueryFailMax) {
       _log.addf(LogLevel::kWarn, "sms",
-                "通信模组 %u 连续 %u 轮读回失败，改用 AT+CMGL 全量扫描自愈",
+                "模组 %u 连续 %u 轮读回失败，改用 AT+CMGL 全量扫描自愈",
                 (unsigned)port, (unsigned)m.queryFailStreak);
       cmti.clear();             // 交给 CMGL 把 SIM 上的残留（含已读）重新捞回
       m.queryIndexCount = 0;    // 后续新到达的 +CMTI 从 0 开始重新累积
@@ -2333,7 +2333,7 @@ bool SmsService::queryPort(uint8_t port) {
     if (!have0 && !have1 && cmti.empty()) {
       m.lastQueryErr = String("CMGL 无响应：") + briefResp(gl0.resp) + " / " +
                        briefResp(gl1.resp);
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 查询短信列表失败（未读/已读均无响应）",
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u 查询短信列表失败（未读/已读均无响应）",
                 (unsigned)port);
       m.queryRetryAfterMs = millis() + 5000UL;  // 失败退避，避免 250ms 一轮的 AT 风暴
       return false;
@@ -2355,13 +2355,13 @@ bool SmsService::queryPort(uint8_t port) {
     if (millis() - m.queryLogMs >= 300000) {
       m.queryLogMs = millis();
       _log.addf(LogLevel::kInfo, "sms",
-                "通信模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：%s / %s）",
+                "模组 %u AT+CMGL=0/1 未解析到索引（响应前 100 字：%s / %s）",
                 (unsigned)port, briefResp(gl0Resp).c_str(), briefResp(gl1Resp).c_str());
     }
     return true;  // 无存量：正常结束
   }
   _log.addf(LogLevel::kInfo, "sms",
-            "通信模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）",
+            "模组 %u 待读取短信索引 %u 个（未读 %u / 已读 %u / +CMTI %u）",
             (unsigned)port, (unsigned)idxs.size(), (unsigned)unread.size(),
             (unsigned)read.size(), (unsigned)cmti.size());
 
@@ -2413,7 +2413,7 @@ bool SmsService::queryPort(uint8_t port) {
     int idx = idxs[ii];
     if (msgs.size() >= cfg::kSmsQueryMaxMsgs) {
       truncated = true;
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u 存量短信超过 %u 条，本轮仅处理前 %u 条",
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u 存量短信超过 %u 条，本轮仅处理前 %u 条",
                 (unsigned)port, (unsigned)cfg::kSmsQueryMaxMsgs, (unsigned)msgs.size());
       for (size_t jj = ii; jj < idxs.size(); jj++) failed.push_back(idxs[jj]);
       break;
@@ -2423,7 +2423,7 @@ bool SmsService::queryPort(uint8_t port) {
     SerialBridge::Result gr = _bridge.send(port, cfg::kUartBaud, cmd, SerialBridge::kCrlf,
                                            cfg::kSmsQueryTimeoutMs, AtHistory::Type::kBg);
     if (!gr.ok) {
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u AT+CMGR=%d 发送失败", (unsigned)port, idx);
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u AT+CMGR=%d 发送失败", (unsigned)port, idx);
       failed.push_back(idx);
       continue;
     }
@@ -2437,7 +2437,7 @@ bool SmsService::queryPort(uint8_t port) {
         confirmPduMode(true);
       }
       m.lastQueryErr = String("AT+CMGR=") + idx + " 未取到 PDU：" + m.lastCmgrResp;
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u %s",
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u %s",
                 (unsigned)port, m.lastQueryErr.c_str());
       failed.push_back(idx);
       continue;
@@ -2449,7 +2449,7 @@ bool SmsService::queryPort(uint8_t port) {
     xSemaphoreGive(_codecMutex);
     if (!ok) {
       m.lastQueryErr = String("索引 ") + idx + " PDU 解码失败：" + pdu.substring(0, 60);
-      _log.addf(LogLevel::kWarn, "sms", "通信模组 %u %s",
+      _log.addf(LogLevel::kWarn, "sms", "模组 %u %s",
                 (unsigned)port, m.lastQueryErr.c_str());
       failed.push_back(idx);
       continue;
@@ -2534,7 +2534,7 @@ bool SmsService::queryPort(uint8_t port) {
     }
     delFailStreak++;
     _log.addf(LogLevel::kWarn, "sms",
-              "通信模组 %u 删除短信 %d 失败（已入库，下轮查询继续补删；响应：%s）",
+              "模组 %u 删除短信 %d 失败（已入库，下轮查询继续补删；响应：%s）",
               (unsigned)port, idx,
               lastResp.length() ? lastResp.c_str() : "无响应");
     return false;
@@ -2598,7 +2598,7 @@ bool SmsService::queryPort(uint8_t port) {
     all.erase(std::unique(all.begin(), all.end()), all.end());
     if (key && all.size() > grp.size()) {
       _log.addf(LogLevel::kInfo, "sms",
-                "通信模组 %u 长短信拼接完成，连同前几轮残留共删除 %u 个分段副本",
+                "模组 %u 长短信拼接完成，连同前几轮残留共删除 %u 个分段副本",
                 (unsigned)port, (unsigned)all.size());
     }
     bool allOk = true;
@@ -2674,14 +2674,14 @@ bool SmsService::queryPort(uint8_t port) {
     uint32_t id = _store.add(msg);
     if (!id) {
       _log.addf(LogLevel::kWarn, "sms",
-                "通信模组 %u 残缺长短信 ref=%u 入库失败，保留 SIM 副本下轮重试",
+                "模组 %u 残缺长短信 ref=%u 入库失败，保留 SIM 副本下轮重试",
                 (unsigned)port, (unsigned)h.concat[0]);
       continue;
     }
     lock(); _lastSmsId = id; unlock();
     if (_onSms) _onSms(h.sender, content, msg.ts, (int8_t)port);
     _log.addf(LogLevel::kWarn, "sms",
-              "通信模组 %u 长短信 ref=%u 等待超时仍未收齐（%u/%u 段），已按不完整内容入库 #%u 并删除 SIM 副本",
+              "模组 %u 长短信 ref=%u 等待超时仍未收齐（%u/%u 段），已按不完整内容入库 #%u 并删除 SIM 副本",
               (unsigned)port, (unsigned)h.concat[0], (unsigned)grp.size(),
               (unsigned)h.concat[2], (unsigned)id);
     st->saved = true;  // 删除失败时下一轮只补删，不重复入库
@@ -2708,7 +2708,7 @@ bool SmsService::queryPort(uint8_t port) {
     m.queryRetryAfterMs = 0;
   }
   _log.addf(LogLevel::kInfo, "sms",
-            "通信模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条，读回失败 %u 条%s",
+            "模组 %u 查询完成：存量 %u 条，处理 %u 条，删除 %u 条，读回失败 %u 条%s",
             (unsigned)port, (unsigned)m.queryLastFound, (unsigned)handled,
             (unsigned)deleted, (unsigned)failed.size(),
             delFailed ? "（部分删除失败，已排队补删）" :
@@ -2726,7 +2726,7 @@ bool SmsService::requestClear(uint8_t port) {
   return true;
 }
 
-// 清空一个通信模组 SIM 上的全部短信（查询任务上下文，允许阻塞式 AT）。
+// 清空一个模组 SIM 上的全部短信（查询任务上下文，允许阻塞式 AT）。
 // 首选 3GPP 标准 AT+CMGD=1,4（DelFlag=4 删除该存储区全部短信）；不支持批量删除
 // 的模组用 AT+CMGL 列出全部索引逐条 AT+CMGD 兜底。前后各查一次 CPMS，以
 // 「清空后 used == 0」作为成功判据，避免只看 OK 就误报成功。
@@ -2798,7 +2798,7 @@ void SmsService::clearPortSms(uint8_t port) {
                       : (after > 0 ? String("仍有 ") + after + " 条未能删除"
                                    : String("模组未确认删除结果"));
   _log.addf(ok ? LogLevel::kInfo : LogLevel::kWarn, "sms",
-            "通信模组 %u 清空 SIM 短信：清空前 %d 条，清空后 %d 条%s",
+            "模组 %u 清空 SIM 短信：清空前 %d 条，清空后 %d 条%s",
             (unsigned)port, before, after, ok ? "" : "（未完成，请查看 AT 历史）");
 }
 
@@ -2882,7 +2882,7 @@ void SmsService::dedupAdd(const String &key) {
   _dedupNext = (uint8_t)((_dedupNext + 1) % cfg::kSmsDedupSlots);
 }
 
-// 请求查询通信模组存储中的短信（异步，不阻塞调用方）
+// 请求查询模组存储中的短信（异步，不阻塞调用方）
 bool SmsService::requestQuery(uint8_t port) {
   if (port < 1 || port > cfg::kSmsMaxModems) return false;
   if (!_modems[port].enabled) return false;
@@ -2890,7 +2890,7 @@ bool SmsService::requestQuery(uint8_t port) {
   return true;
 }
 
-// 对所有启用的通信模组各发起一次查询
+// 对所有启用的模组各发起一次查询
 void SmsService::requestQueryAll() {
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) requestQuery(p);
 }
@@ -3068,7 +3068,7 @@ String SmsService::lastCallJson() {
 
 // 载入 NVS 配置
 bool SmsService::loadConfig() {
-  // 默认：两个通信模组都启用（本设备即为双通信模组桥接设计）
+  // 默认：两个模组都启用（本设备即为双模组桥接设计）
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
     _modems[p].enabled = true;
     _modems[p].csmsRef = 1;
@@ -3116,13 +3116,13 @@ bool SmsService::loadConfig() {
       _modems[port].alias = o["alias"] | "";
     }
   }
-  _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，通信模组=[%d,%d]，管理员=%u 条（总开关%s）",
+  _log.addf(LogLevel::kInfo, "sms", "短信配置已载入：上限 %u 条，模组=[%d,%d]，管理员=%u 条（总开关%s）",
             (unsigned)_max, (int)_modems[1].enabled, (int)_modems[2].enabled,
             (unsigned)_adminPhoneCount, _adminEnabled ? "开" : "关");
   return true;
 }
 
-// 从给定 JSON 对象导入通信模组配置并落盘
+// 从给定 JSON 对象导入模组配置并落盘
 bool SmsService::importFrom(const JsonObject &o) {
   if (o["max"].is<int>()) {
     _max = (uint16_t)constrain(o["max"].as<int>(), 10, 1000);

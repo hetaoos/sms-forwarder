@@ -14,7 +14,7 @@ struct MessageContext {
   String carrier;       // 运营商（AT+COPS?，优先中文短名）
   String to;            // 接收方号码（SIM 本机号码，AT+CNUM）
   String simSlot;       // SIM 槽位，形如 "SIM1" / "SIM2"
-  String modemIndex;    // 来源通信模组序号，从 1 开始，形如 "1" / "2"
+  String modemIndex;    // 来源模组序号，从 1 开始，形如 "1" / "2"
   String iccid;         // SIM 卡 ICCID（AT+CCID）
   String signal;        // 信号强度（AT+CSQ 换算的 dBm 文本）
   String remark;        // 设备备注（NVS appcfg/remark，推送通道页配置）

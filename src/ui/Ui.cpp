@@ -236,7 +236,7 @@ void Ui::begin() {
   buildPopup();
   buildBoot();
   layoutHeader();   // 标题栏按基线对齐（此时已登记完所有标题栏标签）
-  // 开机先落在开机页：此时中文字库与各业务通信模组都还没就绪，状态页还不能取数
+  // 开机先落在开机页：此时中文字库与各业务模组都还没就绪，状态页还不能取数
   lv_screen_load(_scrBoot);
   _current = 3;
   fontsBegin();      // 中文字库走延迟加载（等 LittleFS 挂载）
@@ -244,7 +244,7 @@ void Ui::begin() {
 }
 
 // ---- 开机页 ----
-// 纯图标 + ASCII：不等中文字库，也不读任何业务通信模组，因此可以在初始化期间安全显示。
+// 纯图标 + ASCII：不等中文字库，也不读任何业务模组，因此可以在初始化期间安全显示。
 // 布局：居中 Logo（48px 图标）+ 产品名 + 进度条 + 一行提示。
 void Ui::buildBoot() {
   _scrBoot = lv_obj_create(NULL);
@@ -462,7 +462,7 @@ void Ui::buildView() {
 }
 
 // ---- 新短信弹窗 ----
-// 收到短信时自动浮到屏上：号码用标题字号突出，下面是时间与来源通信模组，
+// 收到短信时自动浮到屏上：号码用标题字号突出，下面是时间与来源模组，
 // 正文区定高自动换行，页脚提示「按任意键返回」。
 void Ui::buildPopup() {
   _scrPopup = lv_obj_create(NULL);
@@ -482,7 +482,7 @@ void Ui::buildPopup() {
   lv_obj_set_width(_popPhone, kScreenW - kPad * 2);
   lv_label_set_long_mode(_popPhone, LV_LABEL_LONG_MODE_DOTS);
 
-  // 元信息：方向 + 时间 + 来源通信模组
+  // 元信息：方向 + 时间 + 来源模组
   _popMeta = newLabel(_scrPopup, 1, C_LABEL, "", LV_TEXT_ALIGN_LEFT);
   lv_obj_set_pos(_popMeta, kPad, 70);
   lv_obj_set_width(_popMeta, kScreenW - kPad * 2);
@@ -559,7 +559,7 @@ void Ui::statusUpdate(const StatusInfo &s) {
     if (v[i] == "已连接" || v[i] == "已配置" || v[i].endsWith("个通道")) c[i] = C_OK;
     else if (v[i] == "已关闭") c[i] = C_HINT;
   }
-  // 通信模组行：就绪绿、故障红，其余中间态用普通色
+  // 模组行：就绪绿、故障红，其余中间态用普通色
   for (uint8_t i = kRowModem1; i <= kRowModem2; i++) {
     if (v[i].startsWith("就绪")) c[i] = C_OK;
     else if (v[i] == "故障") c[i] = C_ERR;
@@ -805,7 +805,7 @@ void Ui::smsPopupUpdate(const char *phone, const char *body, int8_t modem,
       meta += time;
     }
     if (modem > 0) {
-      meta += "  通信模组";
+      meta += "  模组";
       meta += String((int)modem);
     }
     lv_label_set_text(_popMeta, meta.c_str());

@@ -108,7 +108,7 @@ class Outbox {
     uint8_t  kind = kRecv;
     String   sender;         // kRecv：发件人；kSend：目标号码
     String   phone;          // kSend：目标号码
-    uint8_t  port = 0;       // kSend：通信模组串口号
+    uint8_t  port = 0;       // kSend：模组串口号
     String   text;           // 短信正文 / 待发内容
     uint32_t ts = 0;         // 短信时间戳（纪元秒或开机秒数）
     int8_t   modem = -1;

@@ -40,7 +40,7 @@ class PushChannels {
   static bool sendWechatWork(const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp);
   static bool sendMailgun   (const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp, const String& modemLabel = "");
 
-  // SMS 短信备份（唯一不经 HTTP 的通道）：把消息经通信模组以短信发到 ch.url
+  // SMS 短信备份（唯一不经 HTTP 的通道）：把消息经模组以短信发到 ch.url
   // （目标手机号），用于网络不可用时的兜底通知。type 用于区分来电/短信默认格式；
   // sms 为短信服务（发送入口），为空时视为不可用。
   static bool sendSmsBackup (const PushChannel& ch, const String& sender, const PushBody& message,

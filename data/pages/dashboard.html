@@ -16,10 +16,10 @@
     <div class="stat"><div class="k">WiFi</div>
       <div class="v"><span x-text="st.ssid || '-'"></span>
         <div class="sub" x-show="st.connected" x-text="st.rssi + ' dBm'"></div></div></div>
-    <div class="stat"><div class="k">通信模组1 信号/连接</div>
+    <div class="stat"><div class="k">模组1 信号/连接</div>
       <div class="v"><span x-text="modemDbm(1)"></span>
         <div class="sub" x-show="modemOf(1) && modemOf(1).enabled && modemOf(1).ready" x-text="modemStateText(modemOf(1))"></div></div></div>
-    <div class="stat"><div class="k">通信模组2 信号/连接</div>
+    <div class="stat"><div class="k">模组2 信号/连接</div>
       <div class="v"><span x-text="modemDbm(2)"></span>
         <div class="sub" x-show="modemOf(2) && modemOf(2).enabled && modemOf(2).ready" x-text="modemStateText(modemOf(2))"></div></div></div>
     <div class="stat"><div class="k">IP / MAC</div>
@@ -65,13 +65,13 @@
         <span class="v" style="font-size:12px" x-text="calibText()"></span></div>
       <div class="row"><span class="k">设备时区</span>
         <span class="v" x-text="st.tzText || 'UTC+08:00（默认）'"></span></div>
-      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由通信模组 AT+CCLK? 兜底。时间每 10 分钟保存一次，重启后以此恢复近似值。时区可在「系统设置」修改，所有记录时间随之按设备时区显示。</div>
+      <div class="hint">WiFi 连接后自动 NTP 对时（每 24h 周期校准）；NTP 不可用时由模组 AT+CCLK? 兜底。时间每 10 分钟保存一次，重启后以此恢复近似值。时区可在「系统设置」修改，所有记录时间随之按设备时区显示。</div>
     </div>
   </div>
 
-  <!-- 通信模组状态（整行：模组数量可变，整行更清晰） -->
+  <!-- 模组状态（整行：模组数量可变，整行更清晰） -->
   <div class="card">
-    <h3>通信模组状态 <span class="sub">信号 · 运营商 · 注册</span></h3>
+    <h3>模组状态 <span class="sub">信号 · 运营商 · 注册</span></h3>
     <template x-for="m in modems" :key="m.port">
       <div class="row" style="align-items:flex-start">
         <span class="k">
@@ -101,7 +101,7 @@
       </div>
     </template>
     <div class="bar" style="margin-top:12px">
-      <button class="btn ghost sm" @click="go('modem')">通信模组管理</button>
+      <button class="btn ghost sm" @click="go('modem')">模组管理</button>
     </div>
   </div>
 
@@ -171,7 +171,7 @@
   <div class="grid cols2">
     <!-- 模组流量 -->
     <div class="card">
-      <h3>模组流量 <span class="sub">AT 透传 · 双通信模组</span></h3>
+      <h3>模组流量 <span class="sub">AT 透传 · 双模组</span></h3>
       <template x-for="s in stats" :key="s.port">
         <div class="row">
           <span class="k">模组<span x-text="s.port"></span>
@@ -225,7 +225,7 @@
     </template>
     <div class="hint" x-show="!calls.length">暂无来电记录</div>
     <div class="bar" style="margin-top:12px">
-      <button class="btn ghost sm" @click="go('modem')">通信模组管理</button>
+      <button class="btn ghost sm" @click="go('modem')">模组管理</button>
     </div>
   </div>
 </div>

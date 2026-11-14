@@ -83,7 +83,7 @@ void * lv_realloc_core(void * p, size_t new_size) {
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 // LVGL 的 flush 回调是 C 风格函数指针，拿不到 this；整机只有一块屏，

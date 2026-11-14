@@ -9,7 +9,7 @@
 namespace modemhw {
 
 namespace {
-// 运行期配置（下标 = 通信模组端口号 1..kSmsMaxModems）
+// 运行期配置（下标 = 模组端口号 1..kSmsMaxModems）
 PortPins s_ports[cfg::kSmsMaxModems + 1];
 
 // 默认 RX/TX/EN 引脚：沿用编译期常量；EN 模式由 en 引脚号与 kModemEnActiveLow 推导
@@ -74,7 +74,7 @@ void load() {
     if (s_ports[port].en < 0) s_ports[port].enMode = kEnInvalid;
   }
   devLog().addf(LogLevel::kInfo, "modemhw",
-                "通信模组引脚已载入：1 RX%d/TX%d EN%d(mode%d)  2 RX%d/TX%d EN%d(mode%d)",
+                "模组引脚已载入：1 RX%d/TX%d EN%d(mode%d)  2 RX%d/TX%d EN%d(mode%d)",
                 (int)s_ports[1].rx, (int)s_ports[1].tx, (int)s_ports[1].en,
                 (int)s_ports[1].enMode, (int)s_ports[2].rx, (int)s_ports[2].tx,
                 (int)s_ports[2].en, (int)s_ports[2].enMode);
@@ -132,7 +132,7 @@ int8_t enEnableLevel(uint8_t port) {
 const std::vector<int8_t> &availablePins() {
   static std::vector<int8_t> pins;
   if (!pins.empty()) return pins;
-  // 真正不可用于通信模组 RX/TX/EN 的引脚（其余如屏幕 TFT、按键、RGB 等板载外设
+  // 真正不可用于模组 RX/TX/EN 的引脚（其余如屏幕 TFT、按键、RGB 等板载外设
   // 引脚一律释放——部分机型未焊接屏幕/按键，这些 GPIO 完全可改作模组引脚；是否占用
   // 由用户在 Web 引脚配置里自行决定，冲突风险自负）：
   //   0 启动 Strapping；3/43/44 控制台 UART0（RX/TX，烧录/日志用）；

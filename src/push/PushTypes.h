@@ -4,7 +4,7 @@
 
 // 推送通道类型（移植自 esp32-sms-forwarding）。
 // 仅纳入 webhook 类通道；MAILGUN 走 Web API（Basic 认证），同样受本框架调度。
-// PUSH_TYPE_SMS（短信回传备份）不经 HTTP：网络不可用时改走通信模组发短信，
+// PUSH_TYPE_SMS（短信回传备份）不经 HTTP：网络不可用时改走模组发短信，
 // 是「互联网全断」场景下的最后通知手段，故不受 isHttpPush 的 WiFi 判定约束。
 enum PushType {
   PUSH_TYPE_NONE         = 0,   // 占位/未配置
@@ -44,7 +44,7 @@ struct PushChannel {
   String   key5;                 // 额外参数5（Mailgun：邮件标题模板）
   String   customBody;           // 自定义请求体模板（PUSH_TYPE_CUSTOM 使用，支持占位符）
   bool     retryOnFail = false;  // 发送失败时是否自动重试
-  int8_t   modemSlot = -1;       // PUSH_TYPE_SMS 备份通道从哪个通信模组发出（串口号 1..2）；
+  int8_t   modemSlot = -1;       // PUSH_TYPE_SMS 备份通道从哪个模组发出（串口号 1..2）；
                                  // <0 = 自动挑第一个就绪模组（单卡用户无需关心此概念）
 };
 
@@ -61,7 +61,7 @@ enum MsgType {
 struct MsgTypeInfo {
   MsgType type = MSG_TYPE_SMS;
   String  typeLabel;   // 仅在 SMS 时使用（如「普通短信」/「STK 推送」）
-  int8_t  modemSlot = -1;  // 事件来源通信模组序号（0 基）；-1 表示与通信模组无关
+  int8_t  modemSlot = -1;  // 事件来源模组序号（0 基）；-1 表示与模组无关
 
   MsgTypeInfo() = default;
   MsgTypeInfo(MsgType t) : type(t) {}

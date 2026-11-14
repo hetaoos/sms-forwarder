@@ -5,9 +5,9 @@
 
 #include "app/Config.h"
 
-// 通信模组硬件引脚配置（运行期，可被 NVS 覆盖编译期默认值）。
+// 模组硬件引脚配置（运行期，可被 NVS 覆盖编译期默认值）。
 //
-// 每个通信模组可独立配置串口 RX/TX 与 EN（硬复位/开关机）引脚：
+// 每个模组可独立配置串口 RX/TX 与 EN（硬复位/开关机）引脚：
 //   - RX / TX：接模组 UART 的 TXD / RXD（设备侧 RX 接模组 TX，TX 接模组 RX）。
 //   - EN：模组使能/复位脚，支持三种模式（见 EnMode）：
 //       kEnInvalid    EN 无效（不控制，沿用模组自身上电时序，en 引脚号忽略）
@@ -55,7 +55,7 @@ int8_t enPin(uint8_t port);
 // EN 启用电平：kEnHighEnable -> HIGH，kEnLowEnable -> LOW，无效 -> -1
 int8_t enEnableLevel(uint8_t port);
 
-// 可分配给通信模组 RX/TX/EN 的 GPIO 列表（已剔除 Flash/PSRAM、串口控制台、
+// 可分配给模组 RX/TX/EN 的 GPIO 列表（已剔除 Flash/PSRAM、串口控制台、
 // 启动 Strapping、屏幕 / 按键 / RGB 等板载占用引脚；含当前模组默认引脚 17/18/40/41）。
 // 运行期常量（首次调用后缓存），供 Web 下拉框展示可用引脚。
 const std::vector<int8_t> &availablePins();

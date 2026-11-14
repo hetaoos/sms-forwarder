@@ -26,7 +26,7 @@
   <div class="card">
     <div class="bar" style="margin-bottom:12px">
       <label class="chk"><input type="checkbox" x-model="auto"> 自动刷新（5s）</label>
-      <span class="hint">收到的短信按到达瞬间的通道快照投递；发出的短信只经指定通信模组发送</span>
+      <span class="hint">收到的短信按到达瞬间的通道快照投递；发出的短信只经指定模组发送</span>
     </div>
 
     <template x-for="r in records" :key="r.id">
@@ -84,11 +84,11 @@
       </div>
 
       <div class="field">
-        <label>通信模组</label>
+        <label>模组</label>
         <select class="inp" x-model.number="sendPort">
-          <option value="0" x-show="!enabledPorts().length">无可用通信模组</option>
+          <option value="0" x-show="!enabledPorts().length">无可用模组</option>
           <template x-for="m in enabledPorts()" :key="m.port">
-            <option :value="m.port" x-text="'通信模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
+            <option :value="m.port" x-text="'模组 ' + m.port + (m.alias ? ' · ' + m.alias : '') + (m.ready ? '' : ' · 未就绪')"></option>
           </template>
         </select>
       </div>
@@ -114,7 +114,7 @@
         <button class="btn ghost" @click="closeSend()">取消</button>
       </div>
       <div class="hint" style="margin-top:8px">
-        提交后即登记到发件箱，实际发送由通信模组队列执行；投递结果可在「发件箱」页查看。
+        提交后即登记到发件箱，实际发送由模组队列执行；投递结果可在「发件箱」页查看。
         「结果未知」的记录手动重试前请确认对方是否已收到，避免重复发送。
       </div>
     </div>

@@ -9,7 +9,7 @@
 #include "app/SystemService.h"  // 定时重启（系统保活）
 #include "app/TaskWatchdog.h"   // 任务看门狗：读回卡死原因 / 重配置 / 注册任务
 #include "app/UserFs.h"
-#include "app/ModemHw.h"  // 通信模组硬件引脚配置：须在 SerialBridge::begin 前载入并套用
+#include "app/ModemHw.h"  // 模组硬件引脚配置：须在 SerialBridge::begin 前载入并套用
 #include "hal/CpuMonitor.h"  // CPU 使用率（FreeRTOS 运行时间统计）
 #include "ota/Ota.h"         // 工具箱：检查新版本并更新（Ota 状态机）
 #include "ui/Ui.h"           // LVGL 页面层（Display 只负责面板与 LVGL 端口）
@@ -21,7 +21,7 @@
 #include <freertos/FreeRTOS.h>   // xTaskCreate / vTaskDelay
 #include <freertos/task.h>
 
-// 初始化调试串口与所有子通信模组；返回 true 表示装配完成
+// 初始化调试串口与所有子模组；返回 true 表示装配完成
 bool App::begin() {
   Serial.begin(115200);
 
@@ -33,13 +33,13 @@ bool App::begin() {
   // 该分区刷固件后仍保留，短信等业务数据持久化在这里（路径以 /data 开头）
   userfs::begin();
 
-  // 设备日志：PSRAM 环形缓冲，先于其余通信模组就绪，后续启动日志均可入库。
+  // 设备日志：PSRAM 环形缓冲，先于其余模组就绪，后续启动日志均可入库。
   // 时间戳供给与短信记录一致（已同步=纪元秒，未同步=开机秒数）
   _log.begin(cfg::kLogRingSize);
   _log.setTimeProvider([this] { return _time.epochOrUptime(); });
 
   // 时间同步：先恢复 NVS 里的上次已知时间（近似值），随后由 WiFi 连接（NTP）
-  // 与通信模组就绪（SIM NITZ）事件驱动校准
+  // 与模组就绪（SIM NITZ）事件驱动校准
   _time.begin(_bridge, _sms);
 
   // 崩溃转储信息：panic 重启时把 RTC 保留的最近时间戳与当前固件版本写入 NVS，
@@ -109,7 +109,7 @@ bool App::begin() {
   // Web 账号：LCD 查看用户名 / 重置登录密码为随机密码
   _ui.setAccountUserFn([this]() { return _panel.webUser(); });
   _ui.setAccountResetFn([this]() { return _panel.resetWebPassword(); });
-  // 通信模组硬件引脚：须先于 SerialBridge::begin 载入并套用（串口 RX/TX 在打开时定型，
+  // 模组硬件引脚：须先于 SerialBridge::begin 载入并套用（串口 RX/TX 在打开时定型，
   // EN 复位脚的开机电平也需在初始化状态机启动前就置好，避免模组悬空误动作）。
   modemhw::load();
   for (uint8_t p = 1; p <= cfg::kSmsMaxModems; p++) {
@@ -120,12 +120,12 @@ bool App::begin() {
   _bridge.begin();                     // 启动串口抽数任务
   // AT 历史带上时间：已同步用纪元秒，未同步退回开机秒数（与短信/运行日志一致）
   _bridge.setTimeProvider([this] { return _time.epochOrUptime(); });
-  // 短信 URC 消费钩子：抽数任务归档 +CMT 等通信模组自发数据前交给短信服务
+  // 短信 URC 消费钩子：抽数任务归档 +CMT 等模组自发数据前交给短信服务
   _bridge.setUnsolicitedHandler([this](uint8_t port, const String &text) {
     return _sms.onUnsolicited(port, text);
   });
   // 开机先出 Logo 页（纯图标 + ASCII，不取任何业务数据），避免初始化期黑屏；
-  // 展示时长由 tick 里的开机窗口控制，期间不采集状态，彻底避开「通信模组还没 begin
+  // 展示时长由 tick 里的开机窗口控制，期间不采集状态，彻底避开「模组还没 begin
   // 就被取数」这一类冲突（互斥量句柄为 NULL 会直接断言重启）。
   ui::instance().bootUpdate(0);
 
@@ -142,7 +142,7 @@ bool App::begin() {
   _push.begin();                       // 推送通道：载入 NVS 配置 + 初始化队列
   _mqtt.notifyStartup();               // 开机后首次连上 MQTT 时补发启动通知
   _blacklist.begin();                  // 黑名单：载入 NVS 配置（默认总开关关）
-  _sms.begin();                        // 短信：载配置 + 通信模组 PDU 模式初始化
+  _sms.begin();                        // 短信：载配置 + 模组 PDU 模式初始化
   // 持久化发件箱：扫描 /data/outbox 恢复未送达通道（须在转发服务与 _sms.begin 之后，
   // 发出类记录要靠 _sms.enqueueSend 交给 sms_send worker 执行）
   _outbox.begin(_email, _mqtt, _push, _sms, _wifi, _log);
@@ -151,10 +151,10 @@ bool App::begin() {
   SystemService::instance().begin();  // 定时重启：载入 NVS 配置（默认禁用）
   // 至此邮件 / MQTT / 推送 / 短信都已持有各自的互斥量，状态快照可以放心读它们了
   _svcReady = true;
-  // 通信模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
+  // 模组就绪事件：NTP 未成功时请求一次 SIM NITZ 时间同步（回调仅置标记，
   // 真正的 AT+CCLK? 在 TimeSync::tick（loop 任务）执行，不阻塞抽数任务）
   _sms.setOnModemReadyCb([this](uint8_t port) {
-    _log.addf(LogLevel::kInfo, "sms", "通信模组 %u 初始化完成", (unsigned)port);
+    _log.addf(LogLevel::kInfo, "sms", "模组 %u 初始化完成", (unsigned)port);
     _time.requestSimSync(port);
   });
   // 短信时间戳供给：已同步返回纪元秒，未同步返回开机秒数
@@ -172,14 +172,14 @@ bool App::begin() {
       _mqtt.notifySms(sender, text, ts, modem);
       _push.notifySms(sender, text, ts, modem);
     }
-    _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（通信模组 %d）", sender.c_str(),
+    _log.addf(LogLevel::kInfo, "sms", "收到短信：%s（模组 %d）", sender.c_str(),
               (int)modem);
   });
   // SIM 运行时插拔 -> 邮件通知入队 + 设备日志入库
   _sms.setOnSimChangeCb([this](uint8_t port, bool ready) {
     _email.notifySim(port, ready);
     _mqtt.notifySim(port, ready);
-    _log.addf(LogLevel::kInfo, "sim", "通信模组 %u SIM %s", (unsigned)port,
+    _log.addf(LogLevel::kInfo, "sim", "模组 %u SIM %s", (unsigned)port,
               ready ? "已插入" : "已拔出");
   });
   // 来电（+CLIP/+CLCC 检测）-> 邮件 / MQTT / webhook 推送入队 + 设备日志入库。
@@ -211,10 +211,10 @@ bool App::begin() {
   // OTA 升级状态初始化（需在 HTTP 路由注册前完成，确保 /api/ota/status 立即可用）
   Ota::init();
   _panel.begin();                      // 启动 HTTP 服务
-  // 启动邮件的放行条件：除 WiFi 外还要等通信模组初始化出结果（就绪或故障），
-  // 否则邮件里的通信模组状态会是「初始化中」。须在 notifyStartup() 前注入
+  // 启动邮件的放行条件：除 WiFi 外还要等模组初始化出结果（就绪或故障），
+  // 否则邮件里的模组状态会是「初始化中」。须在 notifyStartup() 前注入
   _email.setStartupGate([this] { return _sms.modemsSettled(); });
-  _email.notifyStartup();              // 排入启动邮件（等 WiFi + 通信模组就绪后发出）
+  _email.notifyStartup();              // 排入启动邮件（等 WiFi + 模组就绪后发出）
 
   // 新短信弹窗的开机基线：此前存的短信不弹（只弹运行期新收到的）
   _lastSmsId = _sms.lastSmsId();
@@ -257,7 +257,7 @@ void App::collectStatus(StatusInfo &out) {
   else sPass = "开放无密码";                           // 开放：可读文本
   out.apPass = sPass.c_str();
 
-  // ---- 现场拼装：本机信息 / 资源 / 通信模组 / 服务 ----
+  // ---- 现场拼装：本机信息 / 资源 / 模组 / 服务 ----
   WiFi.macAddress().toCharArray(out.mac, sizeof(out.mac));
   fmtUptime(out.uptimeSec, out.uptime, sizeof(out.uptime));
 
@@ -315,7 +315,7 @@ void App::collectStatus(StatusInfo &out) {
       String b = _sms.modemBrief((uint8_t)(i + 1));   // 模组号 1/2
       snprintf(out.modem[i], sizeof(out.modem[i]), "%s",
                b.length() ? b.c_str() : "-");
-      // 完整遥测快照（菜单「通信模组」页）
+      // 完整遥测快照（菜单「模组」页）
       _sms.modemSnapshot((uint8_t)(i + 1), out.modems[i]);
     }
 
@@ -436,7 +436,7 @@ void App::fillPreview(const SmsMessage &m, SmsPreview &out) {
   out.ts = m.ts;
   snprintf(out.phone, sizeof(out.phone), "%s", m.phone.c_str());
   snprintf(out.text, sizeof(out.text), "%s", m.content.c_str());
-  // 通信模组别名（备注）：按串口号查快照，仅展示用，无别名则留空
+  // 模组别名（备注）：按串口号查快照，仅展示用，无别名则留空
   out.alias[0] = 0;
   if (m.modem >= 1 && m.modem <= (int)cfg::kSmsMaxModems) {
     ModemSnapshot ms;
@@ -476,7 +476,7 @@ void App::checkNewSms() {
   _ui.showSms(p);
   // 顺带让「短信」页下次进入时立刻能看到这条（缓存 3 秒节流会挡住新数据）
   _smsCacheMs = 0;
-  _log.addf(LogLevel::kInfo, "ui", "新短信已弹屏：%s（通信模组 %d）", m.phone.c_str(),
+  _log.addf(LogLevel::kInfo, "ui", "新短信已弹屏：%s（模组 %d）", m.phone.c_str(),
             (int)m.modem);
 }
 
@@ -559,7 +559,7 @@ void App::tick() {
       _lastBootBarMs = el;
       ui::instance().bootUpdate((uint8_t)(el * 100 / cfg::kBootScreenMs));
     }
-    // 开机窗口内不渲染其它页面，避免与初始化中的通信模组抢数据
+    // 开机窗口内不渲染其它页面，避免与初始化中的模组抢数据
     ui::instance().tick();
     _display.lvglTick();
     delay(5);

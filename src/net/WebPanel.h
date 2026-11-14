@@ -48,7 +48,7 @@
 // 登录失败由 LoginLimiter 做全局 / IP+用户名 / 挑战端点三层限流；修改账号后登录会话作废。
 class WebPanel {
  public:
-  // 注入各通信模组引用（不持有所有权）
+  // 注入各模组引用（不持有所有权）
   // bridge：AT 串口桥；led：RGB 灯；wifi：WiFi 管理器；display：屏幕；
   // ui：菜单状态机（屏幕设置的持有者，/api/disp 读写它）；
   // auth：管理账号存储（NVS）；events：SSE 状态推送总线；sms：短信服务；
@@ -223,7 +223,7 @@ class WebPanel {
   void handleWifiApGet(AsyncWebServerRequest *req);
   void handleWifiApPost(AsyncWebServerRequest *req, JsonVariant &json);
 
-  // 短信：统计 / 最新 / 通信模组列表 / 列表 / 删除 / 配置通信模组 / 重初始化 / 发送
+  // 短信：统计 / 最新 / 模组列表 / 列表 / 删除 / 配置模组 / 重初始化 / 发送
   void handleSmsStats(AsyncWebServerRequest *req);
   void handleSmsLatest(AsyncWebServerRequest *req);
   void handleSmsPortsGet(AsyncWebServerRequest *req);
@@ -238,18 +238,18 @@ class WebPanel {
   void handleSmsAdminGet(AsyncWebServerRequest *req);
   void handleSmsAdminPost(AsyncWebServerRequest *req, JsonVariant &json);
 
-  // 经通信模组 ICMP 连通性测试（PING）：POST 启动（{"port":1,"host"?:"8.8.8.8}，
+  // 经模组 ICMP 连通性测试（PING）：POST 启动（{"port":1,"host"?:"8.8.8.8}，
   // 走 SmsService::pingHost，独立 FreeRTOS 任务异步执行，不阻塞 Web 任务）；
   // GET 轮询结果 {"busy":bool,"ok":bool,"report":".."}（host 缺省 8.8.8.8）。
   void handleSmsPingPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsPingGet(AsyncWebServerRequest *req);
 
-  // 主动查询通信模组存储中的短信：POST {"port":n?} 触发（缺省 = 全部启用模组），
+  // 主动查询模组存储中的短信：POST {"port":n?} 触发（缺省 = 全部启用模组），
   // 异步执行（查询任务），GET 返回查询状态（各端口待查/执行中 + 上次结果）。
   void handleSmsQueryPost(AsyncWebServerRequest *req, JsonVariant &json);
   void handleSmsQueryGet(AsyncWebServerRequest *req);
 
-  // 清空指定通信模组 SIM 上的全部短信：POST {"port":n} 触发（异步，由查询任务
+  // 清空指定模组 SIM 上的全部短信：POST {"port":n} 触发（异步，由查询任务
   // 执行阻塞式 AT+CMGD）；状态并入 GET /api/sms/query 的查询状态 JSON。
   void handleSmsClearPost(AsyncWebServerRequest *req, JsonVariant &json);
 
@@ -258,12 +258,12 @@ class WebPanel {
   void handleSmsPollPost(AsyncWebServerRequest *req, JsonVariant &json);
 
   // 短信接收模式（CNMI）：GET 读当前模式 / POST {"store":bool} 切换
-  // store=true 存储模式（CNMI=2,1，短信落通信模组侧并上报 +CMTI，配合主动查询）；
+  // store=true 存储模式（CNMI=2,1，短信落模组侧并上报 +CMTI，配合主动查询）；
   // store=false 直投模式（CNMI=2,2，新短信直接投递给设备）
   void handleSmsStoreGet(AsyncWebServerRequest *req);
   void handleSmsStorePost(AsyncWebServerRequest *req, JsonVariant &json);
 
-  // 通信模组硬件引脚：GET 读当前 RX/TX/EN 配置；POST 保存并即时套用（含 EN 电平）
+  // 模组硬件引脚：GET 读当前 RX/TX/EN 配置；POST 保存并即时套用（含 EN 电平）
   void handleModemHwGet(AsyncWebServerRequest *req);
   void handleModemHwPost(AsyncWebServerRequest *req, JsonVariant &json);
 

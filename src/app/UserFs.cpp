@@ -9,14 +9,14 @@
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 }  // namespace
 
 namespace userfs {
 
-// 全局唯一挂载实例：App 启动时初始化，SmsStore 等通信模组直接复用
+// 全局唯一挂载实例：App 启动时初始化，SmsStore 等模组直接复用
 static fs::LittleFSFS g_fs;
 static bool g_mounted = false;
 

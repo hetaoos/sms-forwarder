@@ -48,7 +48,7 @@ class Ui {
 
   // ---- 开机页 ----
   // 切到开机页并按 0~100 推进进度条。开机页不依赖中文字库（纯图标 + ASCII），
-  // 因此可以在字库加载、通信模组初始化期间安全显示。
+  // 因此可以在字库加载、模组初始化期间安全显示。
   void bootUpdate(uint8_t percent);
 
   // ---- 实时状态页 ----
@@ -79,7 +79,7 @@ class Ui {
   int viewVisibleLines() const;
 
   // ---- 新短信弹窗 ----
-  // phone：发件号码；body：正文；modem：接收通信模组串口号（<0 未知）；
+  // phone：发件号码；body：正文；modem：接收模组串口号（<0 未知）；
   // time：可读时间串；incoming：true 收到 / false 发出
   void smsPopupUpdate(const char *phone, const char *body, int8_t modem,
                       const char *time, bool incoming);

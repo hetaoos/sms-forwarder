@@ -41,7 +41,7 @@ class SmsStore {
   // 写入一条记录，返回记录 ID（0 = 失败）
   uint32_t add(const SmsMessage &msg);
 
-  // 分页 + 关键字 + 通信模组过滤；out 填充本页记录，total 为匹配总数
+  // 分页 + 关键字 + 模组过滤；out 填充本页记录，total 为匹配总数
   // page/pageSize 越界自动钳制；q 为空不筛；modem < 0 不筛
   // out 用 SmsList（PSRAM 分配器）：整页记录数可达 100 条
   void list(int page, int pageSize, const String &q, int8_t modem, SmsList &out,

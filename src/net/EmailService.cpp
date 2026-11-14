@@ -22,7 +22,7 @@
 
 namespace {
 
-// 本通信模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
+// 本模组日志出口：全局日志环（串口由 LogStore 统一镜像输出）
 LogStore &_log = devLog();
 
 // ---- 网络超时 ----
@@ -223,8 +223,8 @@ void EmailService::tick() {
 
   // ---- 启动邮件：分两段等待 ----
   //   a) WiFi 未连：每 15s 探一次，超过 kMailBootWaitMaxMs 放弃（无网发不出）；
-  //   b) WiFi 已连：给通信模组初始化 kMailBootModemWaitMs 宽限，期间通信模组一有结果就
-  //      发，到期仍未出结果也照发（正文状态显示未就绪），不因通信模组异常而卡死。
+  //   b) WiFi 已连：给模组初始化 kMailBootModemWaitMs 宽限，期间模组一有结果就
+  //      发，到期仍未出结果也照发（正文状态显示未就绪），不因模组异常而卡死。
   if (_startupPending && now >= _startupDueMs) {
     if (WiFi.status() != WL_CONNECTED) {
       // ---- a) 等 WiFi ----
@@ -235,9 +235,9 @@ void EmailService::tick() {
         _startupDueMs = now + 15000;  // 每 15s 再探一次
       }
     } else {
-      // ---- b) 等通信模组初始化（有宽限期，到期照发）----
+      // ---- b) 等模组初始化（有宽限期，到期照发）----
       if (_startupWifiMs == 0) {
-        // WiFi 首次连上：记录时刻并给出通信模组宽限期的截止点
+        // WiFi 首次连上：记录时刻并给出模组宽限期的截止点
         _startupWifiMs = now;
         _startupDueMs = now + cfg::kMailBootModemWaitMs;
       }
@@ -248,7 +248,7 @@ void EmailService::tick() {
         _startupPending = false;
         if (!gateOk && graceOver) {
           _log.addf(LogLevel::kWarn, "mail",
-                    "通信模组初始化 %us 内未出结果，按宽限期照发启动邮件",
+                    "模组初始化 %us 内未出结果，按宽限期照发启动邮件",
                     (unsigned)(cfg::kMailBootModemWaitMs / 1000));
         }
         Guard g(_mutex);
@@ -262,7 +262,7 @@ void EmailService::tick() {
           enqueueStartupLocked();
         }
       }
-      // 宽限期内且通信模组未出结果：下个 tick 再看（tick 每 loop 一次，无需改 dueMs）
+      // 宽限期内且模组未出结果：下个 tick 再看（tick 每 loop 一次，无需改 dueMs）
     }
   }
 
@@ -1085,7 +1085,7 @@ void EmailService::appendInfoBlock(PsBuffer &out) const {
   appendRow(out, String("系统时间"),
             (_time && _time->isSynced()) ? _time->dateStr() : String("未同步"));
 
-  // 每个启用的通信模组一行「本机号码 N」；一个号码都取不到时才回退到设备 IP。
+  // 每个启用的模组一行「本机号码 N」；一个号码都取不到时才回退到设备 IP。
   // 每条通知都应能看出「什么时候、哪台设备」，因此统一在这里追加。
   // 号码行先攒进独立缓冲：只有确实拿到号码才并入，否则回退 IP 行。
   bool hasNum = false;
@@ -1158,22 +1158,22 @@ void EmailService::appendModemGroupSection(PsBuffer &out) const {
     }
     bool multi = enabled > 1;
 
-    // 按通信模组分组：把「通信模组信息」与「SIM/信号」合并到同一个分组输出，
-    // 每个启用的通信模组一个分组；多通信模组时分组标题带序号（通信模组 1 / 通信模组 2），
-    // 单通信模组时不加序号（通信模组），与参考项目风格一致。
+    // 按模组分组：把「模组信息」与「SIM/信号」合并到同一个分组输出，
+    // 每个启用的模组一个分组；多模组时分组标题带序号（模组 1 / 模组 2），
+    // 单模组时不加序号（模组），与参考项目风格一致。
     bool any = false;
     for (JsonObject m : doc.as<JsonArray>()) {
       if (!(m["enabled"] | false)) continue;
       any = true;
       int port = m["port"] | 0;
       appendSectionOpen(out,
-                        multi ? (String("通信模组 ") + String(port)) : String("通信模组"));
+                        multi ? (String("模组 ") + String(port)) : String("模组"));
       String vendor = m["vendor"] | "";
       String model = m["model"] | "";
       String revision = m["revision"] | "";
       appendRow(out, String("制造商"), vendor.length() > 0 ? vendor : String("未知"));
-      appendRow(out, String("通信模组型号"), model.length() > 0 ? model : String("未知"));
-      appendRow(out, String("通信模组固件"),
+      appendRow(out, String("模组型号"), model.length() > 0 ? model : String("未知"));
+      appendRow(out, String("模组固件"),
                 revision.length() > 0 ? revision : String("未知"));
       String imei = m["imei"] | "";
       appendRow(out, String("IMEI"), imei.length() > 0 ? imei : String("未知"));
@@ -1197,8 +1197,8 @@ void EmailService::appendModemGroupSection(PsBuffer &out) const {
     }
     if (any) return;
   }
-  appendSectionOpen(out, String("通信模组"));
-  appendRow(out, String("通信模组型号"), String("未启用任何通信模组"));
+  appendSectionOpen(out, String("模组"));
+  appendRow(out, String("模组型号"), String("未启用任何模组"));
   appendSectionClose(out);
 }
 
@@ -1216,7 +1216,7 @@ void EmailService::appendSimRows(PsBuffer &out) const {
       if (!(m["enabled"] | false)) continue;
       any = true;
       int port = m["port"] | 0;
-      String p = multi ? (String("通信模组") + String(port) + " ") : String("");
+      String p = multi ? (String("模组") + String(port) + " ") : String("");
       appendRow(out, p + "SIM状态",
                 (m["sim"] | false) ? String("已就绪") : String("未就绪"));
       String operCode = m["operCode"] | "";
@@ -1233,7 +1233,7 @@ void EmailService::appendSimRows(PsBuffer &out) const {
     }
   }
   if (!any) {
-    appendRow(out, String("SIM状态"), String("未启用任何通信模组"));
+    appendRow(out, String("SIM状态"), String("未启用任何模组"));
   }
 }
 
@@ -1247,7 +1247,7 @@ bool EmailService::simOverallReady() const {
       enabled++;
       if (m["sim"] | false) return true;
     }
-    if (enabled == 0) return true;  // 没接通信模组时设备本身算健康（不因无 SIM 报警）
+    if (enabled == 0) return true;  // 没接模组时设备本身算健康（不因无 SIM 报警）
   }
   return true;
 }
@@ -1263,7 +1263,7 @@ String EmailService::simOverallStateText() const {
       enabled++;
       if (m["sim"] | false) anyReady = true;
     }
-    if (enabled == 0) return "未启用通信模组";
+    if (enabled == 0) return "未启用模组";
     return anyReady ? "已就绪" : "未就绪";
   }
   return "未知";
@@ -1275,7 +1275,7 @@ String EmailService::simStateText(uint8_t port) const {
       doc.is<JsonArray>()) {
     for (JsonObject m : doc.as<JsonArray>()) {
       if ((m["port"] | 0) != (int)port) continue;
-      if (!(m["enabled"] | false)) return "通信模组未启用";
+      if (!(m["enabled"] | false)) return "模组未启用";
       return (m["sim"] | false) ? "已就绪" : "未就绪";
     }
   }
@@ -1295,7 +1295,7 @@ String EmailService::modemLabelOf(int8_t modem) const {
       break;
     }
   }
-  return String("通信模组") + String(modem);
+  return String("模组") + String(modem);
 }
 
 String EmailService::signalText(int csq) {
@@ -1410,10 +1410,10 @@ void EmailService::buildSimMail(uint8_t port, bool ready, String &subject,
   appendBadge(inner, ready ? "SIM 卡已插入" : "SIM 卡已拔出", simStateText(port),
               ready);
 
-  // 事件说明里带上通信模组标识；再把所有通信模组的状态都列出来
+  // 事件说明里带上模组标识；再把所有模组的状态都列出来
   appendTableOpen(inner);
   appendRow(inner, String("事件说明"),
-            String("通信模组 ") + String(port) + (ready ? " 的 SIM 卡已插入并就绪"
+            String("模组 ") + String(port) + (ready ? " 的 SIM 卡已插入并就绪"
                                                     : " 的 SIM 卡已拔出或失效"));
   appendSimRows(inner);
   appendTableClose(inner);
@@ -1422,7 +1422,7 @@ void EmailService::buildSimMail(uint8_t port, bool ready, String &subject,
   buildHtml(html, ready ? "🔔 SIM 卡已插入" : "🔔 SIM 卡已拔出", inner);
 
   text = subject + "\n";
-  text += "通信模组: " + String(port) + "\n";
+  text += "模组: " + String(port) + "\n";
   text += "SIM状态: " + simStateText(port) + "\n";
 }
 
@@ -1495,7 +1495,7 @@ void EmailService::buildSmsMail(const String &sender, const String &message,
   text += "\n内容:\n" + message;
 }
 
-// 来电提醒邮件：卡片展示主叫号码 / 时间 / 接入通信模组。
+// 来电提醒邮件：卡片展示主叫号码 / 时间 / 接入模组。
 // 号码可能为「未知号码」（模组不发 +CLIP/+CLCC 且主动查询也无果）或
 // 「号码保密」（主叫方开通了号码隐藏），均为正常取值，不做特殊处理。
 void EmailService::buildCallMail(const String &number, uint32_t ts, int8_t modem,
@@ -1520,7 +1520,7 @@ void EmailService::buildCallMail(const String &number, uint32_t ts, int8_t modem
   inner.append("</td></tr>");
   String mlabel = modemLabelOf(modem);
   if (mlabel.length() > 0) {
-    inner.append("<tr><td class=\"kn\">接入通信模组</td><td class=\"vn\">");
+    inner.append("<tr><td class=\"kn\">接入模组</td><td class=\"vn\">");
     appendEscaped(inner, mlabel);
     inner.append("</td></tr>");
   }
@@ -1531,7 +1531,7 @@ void EmailService::buildCallMail(const String &number, uint32_t ts, int8_t modem
   text = "主叫号码: " + number;
   text += "\n时间: " + tsText;
   if (mlabel.length() > 0) {
-    text += "\n接入通信模组: " + mlabel;
+    text += "\n接入模组: " + mlabel;
   }
 }
 

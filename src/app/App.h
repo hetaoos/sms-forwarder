@@ -21,17 +21,17 @@
 #include "sms/SmsService.h"
 #include "time/TimeSync.h"
 
-// 应用层：持有各通信模组，负责装配与主循环调度
+// 应用层：持有各模组，负责装配与主循环调度
 class App {
  public:
-  // 初始化所有子通信模组，成功返回 true
+  // 初始化所有子模组，成功返回 true
   bool begin();
 
   // 主循环调度：推进 WiFi 重连、SSE 状态推送、短信重组超时、按周期刷新屏幕
   void tick();
 
  private:
-  // 从各通信模组聚合一份屏幕渲染用的状态快照，填充到 out
+  // 从各模组聚合一份屏幕渲染用的状态快照，填充到 out
   void collectStatus(StatusInfo &out);
 
   // 秒 -> "1天02:03:04" / "02:03:04"
@@ -55,12 +55,12 @@ class App {
   UIMenu _ui{_display};     // LCD 菜单导航状态机（依赖 _display）
   WifiManager _wifi;        // WiFi 连接管理 + NVS 配网
   SerialBridge _bridge;     // 双串口 AT 透传桥
-  SmsService _sms{_bridge}; // 短信服务（通信模组收发 + 文件存储）
+  SmsService _sms{_bridge}; // 短信服务（模组收发 + 文件存储）
   TimeSync _time;           // 时间同步（NTP 为主，SIM NITZ 兜底；依赖 _bridge/_sms）
   // 持久化发件箱：短信先落盘再逐通道投递，重启续投（须在 _panel 之前声明）
   Outbox _outbox;
   // 设备日志环形存储（PSRAM，Web 分页查询 + 串口镜像）；
-  // 指向全局唯一实例（devLog()），其余通信模组取的也是同一份
+  // 指向全局唯一实例（devLog()），其余模组取的也是同一份
   LogStore &_log = devLog();
   // SSE 状态推送总线（需 _ui 以输出屏幕设置，且引用 _log/_outbox 推送日志/发件箱事件，
   // 故排在这二者之后、_panel 之前）
@@ -70,13 +70,13 @@ class App {
   MqttService _mqtt;        // MQTT 服务（事件上报 + 命令订阅）
   PushService _push;        // 统一 webhook 推送通道（广播 / 故障转移策略）
   BlackList _blacklist;     // 号码黑名单（拦截命中规则的短信）
-  // HTTP 控制台（依赖上述通信模组）；_ui 用于读写屏幕设置（亮度 / 自动熄屏 / 自动返回）
+  // HTTP 控制台（依赖上述模组）；_ui 用于读写屏幕设置（亮度 / 自动熄屏 / 自动返回）
   WebPanel _panel{_bridge, _led, _wifi, _display, _ui, _auth, _events, _sms, _time,
                   _email, _log, _mqtt, _push, _blacklist, _outbox};
 
   // 邮件 / MQTT / 推送 / 短信是否已完成 begin()。
-  // 开机首帧状态页会先于这些通信模组初始化采集一次，此时它们的互斥量句柄还是 NULL，
-  // 碰到就断言重启；采集里凡是要碰这些通信模组的分支都必须先看这个标记。
+  // 开机首帧状态页会先于这些模组初始化采集一次，此时它们的互斥量句柄还是 NULL，
+  // 碰到就断言重启；采集里凡是要碰这些模组的分支都必须先看这个标记。
   bool _svcReady = false;
 
   uint32_t _lastUiMs = 0;   // 上一次屏幕刷新的时间戳（ms），用于节流

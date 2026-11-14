@@ -69,7 +69,7 @@ pio device monitor -e esp32s3        # 串口监视 115200
 - 若构建日志出现 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]` 后卡住（环境的批量删除保护拦住 PlatformIO 清理 `.o`），用全新构建目录绕开：`PLATFORMIO_BUILD_DIR=.pio/verify pio run -e esp32s3`（约 1 分钟全量编译，结果等价）。
 - 根目录 `compile_commands.json` 是**陈旧快照**（缺 LVGL 路径、OTA 宏与新增的 `.cpp`），不要用它做 `-fsyntax-only` 检查，会误报 `lvgl.h` 找不到、`../hal.h` 找不到、`JsonDocument` 一堆假错误。`ENABLE_MQTT` / `ENABLE_FIRMWARE_UPGRADE` 现已在 `src/app/Config.h` 归一化（未定义时默认 1），`MqttService incomplete` 那类假错误不再出现。一律以 `pio run` 完整编译为准。
 - 验证编译开关时用独立构建目录 + 追加宏（叠加在 `platformio.ini` 之后，会有 redefined 警告，最终值以追加的为准）：`PLATFORMIO_BUILD_DIR=.pio/verify_off PLATFORMIO_BUILD_FLAGS="-D ENABLE_MQTT=0 -D ENABLE_FIRMWARE_UPGRADE=0" pio run -e esp32s3`。正式发布应直接改 `platformio.ini` 的 `build_flags`，避免宏重定义。
-- 设备取证入口（不接 USB 也能用）：`/api/logs`、`/api/at/hist`、`/api/sms/query`、`/api/status`，Web 页「运行日志 / 模组调试 / 通信模组」。
+- 设备取证入口（不接 USB 也能用）：`/api/logs`、`/api/at/hist`、`/api/sms/query`、`/api/status`，Web 页「运行日志 / 模组调试 / 模组」。
 
 ---
 
@@ -100,7 +100,7 @@ pio device monitor -e esp32s3        # 串口监视 115200
 | `src/sms/SmsService.h` | `ModemState` 新增 `waitingPduAtMs`、`configFailCount`、`queryFailStreak`、`cmgfChecked`、`cmgfOk`、`lastCmgrResp`、`lastQueryErr` |
 | `src/sms/SmsService.cpp` | `queryPort()` 重写为 CMTI 优先 / CMGL 补充扫描；索引「成功才移除」+ 保留查询期间新 URC + 3s→60s 指数退避 + 连续 3 轮转全量扫描；新增 `AT+CMGF?` 复核与纠正；`extractPduHex()` 重写；`onUnsolicited()` 的 `waitingPdu`/`+CMTI` 加固；`pollInit` 关键配置校验且 CMGF 前置；`sendAt()` 还原校验；`setStoreMode()` 清标志并立即查询；`queryStatusJson()` 增加 6 个诊断字段；新增 `briefResp()` / `parseCmgfMode()` / `isHexOnly()` |
 | `src/app/Config.h` | 新增 `kSmsPduWaitMs`(5s)、`kSmsQueryFailMax`(3)；更新查询链路注释 |
-| `data/pages/modem.html` | 异常时在「通信模组」页显示 `indexes`/`failStreak`/`cmgfOk`/`lastError`/`lastCmgr` |
+| `data/pages/modem.html` | 异常时在「模组」页显示 `indexes`/`failStreak`/`cmgfOk`/`lastError`/`lastCmgr` |
 | `README.md` | 补 `GET|POST /api/sms/query` 文档与诊断字段说明 |
 | `debug-sms-store-parse-fail.md` | 状态改为 `FIX-IMPLEMENTED`，写入修复说明、验证清单、关闭条件 |
 
@@ -111,7 +111,7 @@ pio device monitor -e esp32s3        # 串口监视 115200
 
 ### 2.4 待办：设备取证（未关闭）
 
-1. 刷入修复固件 → Web「通信模组」页应无异常诊断（PDU 模式正常、待重试索引 0、无最近错误）。
+1. 刷入修复固件 → Web「模组」页应无异常诊断（PDU 模式正常、待重试索引 0、无最近错误）。
 2. 发一条普通短信，日志依次出现「收到 +CMTI 索引通知」→「待读取短信索引」→「收到短信 #N」→「查询完成…读回失败 0 条」，且短信入库并转发到已启用通道。
 3. 连发多条（含长短信），确认 `+CMTI` 索引不互相覆盖、SIM 副本被删除。
 4. 控制台发 `AT+CMGF=1` 后立刻收短信，验证 CMGF 自动纠正仍可入库。
@@ -308,7 +308,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
   快照里的 `-` / 未知 CSQ 统一归一化为空串，不会把减号塞进模板。
 - 新增 ICCID 采集：`ModemState.iccid` + `ModemSnapshot.iccid[24]` + 就绪后一次性 `AT+CCID`
   （静态采集 `idStep` 6→7 步，重初始化时清空），解析函数兼容 `+CCID: "…"` / `+ICCID: …` /
-  裸数字行三种回显；`modemsJson()` 与 Web「通信模组」页均已展示。
+  裸数字行三种回显；`modemsJson()` 与 Web「模组」页均已展示。
 - `{remark}` 用独立 NVS 键 `appcfg/remark`（`cfg::kNvsKeyRemark`，最长 64 字节），由 `PushService`
   自管：随 `/api/push` GET/POST、配置导入导出走，放在「推送通道」页「设备备注」卡片。
   独立键的好处是只改推送通道配置或空配置时备注不丢。
@@ -337,7 +337,7 @@ MQTT QoS1 与 SMS 备份只有「已入队」确认，记为 `submitted` 而非 
   `/api/status` 的 `otaCompiled` / `mqtt.compiled`、功能开关表的真实行为与 OTA 关闭时的 API 表现。
 
 **验收（待设备验证）**：
-1. 刷默认固件 → 「通信模组」页出现 ICCID（模组支持 `AT+CCID` 时），AT 历史里有就绪后一条 `AT+CCID`。
+1. 刷默认固件 → 「模组」页出现 ICCID（模组支持 `AT+CCID` 时），AT 历史里有就绪后一条 `AT+CCID`。
 2. 在「推送通道」页填设备备注并保存 → 自定义模板用 `{remark}` 发一条测试推送，值正确；重启后备注仍在。
 3. 收一条短信并让自定义模板引用 `{carrier}` / `{to}` / `{iccid}` / `{signal}` → 值来自对应模组，
    单模组可用、测试推送（无来源模组）时这四项为空串而不是字面量占位符。

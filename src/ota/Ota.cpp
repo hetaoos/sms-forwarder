@@ -610,7 +610,7 @@ static void onlineUpgradeTask(void* param) {
     // WiFiClientSecure 的 mbedtls 上下文（~35KB heap）在下一阶段开始前
     // 由 destructor 释放，避免多个 TLS 上下文并存导致 MBEDTLS_ERR_SSL_ALLOC_FAILED。
     // 除此之外，出网前还要取 TLS 轮次锁（TlsTurn）—— 本任务与「版本检查」可能
-    // 同时醒来，只靠「阶段内不并存」挡不住跨通信模组的并发握手。
+    // 同时醒来，只靠「阶段内不并存」挡不住跨模组的并发握手。
 
     // --- 阶段1（已跳过版本检查，Release tag 由调用方提供）---
     LOG("OTA", "开始在线升级，目标 Release: %s", releaseTag.c_str());

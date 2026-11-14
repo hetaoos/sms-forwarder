@@ -5,7 +5,7 @@
 // 全局应用单例：Arduino 入口只负责驱动它
 static App gApp;
 
-// Arduino 启动入口：完成各通信模组初始化
+// Arduino 启动入口：完成各模组初始化
 void setup() {
   gApp.begin();
 }

@@ -1,8 +1,8 @@
 <div x-data="pageModem()" x-init="init()">
   <div class="page-head">
     <div>
-      <h2>通信模组 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
-      <p class="page-desc">查看与设置通信模组状态、信号强度、运营商、注册与号码</p>
+      <h2>模组 <span class="dirty-dot" x-show="dirty" style="vertical-align:middle">未保存</span></h2>
+      <p class="page-desc">查看与设置模组状态、信号强度、运营商、注册与号码</p>
     </div>
     <div class="bar">
       <span class="badge info">别名 / 开关即时生效，查询设置需点保存</span>
@@ -47,7 +47,7 @@
           <button class="btn sm ghost" :disabled="!m.enabled"
                   @click="reinitPort(m.port)">重新初始化</button>
           <span class="hint" x-text="!m.enabled ? '停用后该模组不再收发短信'
-                : (m.ready ? '已就绪，可收发短信' : '初始化中…（等待通信模组应答 / SIM / 注册）')"></span>
+                : (m.ready ? '已就绪，可收发短信' : '初始化中…（等待模组应答 / SIM / 注册）')"></span>
         </div>
         <div class="bar" style="margin-top:10px">
           <input class="inp sm" style="flex:1;min-width:120px"
@@ -62,7 +62,7 @@
   <!-- 硬件引脚配置（RX/TX/EN） -->
   <div class="card" style="margin-top:16px">
     <h3>硬件引脚配置</h3>
-    <p class="hint">为每个通信模组配置串口引脚（RX 接模组 TXD、TX 接模组 RX）与 EN 复位/开关机引脚。
+    <p class="hint">为每个模组配置串口引脚（RX 接模组 TXD、TX 接模组 RX）与 EN 复位/开关机引脚。
       保存后即时套用：串口按新引脚重开、EN 拉到启用电平、已启用的模组重新初始化。若模组仍未就绪，请重启设备使引脚彻底复位。</p>
     <p class="hint warn" style="margin-top:8px">EN 模式：<b>无效</b>（不控制，沿用模组自身上电时序）；
       <b>高电平启用</b>（拉高=开机，拉低=关机）；<b>低电平启用</b>（拉低=开机，拉高=关机）。EN 引脚填 -1 表示未接。</p>
@@ -131,11 +131,11 @@
   <!-- 网络连通性测试（PING） -->
   <div class="card" style="margin-top:16px">
     <h3>网络连通性测试（PING）</h3>
-    <p class="hint">经所选通信模组发起 ICMP 探测（AT+CGPING），用于验证 4G 数据通道是否通畅。
+    <p class="hint">经所选模组发起 ICMP 探测（AT+CGPING），用于验证 4G 数据通道是否通畅。
       默认目标 8.8.8.8；模组未插卡 / 无信号 / 未开通数据业务时可能失败。</p>
 
     <div class="bar" style="margin-top:10px">
-      <div class="field" style="min-width:160px"><label>通信模组</label>
+      <div class="field" style="min-width:160px"><label>模组</label>
         <select class="inp" x-model.number="pingPort">
           <option value="0" :disabled="enabledPorts().length===0">请选择</option>
           <template x-for="m in modems" :key="'p'+m.port">
@@ -160,20 +160,20 @@
     </div>
   </div>
 
-  <!-- 主动查询短信（通信模组存储兜底） -->
+  <!-- 主动查询短信（模组存储兜底） -->
   <div class="card" style="margin-top:16px">
     <h3>主动查询短信
       <span class="badge" :class="storeMode ? 'ok' : 'info'"
             x-text="storeMode ? '存储模式' : '直投模式'"></span>
     </h3>
-    <p class="hint">短信以 CNMI=2,1 接收时先落在通信模组侧：设备收到 +CMTI 索引通知后立即下发 AT 指令
+    <p class="hint">短信以 CNMI=2,1 接收时先落在模组侧：设备收到 +CMTI 索引通知后立即下发 AT 指令
       主动读回（AT+CMGL / AT+CMGR），另有兜底轮询每 <b x-text="safetyText()"></b> 主动拉取一次，
-      防止自动上报丢失导致漏短信。短信落盘并推送后立即删除通信模组侧副本；列表同时扫未读与已读，
+      防止自动上报丢失导致漏短信。短信落盘并推送后立即删除模组侧副本；列表同时扫未读与已读，
       删除失败的副本会在下一轮被捞回补删，避免占满 SIM 后收不到新短信。</p>
 
     <div class="bar" style="margin-top:10px;align-items:center">
       <label class="chk"><input type="checkbox" x-model="storeMode" @change="saveStore()">
-        <span>存储模式（CNMI=2,1）：短信落通信模组侧并上报索引，由设备主动读回</span></label>
+        <span>存储模式（CNMI=2,1）：短信落模组侧并上报索引，由设备主动读回</span></label>
     </div>
 
     <div class="bar" style="margin-top:10px;align-items:flex-end">
@@ -189,7 +189,7 @@
       <button class="btn" @click="startQuery(0)" :disabled="queryBusy"
               x-text="queryBusy ? '查询中…' : '立即查询全部'"></button>
       <select class="inp sm" style="min-width:150px" x-model.number="queryPort">
-        <option value="0">指定通信模组…</option>
+        <option value="0">指定模组…</option>
         <template x-for="m in modems" :key="'q'+m.port">
           <option :value="m.port" x-text="modemLabel(m)" :disabled="!m.enabled"></option>
         </template>
@@ -227,7 +227,7 @@
   <!-- SIM 短信清理（危险操作） -->
   <div class="card" style="margin-top:16px">
     <h3>SIM 短信清理 <span class="badge err">危险操作</span></h3>
-    <p class="hint">设备在读回并正确处理短信后会自动删除通信模组侧副本。仅当 SIM 被历史短信占满、
+    <p class="hint">设备在读回并正确处理短信后会自动删除模组侧副本。仅当 SIM 被历史短信占满、
       无法接收新短信时，才需要手动清空对应卡上的短信。</p>
     <div class="hint warn" style="margin-top:10px">
       清空会删除该卡上<b>全部</b>短信（含尚未读回、尚未转发的短信），且不可恢复。
@@ -251,7 +251,7 @@
       </template>
     </div>
     <div class="empty" style="padding:24px 20px" x-show="!queryPorts().length" x-cloak>
-      暂无启用中的通信模组
+      暂无启用中的模组
     </div>
   </div>
 
@@ -261,7 +261,7 @@
       <span class="badge" :class="poll.enabled ? 'ok' : 'err'"
             x-text="poll.enabled ? '已启用' : '已禁用'"></span>
     </h3>
-    <p class="hint">按计划主动查询通信模组存储中的短信，取回的短信照常落盘并推送。
+    <p class="hint">按计划主动查询模组存储中的短信，取回的短信照常落盘并推送。
       与兜底轮询相互独立：兜底轮询常开用于防漏，此处是你额外指定的日程。
       固定间隔基于开机时长；每日定点依赖本地时间（需时间已同步）。</p>
 
@@ -307,8 +307,8 @@
   <div class="card" style="margin-top:16px">
     <h3>说明</h3>
     <p class="hint" style="margin:0">
-      启用后设备自动将通信模组配置为 PDU 模式（CMGF=0）并开启新短信存储上报（CNMI=2,1）。<br>
-      信号 / 运营商 / 注册 / 号码等遥测每数秒自动刷新；若通信模组停在「故障 / 未连接」，多为未插 SIM 或信号不足。
+      启用后设备自动将模组配置为 PDU 模式（CMGF=0）并开启新短信存储上报（CNMI=2,1）。<br>
+      信号 / 运营商 / 注册 / 号码等遥测每数秒自动刷新；若模组停在「故障 / 未连接」，多为未插 SIM 或信号不足。
     </p>
   </div>
 </div>
