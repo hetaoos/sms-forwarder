@@ -216,7 +216,19 @@ input.mono{font-family:var(--mono)}
 
 /* 终端风格日志 */
 .console{background:#16181d;color:#c9f5c0;border-radius:10px;height:380px;overflow:auto;
-  padding:12px;font-family:var(--mono);font-size:12.5px;line-height:1.55}
+  padding:12px;font-family:var(--mono);font-size:12.5px;line-height:1.55;
+  /* 控制台底色固定深色，故滚动条需固定为深色样式（不随页面主题切换），
+     否则深色主题下原生浅色滚动条在深底上露出一条亮杠 */
+  color-scheme:dark}
+/* 控制台滚动条：轨道与底色 #16181d 一致，滑块用略亮的深灰保持可见；
+   标准属性覆盖 Firefox / 新版 Chromium，::-webkit-* 覆盖 Safari / 旧版 Chromium。
+   与侧栏 .menu 同款处理，运行日志 / 模组调试共用此元素。 */
+.console{scrollbar-width:thin;scrollbar-color:#3a3f4c #16181d}
+.console::-webkit-scrollbar{width:8px}
+.console::-webkit-scrollbar-track{background:#16181d}
+.console::-webkit-scrollbar-thumb{background:#3a3f4c;border-radius:8px;
+  border:2px solid #16181d}
+.console::-webkit-scrollbar-thumb:hover{background:#4a5060}
 .console .entry{margin-bottom:12px;padding-bottom:10px;border-bottom:1px dashed #2e3138}
 .console .entry:last-child{border-bottom:none}
 .console .meta{color:#6f7885;font-size:11px;margin-bottom:3px;display:flex;
@@ -399,6 +411,8 @@ input.mono{font-family:var(--mono)}
   --bg:#0f1117; --card:#1a1d26; --bg-soft:#14161d; --text:#e6e8ee; --muted:#9aa3b2; --faint:#8b93a1;
   --border:#2a2e3a; --danger:#ff6b6b; --success:#34d399; --warn:#f5b843;
   --shadow:0 1px 3px rgba(0,0,0,.4);
+  /* 让原生滚动条（页面主体 / 控件）跟随深色主题，避免深底上露出浅色滚动条 */
+  color-scheme:dark;
 }
 /* 顶栏毛玻璃底色：浅色用白、深色用深灰 */
 [data-theme="dark"] .topbar{background:rgba(20,22,30,.85);border-bottom-color:var(--border)}
