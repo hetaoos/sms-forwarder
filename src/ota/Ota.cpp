@@ -636,6 +636,32 @@ static void onlineUpgradeTask(void* param) {
         otaTaskAbort("OTA 初始化失败: " + String(esp_err_to_name(err)));
     }
 
+    // ⚠️ 下载阶段带有限重试：运行很久后 WiFi 可能"假连接"（WiFi.status() 仍
+    // WL_CONNECTED，但 TCP 实际僵死），表现为下载刚收下开头一个窗口（固件 3~5%）
+    // 就再无数据、直到 8s 超时被判失败；重启设备（网络栈重置）后即恢复正常。
+    // 既然重启能恢复，说明根因是旧 socket 已僵，重建一个全新连接往往就能继续。
+    // 这里在"数据流超时/不完整"这一类可重试错误后自动重建会话重试，无需用户
+    // 手动重启。连接建立、HTTP 状态码、固件大小等硬错误仍由 dlAbort 直接终止
+    // （不重试）。配合 WifiManager 关闭 WiFi 电源管理（modem sleep），可从根上
+    // 减少此类假连接的发生。
+    constexpr uint8_t kMaxFwDlRetry = 3;
+    bool dlDone  = false;
+    int  contentLen = 0;
+    for (uint8_t attempt = 0; attempt < kMaxFwDlRetry && !dlDone; ++attempt) {
+      if (attempt > 0) {
+        // 上一次尝试数据流中断：先让出一点时间，给 WiFiManager 重连/网络栈
+        // 恢复留窗口，再释放旧 OTA 句柄并从头重写分区，用全新 socket 重试
+        LOG("OTA", "固件下载中断，第 %u 次重试（重建连接）", (unsigned)(attempt + 1));
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_ota_abort(g_otaHandle);
+        err = esp_ota_begin(g_otaPart, OTA_WITH_SEQUENTIAL_WRITES, &g_otaHandle);
+        if (err != ESP_OK) {
+          LOG("OTA", "重试 esp_ota_begin 失败: %s", esp_err_to_name(err));
+          otaTaskAbort("OTA 初始化失败: " + String(esp_err_to_name(err)));
+        }
+        g_progress = 0;
+        g_message  = "正在重新连接下载...";
+      }
     bool dlFailed    = false;
     int  totalWritten = 0;
     {
@@ -676,7 +702,7 @@ static void onlineUpgradeTask(void* param) {
             dlAbort("连接固件服务器失败，响应码: " + String(dlCode));
         }
 
-        int contentLen = dlSession->http()->getSize();
+        contentLen = dlSession->http()->getSize();
         LOG("OTA", "固件大小: %d 字节", contentLen);
         if (contentLen <= 0) {
             dlAbort("固件服务器未返回有效大小");
@@ -731,11 +757,19 @@ static void onlineUpgradeTask(void* param) {
         }
     }  // dlSession destructor 此处释放 HTTPClient 及 mbedtls TLS 上下文
 
-    if (dlFailed) {
-        esp_ota_abort(g_otaHandle);
-        LOG("OTA", "固件下载失败，已中止 OTA");
-        otaTaskAbort("固件下载失败，请检查网络");
+    if (!dlFailed && totalWritten >= contentLen) {
+      dlDone = true;
+    } else if (dlFailed) {
+      LOG("OTA", "固件下载第 %u 次尝试失败（已写入 %d/%d 字节）",
+          (unsigned)(attempt + 1), totalWritten, contentLen);
     }
+  }  // for (attempt) 下载重试
+
+  if (!dlDone) {
+    esp_ota_abort(g_otaHandle);
+    LOG("OTA", "固件下载失败，已中止 OTA");
+    otaTaskAbort("固件下载失败，请检查网络");
+  }
 
     LOG("OTA", "下载完成，共写入 %d 字节，提交 OTA...", totalWritten);
 
