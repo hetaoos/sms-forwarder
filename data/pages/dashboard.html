@@ -52,7 +52,12 @@
       <div class="row"><span class="k">Flash</span>
         <span class="v" x-text="st.romSize ? fmtBytes(st.romSize) : '-'"></span></div>
       <div class="row"><span class="k">外部 PSRAM</span>
-        <span class="v" x-text="st.psramSize ? fmtBytes(st.psramSize) : '无'"></span></div>
+        <span class="v" x-show="st.psramSize">
+          <span x-text="fmtBytes(st.psramSize - st.psram)"></span>
+          <span style="display:block;margin-top:2px;color:var(--muted);font-weight:400;font-size:12px"
+                x-text="'共 ' + fmtBytes(st.psramSize)"></span>
+        </span>
+        <span class="v" x-show="!st.psramSize" x-text="'无'"></span></div>
     </div>
 
     <!-- 时间同步 -->
