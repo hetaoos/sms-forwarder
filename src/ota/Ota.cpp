@@ -647,6 +647,7 @@ static void onlineUpgradeTask(void* param) {
     constexpr uint8_t kMaxFwDlRetry = 3;
     bool dlDone  = false;
     int  contentLen = 0;
+    int  totalWritten = 0;
     for (uint8_t attempt = 0; attempt < kMaxFwDlRetry && !dlDone; ++attempt) {
       if (attempt > 0) {
         // 上一次尝试数据流中断：先让出一点时间，给 WiFiManager 重连/网络栈
@@ -663,7 +664,7 @@ static void onlineUpgradeTask(void* param) {
         g_message  = "正在重新连接下载...";
       }
     bool dlFailed    = false;
-    int  totalWritten = 0;
+    totalWritten = 0;
     {
         // 下载是用户主动触发的长任务，不重试，但必须排队等轮次 —— 与版本检查
         // 撞在一起时宁可多等一会儿，也别两个 TLS 上下文同时握手。
