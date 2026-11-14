@@ -881,7 +881,7 @@ TOKEN=$(curl -s -X POST http://设备IP/api/token/exchange -H 'Content-Type: app
 ```
 
 > 浏览器默认走 v2 登录挑战应答，无需关心上述流程；`TOKEN` 拿到后即可像下面一样调用各接口：
-
+```bash
 # 查询状态（GET）
 curl -H "Authorization: Bearer $TOKEN" http://设备IP/api/status
 
